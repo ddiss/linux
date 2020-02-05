@@ -94,13 +94,10 @@ int lkl_trigger_irq(int irq)
 	 * IRQ -> softirq -> lkl_trigger_irq) make sure we are actually allowed
 	 * to run irqs at this point
 	 */
-	if (!irqs_enabled) {
+	if (!irqs_enabled)
 		set_irq_pending(irq);
-		lkl_cpu_put();
-		return 0;
-	}
-
-	run_irq(irq);
+	else
+		run_irq(irq);
 
 	lkl_cpu_put();
 
