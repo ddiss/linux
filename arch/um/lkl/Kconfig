@@ -24,7 +24,7 @@ config LKL
        depends on !SMP && !MMU && !COREDUMP && !SECCOMP && !UPROBES && !COMPAT && !USER_RETURN_NOTIFIER
        select ARCH_THREAD_STACK_ALLOCATOR
        select RWSEM_GENERIC_SPINLOCK
-       select GENERIC_ATOMIC64
+       select GENERIC_ATOMIC64 if !64BIT
        select GENERIC_HWEIGHT
        select FLATMEM
        select FLAT_NODE_MEM_MAP
