@@ -14,6 +14,7 @@ TEST_MAC0="aa:bb:cc:dd:ee:ff"
 TEST_MAC1="aa:bb:cc:dd:ee:aa"
 TEST_NETSERVER_PORT=11223
 TEST_UM_SLIRP_PARMS="slirp,,`which slirp`"
+TEST_UM_VECTOR_TAP_PARMS="transport=tap,ifname=${TEST_TAP_IFNAME}0"
 
 # $1 - count
 # $2 - netcount

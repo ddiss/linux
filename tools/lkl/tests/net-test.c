@@ -23,6 +23,7 @@
 enum {
 	BACKEND_NONE,
 	BACKEND_UM,
+	BACKEND_UM_VECTOR_TAP,
 	BACKEND_TAP,
 	BACKEND_MACVTAP,
 	BACKEND_RAW,
@@ -30,8 +31,8 @@ enum {
 	BACKEND_PIPE,
 };
 
-const char *backends[] = { "loopback", "um", "tap", "macvtap", "raw", "dpdk",
-			   "pipe", NULL };
+const char *backends[] = { "loopback", "um", "um-vector-tap", "tap", "macvtap",
+			   "raw", "dpdk", "pipe", NULL };
 static struct {
 	int backend;
 	const char *ifname;
@@ -179,6 +180,7 @@ static int lkl_test_nd_create(void)
 	case BACKEND_NONE:
 		return TEST_SKIP;
 	case BACKEND_UM:
+	case BACKEND_UM_VECTOR_TAP:
 		nd = lkl_um_netdev_create(cla.ifname);
 		nd_id = nd->id;
 		break;
@@ -209,7 +211,8 @@ static int lkl_test_nd_create(void)
 
 static int lkl_test_nd_add(void)
 {
-	if (cla.backend == BACKEND_NONE || cla.backend == BACKEND_UM)
+	if (cla.backend == BACKEND_NONE || cla.backend == BACKEND_UM
+	    || cla.backend == BACKEND_UM_VECTOR_TAP)
 		return TEST_SKIP;
 
 	nd_id = lkl_netdev_add(nd, NULL);
@@ -224,7 +227,8 @@ static int lkl_test_nd_add(void)
 
 static int lkl_test_nd_remove(void)
 {
-	if (cla.backend == BACKEND_NONE || cla.backend == BACKEND_UM)
+	if (cla.backend == BACKEND_NONE || cla.backend == BACKEND_UM
+	    || cla.backend == BACKEND_UM_VECTOR_TAP)
 		return TEST_SKIP;
 
 	lkl_netdev_remove(nd_id);

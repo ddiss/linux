@@ -11,6 +11,13 @@ cleanup_backend()
     set -e
 
     case "$1" in
+    "um-vector-tap")
+	# only intel arch is capable with um-net backent
+	if [ -z "$LKL_HOST_CONFIG_UML_DEV" ]; then
+            return $TEST_SKIP
+	fi
+        tap_cleanup
+        ;;
     "tap")
         tap_cleanup
         ;;
@@ -69,6 +76,20 @@ setup_backend()
 	if [ -n "$VALGRIND" ]; then
             return $TEST_SKIP
 	fi
+        ;;
+    "um-vector-tap")
+	# only intel arch is capable with um-net backent
+	if [ -z "$LKL_HOST_CONFIG_UML_DEV" ]; then
+            return $TEST_SKIP
+	fi
+        tap_prepare
+        if ! lkl_test_cmd test -c /dev/net/tun; then
+            if [ -z "$LKL_HOST_CONFIG_BSD" ]; then
+                echo "missing /dev/net/tun"
+                return $TEST_SKIP
+            fi
+        fi
+        tap_setup
         ;;
     "pipe")
         if [ -z $(lkl_test_cmd which mkfifo) ]; then
@@ -136,6 +157,12 @@ run_tests()
                       --ifname $TEST_UM_SLIRP_PARMS \
                       --ip 10.0.2.15 --netmask-len 8 \
                       --dst 10.0.2.2
+        ;;
+    "um-vector-tap")
+        lkl_test_exec $script_dir/net-test --backend um-vector-tap \
+                      --ifname $TEST_UM_VECTOR_TAP_PARMS \
+                      --ip $(ip_lkl) --netmask-len $TEST_IP_NETMASK \
+                      --dst $(ip_host)
         ;;
     "pipe")
         VALGRIND="" lkl_test_exec $script_dir/net-test --backend pipe \

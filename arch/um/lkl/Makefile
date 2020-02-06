@@ -4,8 +4,6 @@ include $(LKL_DIR)/auto.conf
 
 # fixup CFLAGS of um build
 KBUILD_CFLAGS := $(subst $(CFLAGS),,$(KBUILD_CFLAGS))
-# XXX
-KBUILD_CFLAGS	+= -DTIMER_IRQ=0 -DUBD_IRQ=4 -DUM_ETH_IRQ=5 -DLAST_IRQ=15
 
 SRCARCH := um/lkl
 ARCH_INCLUDE += -I$(srctree)/$(LKL_DIR)/um/include

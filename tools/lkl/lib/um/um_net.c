@@ -18,8 +18,13 @@ struct lkl_netdev *lkl_um_netdev_create(const char *ifparams)
 
 	nd->id = registered_net_dev_idx++;
 	/* concat strings */
-	snprintf(lkl_um_devs + strlen(lkl_um_devs), sizeof(lkl_um_devs),
-		 " eth%d=%s", nd->id, ifparams);
+	/* XXX: better vector device detection ? */
+	if (strncmp(ifparams, "trans", 5) == 0)
+		snprintf(lkl_um_devs + strlen(lkl_um_devs), sizeof(lkl_um_devs),
+			 "vec%d:%s", nd->id, ifparams);
+	else
+		snprintf(lkl_um_devs + strlen(lkl_um_devs), sizeof(lkl_um_devs),
+			 "eth%d=%s", nd->id, ifparams);
 
 	return nd;
 }

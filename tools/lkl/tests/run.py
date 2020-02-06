@@ -55,6 +55,7 @@ tests = [
     'disk.sh -t btrfs',
     'net.sh -b loopback',
     'net.sh -b um',
+    'net.sh -b um-vector-tap',
     'net.sh -b tap',
     'net.sh -b pipe',
     'net.sh -b raw',
