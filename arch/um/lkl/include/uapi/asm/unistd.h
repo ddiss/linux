@@ -1,7 +1,4 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
-#define __ARCH_WANT_SYSCALL_NO_AT
-#define __ARCH_WANT_SYSCALL_DEPRECATED
-#define __ARCH_WANT_SYSCALL_NO_FLAGS
 #define __ARCH_WANT_RENAMEAT
 #define __ARCH_WANT_NEW_STAT
 #define __ARCH_WANT_SET_GET_RLIMIT
