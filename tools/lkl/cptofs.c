@@ -416,7 +416,7 @@ static int do_entry(const char *_src, const char *_dst, const char *name)
 		if (cptofs) {
 			struct lkl_timespec lkl_ts[] = { atime, mtime };
 
-			ret = lkl_sys_utimensat(-1, dst,
+			ret = lkl_sys_utimensat(LKL_AT_FDCWD, dst,
 						(struct __lkl__kernel_timespec
 						 *)lkl_ts,
 						LKL_AT_SYMLINK_NOFOLLOW);
@@ -428,7 +428,7 @@ static int do_entry(const char *_src, const char *_dst, const char *name)
 				  .tv_nsec = mtime.tv_nsec, },
 			};
 
-			ret = utimensat(-1, dst, ts, AT_SYMLINK_NOFOLLOW);
+			ret = utimensat(AT_FDCWD, dst, ts, AT_SYMLINK_NOFOLLOW);
 		}
 	}
 
