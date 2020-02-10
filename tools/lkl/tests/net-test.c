@@ -99,6 +99,8 @@ static int lkl_test_sleep(void)
 	return TEST_SUCCESS;
 }
 
+extern void dbg_entrance(void);
+
 static int lkl_test_icmp(void)
 {
 	int sock, ret;
@@ -167,6 +169,9 @@ static int lkl_test_icmp(void)
 			      icmp->type, icmp->code);
 		return TEST_FAILURE;
 	}
+
+	lkl_test_logf("dropping into dbg shell\n");
+	dbg_entrance();
 
 	return TEST_SUCCESS;
 }
