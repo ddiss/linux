@@ -9,6 +9,10 @@
 #define __BITS_PER_LONG 32
 #endif
 
+#ifndef __BITS_PER_LONG_LONG
+#define __BITS_PER_LONG_LONG 64
+#endif
+
 #define __ARCH_WANT_STAT64
 
 #endif /* _ASM_UAPI_LKL_BITSPERLONG_H */

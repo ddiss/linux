@@ -22,3 +22,10 @@
    adding-syscalls
    researcher-guidelines
    contribution-maturity-model
+   security-bugs
+   embargoed-hardware-issues
+   handling-regressions
+   management-style
+   submit-checklist
+   howto
+   development-process

@@ -178,10 +178,6 @@ struct stream_encoder_funcs {
 	void (*stop_dp_info_packets)(
 		struct stream_encoder *enc);
 
-	void (*reset_fifo)(
-		struct stream_encoder *enc
-	);
-
 	void (*dp_blank)(
 		struct dc_link *link,
 		struct stream_encoder *enc);
@@ -225,6 +221,11 @@ struct stream_encoder_funcs {
 	void (*dig_connect_to_otg)(
 		struct stream_encoder *enc,
 		int tg_inst);
+
+	void (*dig_stream_enable)(
+		struct stream_encoder *enc,
+		enum signal_type signal,
+		bool enable);
 
 	void (*hdmi_reset_stream_attribute)(
 		struct stream_encoder *enc);

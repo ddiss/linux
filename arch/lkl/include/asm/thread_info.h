@@ -1,7 +1,8 @@
 #ifndef _ASM_LKL_THREAD_INFO_H
 #define _ASM_LKL_THREAD_INFO_H
 
-#define THREAD_SIZE	       (4096)
+#define THREAD_SIZE_ORDER	0
+#define THREAD_SIZE		(4096 << THREAD_SIZE_ORDER)
 
 #ifndef __ASSEMBLY__
 #include <asm/types.h>

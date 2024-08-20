@@ -282,7 +282,7 @@ static const struct regmap_config msm8998_bwmon_regmap_cfg = {
 	 * Cache is necessary for using regmap fields with non-readable
 	 * registers.
 	 */
-	.cache_type		= REGCACHE_RBTREE,
+	.cache_type		= REGCACHE_MAPLE,
 };
 
 static const struct regmap_config msm8998_bwmon_global_regmap_cfg = {
@@ -301,7 +301,7 @@ static const struct regmap_config msm8998_bwmon_global_regmap_cfg = {
 	 * Cache is necessary for using regmap fields with non-readable
 	 * registers.
 	 */
-	.cache_type		= REGCACHE_RBTREE,
+	.cache_type		= REGCACHE_MAPLE,
 };
 
 static const struct reg_field sdm845_cpu_bwmon_reg_fields[] = {
@@ -369,7 +369,7 @@ static const struct regmap_config sdm845_cpu_bwmon_regmap_cfg = {
 	 * Cache is necessary for using regmap fields with non-readable
 	 * registers.
 	 */
-	.cache_type		= REGCACHE_RBTREE,
+	.cache_type		= REGCACHE_MAPLE,
 };
 
 /* BWMON v5 */
@@ -446,7 +446,7 @@ static const struct regmap_config sdm845_llcc_bwmon_regmap_cfg = {
 	 * Cache is necessary for using regmap fields with non-readable
 	 * registers.
 	 */
-	.cache_type		= REGCACHE_RBTREE,
+	.cache_type		= REGCACHE_MAPLE,
 };
 
 static void bwmon_clear_counters(struct icc_bwmon *bwmon, bool clear_all)
@@ -793,13 +793,11 @@ static int bwmon_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int bwmon_remove(struct platform_device *pdev)
+static void bwmon_remove(struct platform_device *pdev)
 {
 	struct icc_bwmon *bwmon = platform_get_drvdata(pdev);
 
 	bwmon_disable(bwmon);
-
-	return 0;
 }
 
 static const struct icc_bwmon_data msm8998_bwmon_data = {
@@ -862,7 +860,7 @@ MODULE_DEVICE_TABLE(of, bwmon_of_match);
 
 static struct platform_driver bwmon_driver = {
 	.probe = bwmon_probe,
-	.remove = bwmon_remove,
+	.remove_new = bwmon_remove,
 	.driver = {
 		.name = "qcom-bwmon",
 		.of_match_table = bwmon_of_match,

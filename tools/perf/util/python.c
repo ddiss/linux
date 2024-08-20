@@ -98,9 +98,19 @@ struct perf_pmu *evsel__find_pmu(const struct evsel *evsel __maybe_unused)
 	return NULL;
 }
 
-int perf_pmu__scan_file(struct perf_pmu *pmu, const char *name, const char *fmt, ...)
+int perf_pmu__scan_file(const struct perf_pmu *pmu, const char *name, const char *fmt, ...)
 {
 	return EOF;
+}
+
+const char *perf_pmu__name_from_config(struct perf_pmu *pmu __maybe_unused, u64 config __maybe_unused)
+{
+	return NULL;
+}
+
+struct perf_pmu *perf_pmus__find_by_type(unsigned int type __maybe_unused)
+{
+	return NULL;
 }
 
 int perf_pmus__num_core_pmus(void)
@@ -181,6 +191,7 @@ int perf_bpf_filter__destroy(struct evsel *evsel __maybe_unused)
  * implementing 'verbose' and 'eprintf'.
  */
 int verbose;
+int debug_kmaps;
 int debug_peo_args;
 
 int eprintf(int level, int var, const char *fmt, ...);

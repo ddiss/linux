@@ -363,7 +363,7 @@ static int yellow_carp_get_smu_metrics_data(struct smu_context *smu,
 		*value = metrics->GfxActivity / 100;
 		break;
 	case METRICS_AVERAGE_VCNACTIVITY:
-		*value = metrics->UvdActivity;
+		*value = metrics->UvdActivity / 100;
 		break;
 	case METRICS_CURR_SOCKETPOWER:
 		*value = (metrics->CurrentSocketPower << 8) / 1000;
@@ -421,6 +421,12 @@ static int yellow_carp_read_sensor(struct smu_context *smu,
 		ret = yellow_carp_get_smu_metrics_data(smu,
 								METRICS_AVERAGE_GFXACTIVITY,
 								(uint32_t *)data);
+		*size = 4;
+		break;
+	case AMDGPU_PP_SENSOR_VCN_LOAD:
+		ret = yellow_carp_get_smu_metrics_data(smu,
+							METRICS_AVERAGE_VCNACTIVITY,
+							(uint32_t *)data);
 		*size = 4;
 		break;
 	case AMDGPU_PP_SENSOR_GPU_INPUT_POWER:
@@ -1024,24 +1030,24 @@ static uint32_t yellow_carp_get_umd_pstate_clk_default(struct smu_context *smu,
 	switch (clk_type) {
 	case SMU_GFXCLK:
 	case SMU_SCLK:
-		if ((adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 8))
+		if ((amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 8))
 			clk_limit = SMU_13_0_8_UMD_PSTATE_GFXCLK;
-		if ((adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 1) ||
-			(adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 3))
+		if ((amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 1) ||
+			(amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 3))
 			clk_limit = SMU_13_0_1_UMD_PSTATE_GFXCLK;
 		break;
 	case SMU_SOCCLK:
-		if ((adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 8))
+		if ((amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 8))
 			clk_limit = SMU_13_0_8_UMD_PSTATE_SOCCLK;
-		if ((adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 1) ||
-			(adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 3))
+		if ((amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 1) ||
+			(amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 3))
 			clk_limit = SMU_13_0_1_UMD_PSTATE_SOCCLK;
 		break;
 	case SMU_FCLK:
-		if ((adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 8))
+		if ((amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 8))
 			clk_limit = SMU_13_0_8_UMD_PSTATE_FCLK;
-		if ((adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 1) ||
-			(adev->ip_versions[MP1_HWIP][0]) == IP_VERSION(13, 0, 3))
+		if ((amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 1) ||
+			(amdgpu_ip_version(adev, MP1_HWIP, 0)) == IP_VERSION(13, 0, 3))
 			clk_limit = SMU_13_0_1_UMD_PSTATE_FCLK;
 		break;
 	default:
