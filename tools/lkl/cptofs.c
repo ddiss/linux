@@ -33,6 +33,9 @@ static struct argp_option options[] = {
 	{"selinux", 's', "string", 0, "selinux attribute for LKL destinations"},
 	{"mb", 'm', "int", 0,
 	 "amount of memory to allocate in MB (default: 100)"},
+	/* image ro is separate to mount flags. cpfromfs sets LKL_MS_RDONLY */
+	{"ro", 'r', 0, 0,
+	 "open image read-only; may cause failures due to e.g. XFS log replay"},
 	{0},
 };
 
@@ -47,6 +50,7 @@ static struct cl_args {
 	uid_t owner;
 	gid_t group;
 	int mb;
+	int ro;
 } cla;
 
 static int cptofs;
@@ -83,6 +87,9 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
 		break;
 	case 'm':
 		cla->mb = atoi(arg);
+		break;
+	case 'r':
+		cla->ro = 1;
 		break;
 	case ARGP_KEY_ARG:
 		// Capture all remaining arguments in our paths array and stop
@@ -658,7 +665,7 @@ int copy_one(const char *src, const char *mpoint, const char *dst, uid_t owner, 
 
 int main(int argc, char **argv)
 {
-	struct lkl_disk disk;
+	struct lkl_disk disk = {};
 	long ret, umount_ret;
 	int i;
 	char mpoint[32];
@@ -681,7 +688,7 @@ int main(int argc, char **argv)
 	if (!cla.printk)
 		lkl_host_ops.print = NULL;
 
-	disk.fd = open(cla.fsimg_path, cptofs ? O_RDWR : O_RDONLY);
+	disk.fd = open(cla.fsimg_path, cla.ro ? O_RDONLY : O_RDWR);
 	if (disk.fd < 0) {
 		fprintf(stderr, "can't open fsimg %s: %s\n", cla.fsimg_path,
 			strerror(errno));
