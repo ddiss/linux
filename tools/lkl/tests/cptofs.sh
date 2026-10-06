@@ -16,6 +16,7 @@ cptofs_file()
 {
     set -e
 
+    local ret=$TEST_FAILURE
     local tdir="$(lkl_test_cmd mktemp -d)"
     local cptofs=("${script_dir}/../cptofs" -p -t "$fstype" -i "$file")
     local cpfromfs=("${tdir}/cpfromfs" -p -t "$fstype" -i "$file")
@@ -26,7 +27,12 @@ cptofs_file()
     lkl_test_cmd "${cptofs[@]}" "${tdir}/data" /
     lkl_test_cmd "${cpfromfs[@]}" /data "${tdir}/round-trip/"
     lkl_test_cmd diff "${tdir}/data" "${tdir}/round-trip/data"
+
+    set +e
+    lkl_test_cmd echo "read-only should cause cptofs failure" > ${tdir}/new
+    lkl_test_cmd "${cptofs[@]}" "-ro" "${tdir}/new" / || ret=$TEST_SUCCESS
     lkl_test_cmd rm -rf "$tdir"
+    return $ret
 }
 
 cptofs_tree()
