@@ -704,7 +704,7 @@ int main(int argc, char **argv)
 		goto out_close;
 	}
 
-	ret = lkl_disk_add(&disk);
+	ret = lkl_disk_add_feature(&disk, cla.ro ? 1<<LKL_VIRTIO_BLK_F_RO : 0);
 	if (ret < 0) {
 		fprintf(stderr, "can't add disk: %s\n", lkl_strerror(ret));
 		goto out_lkl_cleanup;
