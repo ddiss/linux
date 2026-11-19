@@ -54,8 +54,7 @@ jobs:
           # XXX should come with modules_install but doesn't... perhaps due to no modules?
           objtree=./ INSTALL_MOD_PATH=./mods ./scripts/depmod.sh \
             "$(cat include/config/kernel.release)"
-          git clone --depth 1 -b master \
-            https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git \
+          git clone --depth 1 -b master https://github.com/btrfs/fstests \
             ${HOME}/xfstests
           pushd ${HOME}/xfstests
           make -j$(nproc)
