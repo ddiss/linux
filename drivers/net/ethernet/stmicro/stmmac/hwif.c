@@ -57,11 +57,11 @@ static void stmmac_dwmac_mode_quirk(struct stmmac_priv *priv)
 
 	if (priv->chain_mode) {
 		dev_info(priv->device, "Chain mode enabled\n");
-		priv->mode = STMMAC_CHAIN_MODE;
+		priv->descriptor_mode = STMMAC_CHAIN_MODE;
 		mac->mode = &chain_mode_ops;
 	} else {
 		dev_info(priv->device, "Ring mode enabled\n");
-		priv->mode = STMMAC_RING_MODE;
+		priv->descriptor_mode = STMMAC_RING_MODE;
 		mac->mode = &ring_mode_ops;
 	}
 }
@@ -76,7 +76,7 @@ static int stmmac_dwmac1_quirks(struct stmmac_priv *priv)
 		/* GMAC older than 3.50 has no extended descriptors */
 		if (priv->synopsys_id >= DWMAC_CORE_3_50) {
 			dev_info(priv->device, "Enabled extended descriptors\n");
-			priv->extend_desc = 1;
+			priv->extend_desc = true;
 		} else {
 			dev_warn(priv->device, "Extended descriptors not supported\n");
 		}
@@ -94,12 +94,6 @@ static int stmmac_dwmac1_quirks(struct stmmac_priv *priv)
 static int stmmac_dwmac4_quirks(struct stmmac_priv *priv)
 {
 	stmmac_dwmac_mode_quirk(priv);
-	return 0;
-}
-
-static int stmmac_dwxlgmac_quirks(struct stmmac_priv *priv)
-{
-	priv->hw->xlgmac = true;
 	return 0;
 }
 
@@ -293,7 +287,6 @@ static const struct stmmac_hwif_entry {
 		.mmc = &dwxgmac_mmc_ops,
 		.est = &dwmac510_est_ops,
 		.setup = dwxlgmac2_setup,
-		.quirks = stmmac_dwxlgmac_quirks,
 	},
 };
 
@@ -335,19 +328,7 @@ int stmmac_hwif_init(struct stmmac_priv *priv)
 	/* Save ID for later use */
 	priv->synopsys_id = version.snpsver;
 
-	/* Lets assume some safe values first */
-	if (core_type == DWMAC_CORE_GMAC4) {
-		priv->ptpaddr = priv->ioaddr + PTP_GMAC4_OFFSET;
-		priv->mmcaddr = priv->ioaddr + MMC_GMAC4_OFFSET;
-		priv->estaddr = priv->ioaddr + EST_GMAC4_OFFSET;
-	} else {
-		priv->ptpaddr = priv->ioaddr + PTP_GMAC3_X_OFFSET;
-		priv->mmcaddr = priv->ioaddr + MMC_GMAC3_X_OFFSET;
-		if (core_type == DWMAC_CORE_XGMAC)
-			priv->estaddr = priv->ioaddr + EST_XGMAC_OFFSET;
-	}
-
-	mac = devm_kzalloc(priv->device, sizeof(*mac), GFP_KERNEL);
+	mac = devm_kzalloc_obj(priv->device, *mac);
 	if (!mac)
 		return -ENOMEM;
 

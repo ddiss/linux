@@ -421,6 +421,20 @@ static inline void hda_dsp_sdw_process_mic_privacy(struct snd_sof_dev *sdev) { }
 /* pre fw run operations */
 int hda_dsp_pre_fw_run(struct snd_sof_dev *sdev)
 {
+	struct sof_intel_hda_dev *hda = sdev->pdata->hw_pdata;
+	const struct sof_intel_dsp_desc *chip = hda->desc;
+	int ret;
+
+	/* Power down DSP if left enabled to ensure a clean boot state. */
+	if (hda_dsp_core_is_enabled(sdev, chip->host_managed_cores_mask)) {
+		dev_dbg(sdev->dev, "DSP core enabled, power down DSP first\n");
+
+		ret = chip->power_down_dsp(sdev);
+		if (ret < 0)
+			dev_warn(sdev->dev,
+				 "%s: failed to power down already-enabled DSP\n", __func__);
+	}
+
 	/* disable clock gating and power gating */
 	return hda_dsp_ctrl_clock_power_gating(sdev, false);
 }
@@ -625,8 +639,6 @@ static int hda_init_caps(struct snd_sof_dev *sdev)
 		return ret;
 	}
 
-	hda_bus_ml_init(bus);
-
 	/* Skip SoundWire if it is not supported */
 	if (!(interface_mask & BIT(SOF_DAI_INTEL_ALH)))
 		goto skip_soundwire;
@@ -669,8 +681,6 @@ skip_soundwire:
 
 	if (!HDA_IDISP_CODEC(bus->codec_mask))
 		hda_codec_i915_display_power(sdev, false);
-
-	hda_bus_ml_put_all(bus);
 
 	return 0;
 }
@@ -778,7 +788,7 @@ int hda_dsp_probe_early(struct snd_sof_dev *sdev)
 
 	sdev->num_cores = chip->cores_num;
 
-	hdev = devm_kzalloc(sdev->dev, sizeof(*hdev), GFP_KERNEL);
+	hdev = devm_kzalloc_obj(sdev->dev, *hdev);
 	if (!hdev)
 		return -ENOMEM;
 	sdev->pdata->hw_pdata = hdev;
@@ -929,6 +939,7 @@ disable_pp_cap:
 		hda_dsp_ctrl_ppcap_enable(sdev, false);
 	}
 free_ipc_irq:
+	hda_dsp_ctrl_stop_chip(sdev);
 	free_irq(sdev->ipc_irq, sdev);
 free_irq_vector:
 	if (sdev->msi_enabled)
@@ -996,6 +1007,9 @@ void hda_dsp_remove(struct snd_sof_dev *sdev)
 		snd_dma_free_pages(&hda->iccmax_dmab);
 
 skip_disable_dsp:
+	/* stop CORB/RIRB and position buffer DMA before the buffers are freed */
+	hda_dsp_ctrl_stop_chip(sdev);
+
 	free_irq(sdev->ipc_irq, sdev);
 	if (sdev->msi_enabled)
 		pci_free_irq_vectors(pci);
@@ -1133,8 +1147,7 @@ static void hda_generic_machine_select(struct snd_sof_dev *sdev,
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_INTEL_SOUNDWIRE)
 
-static bool is_endpoint_present(struct sdw_slave *sdw_device,
-				struct asoc_sdw_codec_info *dai_info, int dai_type)
+static bool is_endpoint_present(struct sdw_slave *sdw_device, int dai_type)
 {
 	int i;
 
@@ -1145,7 +1158,7 @@ static bool is_endpoint_present(struct sdw_slave *sdw_device,
 	}
 
 	for (i = 0; i < sdw_device->sdca_data.num_functions; i++) {
-		if (dai_type == dai_info->dais[i].dai_type)
+		if (dai_type == asoc_sdw_get_dai_type(sdw_device->sdca_data.function[i].type))
 			return true;
 	}
 	dev_dbg(&sdw_device->dev, "Endpoint DAI type %d not found\n", dai_type);
@@ -1160,14 +1173,13 @@ static struct snd_soc_acpi_adr_device *find_acpi_adr_device(struct device *dev,
 	struct snd_soc_acpi_adr_device *adr_dev;
 	const char *name_prefix = "";
 	int index = link->num_adr;
-	bool is_amp = true; /* Set it to false if the codec wiah any NON-AMP DAI type */
 	int ep_index = 0;
 	int i, j;
 
 	link->mask = BIT(sdw_device->bus->link_id);
 	/* index is 0 based, we need allocate index + 1 for the array size */
 	if (!index)
-		adr_dev = devm_kzalloc(dev, sizeof(*adr_dev), GFP_KERNEL);
+		adr_dev = devm_kzalloc_obj(dev, *adr_dev);
 	else
 		adr_dev = devm_krealloc(dev, (struct snd_soc_acpi_adr_device *)link->adr_d,
 					(index + 1) * sizeof(*adr_dev), GFP_KERNEL);
@@ -1179,11 +1191,14 @@ static struct snd_soc_acpi_adr_device *find_acpi_adr_device(struct device *dev,
 		struct snd_soc_acpi_endpoint *endpoints;
 		int amp_group_id = 1;
 
+		if (sdw_device->id.mfg_id != codec_info_list[i].vendor_id)
+			continue;
+
 		if (sdw_device->id.part_id != codec_info_list[i].part_id)
 			continue;
 
-		endpoints = devm_kcalloc(dev, codec_info_list[i].dai_num,
-					 sizeof(struct snd_soc_acpi_endpoint), GFP_KERNEL);
+		endpoints = devm_kzalloc_objs(dev, struct snd_soc_acpi_endpoint,
+					      codec_info_list[i].dai_num);
 		if (!endpoints)
 			return NULL;
 
@@ -1193,17 +1208,16 @@ static struct snd_soc_acpi_adr_device *find_acpi_adr_device(struct device *dev,
 		 * dereference
 		 */
 		if (!name_prefix) {
-			dev_err(dev, "codec_info_list name_prefix of part id %#x is missing\n",
-				codec_info_list[i].part_id);
+			dev_err(dev, "codec_info_list name_prefix of part id %#x-%#x is missing\n",
+				codec_info_list[i].vendor_id, codec_info_list[i].part_id);
 			return NULL;
 		}
 		for (j = 0; j < codec_info_list[i].dai_num; j++) {
 			/* Check if the endpoint is present by the SDCA DisCo table */
-			if (!is_endpoint_present(sdw_device, &codec_info_list[i],
-						 codec_info_list[i].dais[j].dai_type))
+			if (!is_endpoint_present(sdw_device, codec_info_list[i].dais[j].dai_type))
 				continue;
 
-			endpoints[ep_index].num = ep_index;
+			endpoints[ep_index].num = j;
 			if (codec_info_list[i].dais[j].dai_type == SOC_SDW_DAI_TYPE_AMP) {
 				/* Assume all amp are aggregated */
 				endpoints[ep_index].aggregated = 1;
@@ -1215,7 +1229,6 @@ static struct snd_soc_acpi_adr_device *find_acpi_adr_device(struct device *dev,
 				endpoints[ep_index].aggregated = 0;
 				endpoints[ep_index].group_id = 0;
 				endpoints[ep_index].group_position = 0;
-				is_amp = false;
 			}
 			ep_index++;
 		}
@@ -1236,7 +1249,7 @@ static struct snd_soc_acpi_adr_device *find_acpi_adr_device(struct device *dev,
 			((u64)(sdw_device->id.sdw_version & 0xF) << 44) |
 			((u64)(sdw_device->bus->link_id & 0xF) << 48);
 
-	if (!is_amp) {
+	if (!codec_info_list[i].is_amp) {
 		/* For non-amp codecs, get name_prefix from codec_info_list[] */
 		adr_dev[index].name_prefix = devm_kasprintf(dev, GFP_KERNEL, "%s", name_prefix);
 		goto done_name_prefix;
@@ -1392,7 +1405,7 @@ static struct snd_soc_acpi_mach *hda_sdw_machine_select(struct snd_sof_dev *sdev
 		return NULL;
 
 	/* Create default SDW mach */
-	mach = devm_kzalloc(sdev->dev, sizeof(*mach), GFP_KERNEL);
+	mach = devm_kzalloc_obj(sdev->dev, *mach);
 	if (!mach)
 		return NULL;
 
@@ -1401,7 +1414,8 @@ static struct snd_soc_acpi_mach *hda_sdw_machine_select(struct snd_sof_dev *sdev
 		link_mask |= BIT(peripherals->array[i]->bus->link_id);
 
 	link_num = hweight32(link_mask);
-	links = devm_kcalloc(sdev->dev, link_num, sizeof(*links), GFP_KERNEL);
+	/* An empty adr_link is needed to terminate the adr_link loop */
+	links = devm_kzalloc_objs(sdev->dev, *links, link_num + 1);
 	if (!links)
 		return NULL;
 

@@ -109,7 +109,7 @@ static struct psp_device *psp_alloc_struct(struct sp_device *sp)
 	struct device *dev = sp->dev;
 	struct psp_device *psp;
 
-	psp = devm_kzalloc(dev, sizeof(*psp), GFP_KERNEL);
+	psp = devm_kzalloc_obj(dev, *psp);
 	if (!psp)
 		return NULL;
 
@@ -316,15 +316,15 @@ void psp_dev_destroy(struct sp_device *sp)
 	if (!psp)
 		return;
 
-	sev_dev_destroy(psp);
-
-	tee_dev_destroy(psp);
-
-	sfs_dev_destroy(psp);
-
 	dbc_dev_destroy(psp);
 
 	platform_access_dev_destroy(psp);
+
+	sfs_dev_destroy(psp);
+
+	tee_dev_destroy(psp);
+
+	sev_dev_destroy(psp);
 
 	sp_free_psp_irq(sp, psp);
 

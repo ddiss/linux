@@ -53,7 +53,7 @@ struct usbc_sc8280x_tbt_data {
 	/* This field is NOP on USB4, all cables support rounded rates by spec */
 	u8 rounded_cable : 1;
 	u8 power_limited : 1;
-	u8 res[11];
+	u8 res[7];
 };
 
 struct usbc_notify {
@@ -62,6 +62,9 @@ struct usbc_notify {
 	u8 orientation;
 	u8 mux_ctrl;
 #define MUX_CTRL_STATE_NO_CONN			0
+#define MUX_CTRL_STATE_USB3_ONLY		1
+#define MUX_CTRL_STATE_DP4LN			2
+#define MUX_CTRL_STATE_USB3_DP			3
 #define MUX_CTRL_STATE_TUNNELING		4
 
 	u8 res;
@@ -71,6 +74,7 @@ struct usbc_notify {
 		struct usbc_sc8280x_dp_data dp;
 		struct usbc_sc8280x_tbt_data tbt;
 	} extended_data;
+	u32 reserved;
 };
 
 struct usbc_sc8180x_notify {
@@ -350,15 +354,20 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 
 	typec_switch_set(alt_port->typec_switch, alt_port->orientation);
 
-	if (alt_port->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
-		pmic_glink_altmode_safe(altmode, alt_port);
-	} else if (alt_port->svid == USB_TYPEC_TBT_SID) {
-		pmic_glink_altmode_enable_tbt(altmode, alt_port);
-	} else if (alt_port->svid == USB_TYPEC_DP_SID) {
-		pmic_glink_altmode_enable_dp(altmode, alt_port,
-					     alt_port->mode,
-					     alt_port->hpd_state,
-					     alt_port->hpd_irq);
+	/*
+	 * MUX_CTRL_STATE_DP4LN/USB3_DP may only be set if SVID=DP, but we need
+	 * to special-case the SVID=DP && mux_ctrl=NO_CONN case to deliver a
+	 * HPD notification
+	 */
+	if (alt_port->svid == USB_TYPEC_DP_SID) {
+		if (alt_port->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
+			pmic_glink_altmode_safe(altmode, alt_port);
+		} else {
+			pmic_glink_altmode_enable_dp(altmode, alt_port,
+						     alt_port->mode,
+						     alt_port->hpd_state,
+						     alt_port->hpd_irq);
+		}
 
 		if (alt_port->hpd_state)
 			conn_status = connector_status_connected;
@@ -367,9 +376,18 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 
 		drm_aux_hpd_bridge_notify(&alt_port->bridge->dev, conn_status);
 	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_TUNNELING) {
-		pmic_glink_altmode_enable_usb4(altmode, alt_port);
-	} else {
+		if (alt_port->svid == USB_TYPEC_TBT_SID)
+			pmic_glink_altmode_enable_tbt(altmode, alt_port);
+		else
+			pmic_glink_altmode_enable_usb4(altmode, alt_port);
+	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_USB3_ONLY) {
 		pmic_glink_altmode_enable_usb(altmode, alt_port);
+	} else if (alt_port->mux_ctrl == MUX_CTRL_STATE_NO_CONN) {
+		pmic_glink_altmode_safe(altmode, alt_port);
+	} else {
+		dev_err(altmode->dev, "Got unknown mux_ctrl: %u on port %u, forcing safe mode\n",
+			alt_port->mux_ctrl, alt_port->index);
+		pmic_glink_altmode_safe(altmode, alt_port);
 	}
 
 	pmic_glink_altmode_request(altmode, ALTMODE_PAN_ACK, alt_port->index);
@@ -433,7 +451,7 @@ static void pmic_glink_altmode_sc8180xp_notify(struct pmic_glink_altmode *altmod
 	alt_port->mode = mode;
 	alt_port->hpd_state = hpd_state;
 	alt_port->hpd_irq = hpd_irq;
-	schedule_work(&alt_port->work);
+	queue_work(system_freezable_wq, &alt_port->work);
 }
 
 #define SC8280XP_DPAM_MASK	0x3f
@@ -484,7 +502,7 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 		alt_port->tbt_data = *tbt;
 	}
 
-	schedule_work(&alt_port->work);
+	queue_work(system_freezable_wq, &alt_port->work);
 }
 
 static void pmic_glink_altmode_callback(const void *data, size_t len, void *priv)
@@ -559,7 +577,7 @@ static int pmic_glink_altmode_probe(struct auxiliary_device *adev,
 	u32 port;
 	int ret;
 
-	altmode = devm_kzalloc(dev, sizeof(*altmode), GFP_KERNEL);
+	altmode = devm_kzalloc_obj(dev, *altmode);
 	if (!altmode)
 		return -ENOMEM;
 

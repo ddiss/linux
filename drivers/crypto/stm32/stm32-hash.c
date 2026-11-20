@@ -792,19 +792,13 @@ static int stm32_hash_dma_send(struct stm32_hash_dev *hdev)
 
 static struct stm32_hash_dev *stm32_hash_find_dev(struct stm32_hash_ctx *ctx)
 {
-	struct stm32_hash_dev *hdev = NULL, *tmp;
+	struct stm32_hash_dev *hdev;
 
 	spin_lock_bh(&stm32_hash.lock);
-	if (!ctx->hdev) {
-		list_for_each_entry(tmp, &stm32_hash.dev_list, list) {
-			hdev = tmp;
-			break;
-		}
-		ctx->hdev = hdev;
-	} else {
-		hdev = ctx->hdev;
-	}
-
+	if (!ctx->hdev)
+		ctx->hdev = list_first_entry_or_null(&stm32_hash.dev_list,
+						     struct stm32_hash_dev, list);
+	hdev = ctx->hdev;
 	spin_unlock_bh(&stm32_hash.lock);
 
 	return hdev;
@@ -2338,7 +2332,7 @@ static int stm32_hash_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret, irq;
 
-	hdev = devm_kzalloc(dev, sizeof(*hdev), GFP_KERNEL);
+	hdev = devm_kzalloc_obj(dev, *hdev);
 	if (!hdev)
 		return -ENOMEM;
 
@@ -2362,10 +2356,8 @@ static int stm32_hash_probe(struct platform_device *pdev)
 						stm32_hash_irq_thread,
 						IRQF_ONESHOT,
 						dev_name(dev), hdev);
-		if (ret) {
-			dev_err(dev, "Cannot grab IRQ\n");
+		if (ret)
 			return ret;
-		}
 	} else {
 		dev_info(dev, "No IRQ, use polling mode\n");
 		hdev->polled = true;

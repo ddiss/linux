@@ -785,7 +785,7 @@ static int otx_cptvf_probe(struct pci_dev *pdev,
 	struct otx_cptvf *cptvf;
 	int err;
 
-	cptvf = devm_kzalloc(dev, sizeof(*cptvf), GFP_KERNEL);
+	cptvf = devm_kzalloc_obj(dev, *cptvf);
 	if (!cptvf)
 		return -ENOMEM;
 
@@ -957,9 +957,10 @@ static void otx_cptvf_remove(struct pci_dev *pdev)
 
 /* Supported devices */
 static const struct pci_device_id otx_cptvf_id_table[] = {
-	{PCI_VDEVICE(CAVIUM, OTX_CPT_PCI_VF_DEVICE_ID), 0},
-	{ 0, }  /* end of table */
+	{ PCI_VDEVICE(CAVIUM, OTX_CPT_PCI_VF_DEVICE_ID) },
+	{ }  /* end of table */
 };
+MODULE_DEVICE_TABLE(pci, otx_cptvf_id_table);
 
 static struct pci_driver otx_cptvf_pci_driver = {
 	.name = DRV_NAME,
@@ -974,4 +975,3 @@ MODULE_AUTHOR("Marvell International Ltd.");
 MODULE_DESCRIPTION("Marvell OcteonTX CPT Virtual Function Driver");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(DRV_VERSION);
-MODULE_DEVICE_TABLE(pci, otx_cptvf_id_table);

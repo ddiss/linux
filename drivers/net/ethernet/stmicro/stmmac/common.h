@@ -63,7 +63,7 @@ static inline bool dwmac_is_xmac(enum dwmac_core_type core_type)
 #define DMA_MIN_RX_SIZE		64
 #define DMA_MAX_RX_SIZE		1024
 #define DMA_DEFAULT_RX_SIZE	512
-#define STMMAC_GET_ENTRY(x, size)	((x + 1) & (size - 1))
+#define STMMAC_NEXT_ENTRY(x, size)	((x + 1) & (size - 1))
 
 #undef FRAME_FILTER_DEBUG
 /* #define FRAME_FILTER_DEBUG */
@@ -158,7 +158,6 @@ struct stmmac_extra_stats {
 	unsigned long fatal_bus_error_irq;
 	/* Tx/Rx IRQ Events */
 	unsigned long rx_early_irq;
-	unsigned long threshold;
 	unsigned long irq_receive_pmt_irq_n;
 	/* MMC info */
 	unsigned long mmc_tx_irq_n;
@@ -257,6 +256,7 @@ struct stmmac_safety_stats {
 	(sizeof(struct stmmac_safety_stats) / sizeof(unsigned long))
 
 /* CSR Frequency Access Defines*/
+#define CSR_F_20M	20000000
 #define CSR_F_35M	35000000
 #define CSR_F_60M	60000000
 #define CSR_F_100M	100000000
@@ -276,9 +276,6 @@ struct stmmac_safety_stats {
 #define FLOW_RX		1
 #define FLOW_TX		2
 #define FLOW_AUTO	(FLOW_TX | FLOW_RX)
-
-/* PCS defines */
-#define STMMAC_PCS_SGMII	(1 << 1)
 
 #define SF_DMA_MODE 1		/* DMA STORE-AND-FORWARD Operation Mode */
 
@@ -421,6 +418,8 @@ struct dma_features {
 	unsigned int half_duplex;
 	unsigned int hash_filter;
 	unsigned int multi_addr;
+	unsigned int additional_32_addr;
+	unsigned int additional_64_addr;
 	unsigned int pcs;
 	unsigned int sma_mdio;
 	unsigned int pmt_remote_wake_up;
@@ -445,8 +444,8 @@ struct dma_features {
 	unsigned int number_rx_channel;
 	unsigned int number_tx_channel;
 	/* TX and RX number of queues */
-	unsigned int number_rx_queues;
-	unsigned int number_tx_queues;
+	u8 number_rx_queues;
+	u8 number_tx_queues;
 	/* PPS output */
 	unsigned int pps_out_num;
 	/* Number of Traffic Classes */
@@ -607,12 +606,9 @@ struct mac_link {
 struct mii_regs {
 	unsigned int addr;	/* MII Address */
 	unsigned int data;	/* MII Data */
-	unsigned int addr_shift;	/* MII address shift */
-	unsigned int reg_shift;		/* MII reg shift */
-	unsigned int addr_mask;		/* MII address mask */
-	unsigned int reg_mask;		/* MII reg mask */
-	unsigned int clk_csr_shift;
-	unsigned int clk_csr_mask;
+	u32 addr_mask;		/* MII address mask */
+	u32 reg_mask;		/* MII reg mask */
+	u32 clk_csr_mask;
 };
 
 struct mac_device_info {
@@ -632,16 +628,17 @@ struct mac_device_info {
 	void __iomem *pcsr;     /* vpointer to device CSRs */
 	unsigned int multicast_filter_bins;
 	unsigned int unicast_filter_entries;
+	unsigned int multi_addr;
 	unsigned int mcast_bits_log2;
 	unsigned int rx_csum;
-	unsigned int pcs;
-	unsigned int xlgmac;
 	unsigned int num_vlan;
 	u32 vlan_filter[32];
 	bool vlan_fail_q_en;
 	u8 vlan_fail_q;
 	bool hw_vlan_en;
 	bool reverse_sgmii_enable;
+	bool additional_32_addr;
+	bool additional_64_addr;
 
 	/* This spinlock protects read-modify-write of the interrupt
 	 * mask/enable registers.

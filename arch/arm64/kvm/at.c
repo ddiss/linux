@@ -9,16 +9,7 @@
 #include <asm/esr.h>
 #include <asm/kvm_hyp.h>
 #include <asm/kvm_mmu.h>
-
-static void fail_s1_walk(struct s1_walk_result *wr, u8 fst, bool s1ptw)
-{
-	wr->fst		= fst;
-	wr->ptw		= s1ptw;
-	wr->s2		= s1ptw;
-	wr->failed	= true;
-}
-
-#define S1_MMU_DISABLED		(-127)
+#include <asm/lsui.h>
 
 static int get_ia_size(struct s1_walk_info *wi)
 {
@@ -135,18 +126,110 @@ static void compute_s1poe(struct kvm_vcpu *vcpu, struct s1_walk_info *wi)
 	wi->e0poe = (wi->regime != TR_EL2) && (val & TCR2_EL1_E0POE);
 }
 
+#define _has_tgran(__r, __sz)					\
+	({							\
+		u64 _s1, _mmfr0 = __r;				\
+								\
+		_s1 = SYS_FIELD_GET(ID_AA64MMFR0_EL1,		\
+				    TGRAN##__sz, _mmfr0);	\
+								\
+		_s1 != ID_AA64MMFR0_EL1_TGRAN##__sz##_NI;	\
+	})
+
+static bool has_tgran(u64 mmfr0, unsigned int shift)
+{
+	switch (shift) {
+	case 12:
+		return _has_tgran(mmfr0, 4);
+	case 14:
+		return _has_tgran(mmfr0, 16);
+	case 16:
+		return _has_tgran(mmfr0, 64);
+	default:
+		BUG();
+	}
+}
+
+static unsigned int tcr_to_tg0_pgshift(u64 tcr)
+{
+	u64 tg0 = tcr & TCR_TG0_MASK;
+
+	switch (tg0) {
+	case TCR_TG0_4K:
+		return 12;
+	case TCR_TG0_16K:
+		return 14;
+	case TCR_TG0_64K:
+	default:	/* IMPDEF: treat any other value as 64k */
+		return 16;
+	}
+}
+
+static unsigned int tcr_to_tg1_pgshift(u64 tcr)
+{
+	u64 tg1 = tcr & TCR_TG1_MASK;
+
+	switch (tg1) {
+	case TCR_TG1_4K:
+		return 12;
+	case TCR_TG1_16K:
+		return 14;
+	case TCR_TG1_64K:
+	default:	/* IMPDEF: treat any other value as 64k */
+		return 16;
+	}
+}
+
+static unsigned int fallback_tgran_shift(u64 mmfr0)
+{
+	if (has_tgran(mmfr0, PAGE_SHIFT))
+		return PAGE_SHIFT;
+	else if (has_tgran(mmfr0, 12))
+		return 12;
+	else if (has_tgran(mmfr0, 14))
+		return 14;
+	else if (has_tgran(mmfr0, 16))
+		return 16;
+	else			/* Should be unreacheable */
+		return PAGE_SHIFT;
+}
+
+static unsigned int tcr_tg_pgshift(struct kvm *kvm, u64 tcr, bool upper_range)
+{
+	u64 mmfr0 = kvm_read_vm_id_reg(kvm, SYS_ID_AA64MMFR0_EL1);
+	unsigned int shift;
+
+	/* Someone was silly enough to encode TG0/TG1 differently */
+	if (upper_range)
+		shift = tcr_to_tg1_pgshift(tcr);
+	else
+		shift = tcr_to_tg0_pgshift(tcr);
+
+	/*
+	 * If TGx is programmed to an unimplemented value (not advertised in
+	 * ID_AA64MMFR0_EL1), we should treat it as if an implemented value is
+	 * written, as per the architecture. Choose an available one while
+	 * prioritizing PAGE_SIZE.
+	 */
+	if (!has_tgran(mmfr0, shift))
+		return fallback_tgran_shift(mmfr0);
+
+	return shift;
+}
+
 static int setup_s1_walk(struct kvm_vcpu *vcpu, struct s1_walk_info *wi,
 			 struct s1_walk_result *wr, u64 va)
 {
-	u64 hcr, sctlr, tcr, tg, ps, ia_bits, ttbr;
+	u64 hcr, sctlr, tcr, ps, ia_bits, ttbr;
 	unsigned int stride, x;
-	bool va55, tbi, lva;
+	bool va55, tbi, lva, upper_range;
 
 	va55 = va & BIT(55);
+	upper_range = va55 && wi->regime != TR_EL2;
 
 	if (vcpu_has_nv(vcpu)) {
 		hcr = __vcpu_sys_reg(vcpu, HCR_EL2);
-		wi->s2 = wi->regime == TR_EL10 && (hcr & (HCR_VM | HCR_DC));
+		wi->s2 = wi->regime == TR_EL10 && (hcr & (HCR_EL2_VM | HCR_EL2_DC));
 	} else {
 		WARN_ON_ONCE(wi->regime != TR_EL10);
 		wi->s2 = false;
@@ -173,35 +256,12 @@ static int setup_s1_walk(struct kvm_vcpu *vcpu, struct s1_walk_info *wi,
 		BUG();
 	}
 
-	/* Someone was silly enough to encode TG0/TG1 differently */
-	if (va55 && wi->regime != TR_EL2) {
+	if (upper_range)
 		wi->txsz = FIELD_GET(TCR_T1SZ_MASK, tcr);
-		tg = FIELD_GET(TCR_TG1_MASK, tcr);
-
-		switch (tg << TCR_TG1_SHIFT) {
-		case TCR_TG1_4K:
-			wi->pgshift = 12;	 break;
-		case TCR_TG1_16K:
-			wi->pgshift = 14;	 break;
-		case TCR_TG1_64K:
-		default:	    /* IMPDEF: treat any other value as 64k */
-			wi->pgshift = 16;	 break;
-		}
-	} else {
+	else
 		wi->txsz = FIELD_GET(TCR_T0SZ_MASK, tcr);
-		tg = FIELD_GET(TCR_TG0_MASK, tcr);
 
-		switch (tg << TCR_TG0_SHIFT) {
-		case TCR_TG0_4K:
-			wi->pgshift = 12;	 break;
-		case TCR_TG0_16K:
-			wi->pgshift = 14;	 break;
-		case TCR_TG0_64K:
-		default:	    /* IMPDEF: treat any other value as 64k */
-			wi->pgshift = 16;	 break;
-		}
-	}
-
+	wi->pgshift = tcr_tg_pgshift(vcpu->kvm, tcr, upper_range);
 	wi->pa52bit = has_52bit_pa(vcpu, wi, tcr);
 
 	ia_bits = get_ia_size(wi);
@@ -245,7 +305,7 @@ static int setup_s1_walk(struct kvm_vcpu *vcpu, struct s1_walk_info *wi,
 		 * is EL1&0, then it means that either {E2H,TGE} == {1,0} or
 		 * {0,x}, and we only need to test for TGE == 1.
 		 */
-		if (hcr & (HCR_DC | HCR_TGE)) {
+		if (hcr & (HCR_EL2_DC | HCR_EL2_TGE)) {
 			wr->level = S1_MMU_DISABLED;
 			break;
 		}
@@ -422,6 +482,9 @@ static int walk_s1(struct kvm_vcpu *vcpu, struct s1_walk_info *wi,
 
 		if (wi->s2) {
 			ret = kvm_walk_nested_s2(vcpu, ipa, &s2_trans);
+			if (ret == -EAGAIN)
+				return ret;
+
 			if (ret) {
 				fail_s1_walk(wr,
 					     (s2_trans.esr & ~ESR_ELx_FSC_LEVEL) | level,
@@ -491,14 +554,17 @@ static int walk_s1(struct kvm_vcpu *vcpu, struct s1_walk_info *wi,
 	/* Block mapping, check the validity of the level */
 	if (!(desc & BIT(1))) {
 		bool valid_block = false;
+		bool lpa = kvm_has_feat_enum(vcpu->kvm, ID_AA64MMFR0_EL1, PARANGE, 52);
 
 		switch (BIT(wi->pgshift)) {
 		case SZ_4K:
 			valid_block = level == 1 || level == 2 || (wi->pa52bit && level == 0);
 			break;
 		case SZ_16K:
-		case SZ_64K:
 			valid_block = level == 2 || (wi->pa52bit && level == 1);
+			break;
+		case SZ_64K:
+			valid_block = level == 2 || (lpa && level == 1);
 			break;
 		}
 
@@ -520,8 +586,12 @@ static int walk_s1(struct kvm_vcpu *vcpu, struct s1_walk_info *wi,
 		}
 
 		ret = kvm_swap_s1_desc(vcpu, ipa, desc, new_desc, wi);
-		if (ret)
+		if (ret == -EAGAIN)
 			return ret;
+		if (ret) {
+			fail_s1_walk(wr, ESR_ELx_FSC_SEA_TTW(level), false);
+			return ret;
+		}
 
 		desc = new_desc;
 	}
@@ -540,31 +610,8 @@ static int walk_s1(struct kvm_vcpu *vcpu, struct s1_walk_info *wi,
 	wr->pa |= va & GENMASK_ULL(va_bottom - 1, 0);
 
 	wr->nG = (wi->regime != TR_EL2) && (desc & PTE_NG);
-	if (wr->nG) {
-		u64 asid_ttbr, tcr;
-
-		switch (wi->regime) {
-		case TR_EL10:
-			tcr = vcpu_read_sys_reg(vcpu, TCR_EL1);
-			asid_ttbr = ((tcr & TCR_A1) ?
-				     vcpu_read_sys_reg(vcpu, TTBR1_EL1) :
-				     vcpu_read_sys_reg(vcpu, TTBR0_EL1));
-			break;
-		case TR_EL20:
-			tcr = vcpu_read_sys_reg(vcpu, TCR_EL2);
-			asid_ttbr = ((tcr & TCR_A1) ?
-				     vcpu_read_sys_reg(vcpu, TTBR1_EL2) :
-				     vcpu_read_sys_reg(vcpu, TTBR0_EL2));
-			break;
-		default:
-			BUG();
-		}
-
-		wr->asid = FIELD_GET(TTBR_ASID_MASK, asid_ttbr);
-		if (!kvm_has_feat_enum(vcpu->kvm, ID_AA64MMFR0_EL1, ASIDBITS, 16) ||
-		    !(tcr & TCR_ASID16))
-			wr->asid &= GENMASK(7, 0);
-	}
+	if (wr->nG)
+		wr->asid = get_asid_by_regime(vcpu, wi->regime);
 
 	return 0;
 
@@ -823,7 +870,7 @@ static u64 compute_par_s12(struct kvm_vcpu *vcpu, u64 s1_par,
 	s1_parattr = FIELD_GET(SYS_PAR_EL1_ATTR, s1_par);
 	s2_memattr = FIELD_GET(GENMASK(5, 2), tr->desc);
 
-	if (__vcpu_sys_reg(vcpu, HCR_EL2) & HCR_FWB) {
+	if (__vcpu_sys_reg(vcpu, HCR_EL2) & HCR_EL2_FWB) {
 		if (!kvm_has_feat(vcpu->kvm, ID_AA64PFR2_EL1, MTEPERM, IMP))
 			s2_memattr &= ~BIT(3);
 
@@ -877,7 +924,7 @@ static u64 compute_par_s12(struct kvm_vcpu *vcpu, u64 s1_par,
 		}
 	}
 
-	if ((__vcpu_sys_reg(vcpu, HCR_EL2) & HCR_CD) &&
+	if ((__vcpu_sys_reg(vcpu, HCR_EL2) & HCR_EL2_CD) &&
 	    !MEMATTR_IS_DEVICE(final_attr))
 		final_attr = MEMATTR(NC, NC);
 
@@ -909,7 +956,7 @@ static u64 compute_par_s1(struct kvm_vcpu *vcpu, struct s1_walk_info *wi,
 		par |= wr->pa & SYS_PAR_EL1_PA;
 
 		if (wi->regime == TR_EL10 && vcpu_has_nv(vcpu) &&
-		    (__vcpu_sys_reg(vcpu, HCR_EL2) & HCR_DC)) {
+		    (__vcpu_sys_reg(vcpu, HCR_EL2) & HCR_EL2_DC)) {
 			par |= FIELD_PREP(SYS_PAR_EL1_ATTR,
 					  MEMATTR(WbRaWa, WbRaWa));
 			par |= FIELD_PREP(SYS_PAR_EL1_SH, ATTR_NSH);
@@ -1402,7 +1449,7 @@ static u64 __kvm_at_s1e01_fast(struct kvm_vcpu *vcpu, u32 op, u64 vaddr)
 		}
 	}
 	write_sysreg_el1(vcpu_read_sys_reg(vcpu, SCTLR_EL1),	SYS_SCTLR);
-	__load_stage2(mmu, mmu->arch);
+	__load_stage2(mmu);
 
 skip_mmu_switch:
 	/* Temporarily switch back to guest context */
@@ -1501,11 +1548,11 @@ int __kvm_at_s1e2(struct kvm_vcpu *vcpu, u32 op, u64 vaddr)
 		bool fail;
 
 		val = hcr = read_sysreg(hcr_el2);
-		val &= ~HCR_TGE;
-		val |= HCR_VM;
+		val &= ~HCR_EL2_TGE;
+		val |= HCR_EL2_VM;
 
 		if (!vcpu_el2_e2h_is_set(vcpu))
-			val |= HCR_NV | HCR_NV1;
+			val |= HCR_EL2_NV | HCR_EL2_NV1;
 
 		write_sysreg_hcr(val);
 		isb();
@@ -1526,8 +1573,6 @@ int __kvm_at_s1e2(struct kvm_vcpu *vcpu, u32 op, u64 vaddr)
 			WARN_ON_ONCE(1);
 			fail = true;
 		}
-
-		isb();
 
 		if (!fail)
 			par = read_sysreg_par();
@@ -1577,7 +1622,10 @@ int __kvm_at_s12(struct kvm_vcpu *vcpu, u32 op, u64 vaddr)
 		return 0;
 	}
 
-	__kvm_at_s1e01(vcpu, op, vaddr);
+	ret = __kvm_at_s1e01(vcpu, op, vaddr);
+	if (ret)
+		return ret;
+
 	par = vcpu_read_sys_reg(vcpu, PAR_EL1);
 	if (par & SYS_PAR_EL1_F)
 		return 0;
@@ -1587,13 +1635,14 @@ int __kvm_at_s12(struct kvm_vcpu *vcpu, u32 op, u64 vaddr)
 	 * early. Same thing if {VM,DC}=={0,0}.
 	 */
 	if (compute_translation_regime(vcpu, op) == TR_EL20 ||
-	    !(vcpu_read_sys_reg(vcpu, HCR_EL2) & (HCR_VM | HCR_DC)))
+	    !(vcpu_read_sys_reg(vcpu, HCR_EL2) & (HCR_EL2_VM | HCR_EL2_DC)))
 		return 0;
 
 	/* Do the stage-2 translation */
 	ipa = (par & GENMASK_ULL(47, 12)) | (vaddr & GENMASK_ULL(11, 0));
 	out.esr = 0;
-	ret = kvm_walk_nested_s2(vcpu, ipa, &out);
+	scoped_guard(srcu, &vcpu->kvm->srcu)
+		ret = kvm_walk_nested_s2(vcpu, ipa, &out);
 	if (ret < 0)
 		return ret;
 
@@ -1689,7 +1738,8 @@ int __kvm_find_s1_desc_level(struct kvm_vcpu *vcpu, u64 va, u64 ipa, int *level)
 	}
 
 	/* Walk the guest's PT, looking for a match along the way */
-	ret = walk_s1(vcpu, &wi, &wr, va);
+	scoped_guard(srcu, &vcpu->kvm->srcu)
+		ret = walk_s1(vcpu, &wi, &wr, va);
 	switch (ret) {
 	case -EINTR:
 		/* We interrupted the walk on a match, return the level */
@@ -1702,6 +1752,35 @@ int __kvm_find_s1_desc_level(struct kvm_vcpu *vcpu, u64 va, u64 ipa, int *level)
 		/* Any other error... */
 		return ret;
 	}
+}
+
+static int __lsui_swap_desc(u64 __user *ptep, u64 old, u64 new)
+{
+	u64 tmp = old;
+	int ret = 0;
+
+	/*
+	 * Wrap LSUI instructions with uaccess_ttbr0_enable()/disable(),
+	 * as PAN toggling is not required.
+	 */
+	uaccess_ttbr0_enable();
+
+	asm volatile(__LSUI_PREAMBLE
+		     "1: cast	%[old], %[new], %[addr]\n"
+		     "2:\n"
+		     _ASM_EXTABLE_UACCESS_ERR(1b, 2b, %w[ret])
+		     : [old] "+r" (old), [addr] "+Q" (*ptep), [ret] "+r" (ret)
+		     : [new] "r" (new)
+		     : "memory");
+
+	uaccess_ttbr0_disable();
+
+	if (ret)
+		return ret;
+	if (tmp != old)
+		return -EAGAIN;
+
+	return ret;
 }
 
 static int __lse_swap_desc(u64 __user *ptep, u64 old, u64 new)
@@ -1778,8 +1857,10 @@ int __kvm_at_swap_desc(struct kvm *kvm, gpa_t ipa, u64 old, u64 new)
 	if (!writable)
 		return -EPERM;
 
-	ptep = (u64 __user *)hva + offset;
-	if (cpus_have_final_cap(ARM64_HAS_LSE_ATOMICS))
+	ptep = (void __user *)hva + offset;
+	if (cpus_have_final_cap(ARM64_HAS_LSUI))
+		r = __lsui_swap_desc(ptep, old, new);
+	else if (cpus_have_final_cap(ARM64_HAS_LSE_ATOMICS))
 		r = __lse_swap_desc(ptep, old, new);
 	else
 		r = __llsc_swap_desc(ptep, old, new);

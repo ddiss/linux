@@ -62,11 +62,11 @@ void snd_sof_pcm_period_elapsed(struct snd_pcm_substream *substream)
 	 * To avoid sending IPC before the previous IPC is handled, we
 	 * schedule delayed work here to call the snd_pcm_period_elapsed().
 	 */
-	schedule_work(&spcm->stream[substream->stream].period_elapsed_work);
+	queue_work(system_highpri_wq, &spcm->stream[substream->stream].period_elapsed_work);
 }
 EXPORT_SYMBOL(snd_sof_pcm_period_elapsed);
 
-static int
+int
 sof_pcm_setup_connected_widgets(struct snd_sof_dev *sdev, struct snd_soc_pcm_runtime *rtd,
 				struct snd_sof_pcm *spcm, struct snd_pcm_hw_params *params,
 				struct snd_sof_platform_stream_params *platform_params, int dir)
@@ -100,8 +100,8 @@ sof_pcm_setup_connected_widgets(struct snd_sof_dev *sdev, struct snd_soc_pcm_run
 	return 0;
 }
 
-static struct snd_sof_widget *snd_sof_find_swidget_by_comp_id(struct snd_sof_dev *sdev,
-							      int comp_id)
+struct snd_sof_widget *snd_sof_find_swidget_by_comp_id(struct snd_sof_dev *sdev,
+						       int comp_id)
 {
 	struct snd_sof_widget *swidget;
 
@@ -152,7 +152,7 @@ static int sof_pcm_hw_params(struct snd_soc_component *component,
 	 * between. At least ALSA OSS emulation depends on this.
 	 */
 	if (spcm->prepared[substream->stream] && pcm_ops && pcm_ops->hw_free) {
-		ret = pcm_ops->hw_free(component, substream);
+		ret = pcm_ops->hw_free(component, substream, spcm, substream->stream);
 		if (ret < 0)
 			return ret;
 
@@ -194,7 +194,7 @@ static int sof_pcm_hw_params(struct snd_soc_component *component,
 		struct snd_dma_buffer *dmab = snd_pcm_get_dma_buf(substream);
 
 		ret = snd_sof_create_page_table(component->dev, dmab,
-				spcm->stream[substream->stream].page_table.area,
+				&spcm->stream[substream->stream].page_table,
 				runtime->dma_bytes);
 		if (ret < 0)
 			return ret;
@@ -223,7 +223,8 @@ static int sof_pcm_stream_free(struct snd_sof_dev *sdev,
 
 		/* free PCM in the DSP */
 		if (pcm_ops && pcm_ops->hw_free) {
-			ret = pcm_ops->hw_free(sdev->component, substream);
+			ret = pcm_ops->hw_free(sdev->component, substream, spcm,
+					       substream->stream);
 			if (ret < 0) {
 				spcm_err(spcm, substream->stream,
 					 "pcm_ops->hw_free failed %d\n", ret);
@@ -360,8 +361,8 @@ static int sof_pcm_prepare(struct snd_soc_component *component,
 	platform_params = &spcm->platform_params[substream->stream];
 	ret = sof_widget_list_setup(sdev, spcm, params, platform_params, dir);
 	if (ret < 0) {
-		dev_err(sdev->dev, "failed widget list set up for pcm %d dir %d\n",
-			spcm->pcm.pcm_id, dir);
+		dev_err(sdev->dev, "failed widget list set up for pcm %d dir %u\n",
+			le32_to_cpu(spcm->pcm.pcm_id), dir);
 		spcm->stream[dir].list = NULL;
 		snd_soc_dapm_dai_free_widgets(&list);
 		return ret;
@@ -458,7 +459,7 @@ static int sof_pcm_trigger(struct snd_soc_component *component,
 		snd_sof_pcm_platform_trigger(sdev, substream, cmd);
 
 	if (pcm_ops && pcm_ops->trigger)
-		ret = pcm_ops->trigger(component, substream, cmd);
+		ret = pcm_ops->trigger(component, substream, spcm, cmd, substream->stream);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
@@ -651,8 +652,8 @@ static int sof_pcm_new(struct snd_soc_component *component,
 		return 0;
 	}
 
-	dev_dbg(spcm->scomp->dev, "pcm%u (%s): Entry: pcm_construct\n",
-		spcm->pcm.pcm_id, spcm->pcm.pcm_name);
+	dev_dbg(spcm->scomp->dev, "pcm%u (%s): Entry: pcm_new\n",
+		le32_to_cpu(spcm->pcm.pcm_id), spcm->pcm.pcm_name);
 
 	/* do we need to pre-allocate playback audio buffer pages */
 	if (!spcm->pcm.playback)
@@ -847,10 +848,13 @@ void snd_sof_new_platform_drv(struct snd_sof_dev *sdev)
 	pd->delay = sof_pcm_delay;
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_COMPRESS)
-	pd->compress_ops = &sof_compressed_ops;
+	const struct sof_ipc_pcm_ops *pcm_ops = sof_ipc_get_ops(sdev, pcm);
+
+	if (pcm_ops)
+		pd->compress_ops = pcm_ops->compress_ops;
 #endif
 
-	pd->pcm_construct = sof_pcm_new;
+	pd->pcm_new = sof_pcm_new;
 	pd->ignore_machine = drv_name;
 	pd->be_pcm_base = SOF_BE_PCM_BASE;
 	pd->use_dai_pcm_id = true;

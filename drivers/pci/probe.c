@@ -68,23 +68,6 @@ static struct resource *get_pci_domain_busn_res(int domain_nr)
 }
 
 /*
- * Some device drivers need know if PCI is initiated.
- * Basically, we think PCI is not initiated when there
- * is no device to be found on the pci_bus_type.
- */
-int no_pci_devices(void)
-{
-	struct device *dev;
-	int no_devices;
-
-	dev = bus_find_next_device(&pci_bus_type, NULL);
-	no_devices = (dev == NULL);
-	put_device(dev);
-	return no_devices;
-}
-EXPORT_SYMBOL(no_pci_devices);
-
-/*
  * PCI Bus Class
  */
 static void release_pcibus_dev(struct device *dev)
@@ -395,6 +378,9 @@ static void pci_read_bridge_io(struct pci_dev *dev, struct resource *res,
 	unsigned long io_mask, io_granularity, base, limit;
 	struct pci_bus_region region;
 
+	if (!dev->io_window)
+		return;
+
 	io_mask = PCI_IO_RANGE_MASK;
 	io_granularity = 0x1000;
 	if (dev->io_window_1k) {
@@ -464,6 +450,9 @@ static void pci_read_bridge_mmio_pref(struct pci_dev *dev, struct resource *res,
 	u64 base64, limit64;
 	pci_bus_addr_t base, limit;
 	struct pci_bus_region region;
+
+	if (!dev->pref_window)
+		return;
 
 	pci_read_config_word(dev, PCI_PREF_MEMORY_BASE, &mem_base_lo);
 	pci_read_config_word(dev, PCI_PREF_MEMORY_LIMIT, &mem_limit_lo);
@@ -669,8 +658,11 @@ static const struct device_type pci_host_bridge_type = {
 
 static void pci_init_host_bridge(struct pci_host_bridge *bridge)
 {
+	bool port_services = IS_ENABLED(CONFIG_PCIEPORTBUS);
+
 	INIT_LIST_HEAD(&bridge->windows);
 	INIT_LIST_HEAD(&bridge->dma_ranges);
+	INIT_LIST_HEAD(&bridge->ports);
 
 	/*
 	 * We assume we can manage these PCIe features.  Some systems may
@@ -678,12 +670,12 @@ static void pci_init_host_bridge(struct pci_host_bridge *bridge)
 	 * may implement its own AER handling and use _OSC to prevent the
 	 * OS from interfering.
 	 */
-	bridge->native_aer = 1;
-	bridge->native_pcie_hotplug = 1;
+	bridge->native_aer = port_services;
+	bridge->native_pcie_hotplug = port_services;
 	bridge->native_shpc_hotplug = 1;
-	bridge->native_pme = 1;
+	bridge->native_pme = port_services;
 	bridge->native_ltr = 1;
-	bridge->native_dpc = 1;
+	bridge->native_dpc = port_services;
 	bridge->domain_nr = PCI_DOMAIN_NR_NOT_SET;
 	bridge->native_cxl_error = 1;
 	bridge->dev.type = &pci_host_bridge_type;
@@ -706,10 +698,11 @@ struct pci_host_bridge *pci_alloc_host_bridge(size_t priv)
 }
 EXPORT_SYMBOL(pci_alloc_host_bridge);
 
-static void devm_pci_alloc_host_bridge_release(void *data)
+void devm_pci_alloc_host_bridge_release(void *data)
 {
 	pci_free_host_bridge(data);
 }
+EXPORT_SYMBOL(devm_pci_alloc_host_bridge_release);
 
 struct pci_host_bridge *devm_pci_alloc_host_bridge(struct device *dev,
 						   size_t priv)
@@ -782,6 +775,22 @@ const unsigned char pcie_link_speed[] = {
 	PCI_SPEED_UNKNOWN		/* F */
 };
 EXPORT_SYMBOL_GPL(pcie_link_speed);
+
+/**
+ * pcie_get_link_speed - Get speed value from PCIe generation number
+ * @speed: PCIe speed (1-based: 1 = 2.5GT, 2 = 5GT, ...)
+ *
+ * Returns the speed value (e.g., PCIE_SPEED_2_5GT) if @speed is valid,
+ * otherwise returns PCI_SPEED_UNKNOWN.
+ */
+unsigned char pcie_get_link_speed(unsigned int speed)
+{
+	if (speed >= ARRAY_SIZE(pcie_link_speed))
+		return PCI_SPEED_UNKNOWN;
+
+	return pcie_link_speed[speed];
+}
+EXPORT_SYMBOL_GPL(pcie_get_link_speed);
 
 const char *pci_speed_string(enum pci_bus_speed speed)
 {
@@ -1068,9 +1077,6 @@ static int pci_register_host_bridge(struct pci_host_bridge *bridge)
 			dev_err(&bus->dev, "failed to add bus: %d\n", err);
 	}
 
-	/* Create legacy_io and legacy_mem files for this bus */
-	pci_create_legacy_files(bus);
-
 	if (parent)
 		dev_info(parent, "PCI host bridge to bus %s\n", name);
 	else
@@ -1275,9 +1281,6 @@ add_dev:
 		if (WARN_ON(ret < 0))
 			dev_err(&child->dev, "failed to add bus: %d\n", ret);
 	}
-
-	/* Create legacy_io and legacy_mem files for this bus */
-	pci_create_legacy_files(child);
 
 	return child;
 }
@@ -1651,6 +1654,8 @@ void set_pcie_port_type(struct pci_dev *pdev)
 		pdev->aspm_l1_support = 1;
 #endif
 
+	pdev->supported_speeds = pcie_get_supported_speeds(pdev);
+
 	parent = pci_upstream_bridge(pdev);
 	if (!parent)
 		return;
@@ -1890,8 +1895,13 @@ static u32 pci_class(struct pci_dev *dev)
 	u32 class;
 
 #ifdef CONFIG_PCI_IOV
-	if (dev->is_virtfn)
-		return dev->physfn->sriov->class;
+	if (dev->is_virtfn) {
+		u8 rev;
+
+		if (pci_read_config_byte(dev, PCI_REVISION_ID, &rev))
+			rev = 0;
+		return (dev->physfn->class << 8) | rev;
+	}
 #endif
 	pci_read_config_dword(dev, PCI_CLASS_REVISION, &class);
 	return class;
@@ -1901,8 +1911,8 @@ static void pci_subsystem_ids(struct pci_dev *dev, u16 *vendor, u16 *device)
 {
 #ifdef CONFIG_PCI_IOV
 	if (dev->is_virtfn) {
-		*vendor = dev->physfn->sriov->subsystem_vendor;
-		*device = dev->physfn->sriov->subsystem_device;
+		*vendor = dev->physfn->subsystem_vendor;
+		pci_read_config_word(dev, PCI_SUBSYSTEM_ID, device);
 		return;
 	}
 #endif
@@ -1916,7 +1926,7 @@ static u8 pci_hdr_type(struct pci_dev *dev)
 
 #ifdef CONFIG_PCI_IOV
 	if (dev->is_virtfn)
-		return dev->physfn->sriov->hdr_type;
+		return 0;
 #endif
 	pci_read_config_byte(dev, PCI_HEADER_TYPE, &hdr_type);
 	return hdr_type;
@@ -2073,9 +2083,6 @@ int pci_setup_device(struct pci_dev *dev)
 	set_pcie_cxl(dev);
 
 	set_pcie_untrusted(dev);
-
-	if (pci_is_pcie(dev))
-		dev->supported_speeds = pcie_get_supported_speeds(dev);
 
 	/* "Unknown power state" */
 	dev->current_state = PCI_UNKNOWN;
@@ -2488,7 +2495,6 @@ static void pci_release_dev(struct device *dev)
 	pci_release_of_node(pci_dev);
 	pcibios_release_device(pci_dev);
 	pci_bus_put(pci_dev->bus);
-	kfree(pci_dev->driver_override);
 	bitmap_free(pci_dev->dma_alias_mask);
 	dev_dbg(dev, "device released\n");
 	kfree(pci_dev);
@@ -2749,6 +2755,8 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 	pci_reassigndev_resource_alignment(dev);
 
 	pci_init_capabilities(dev);
+
+	platform_pci_configure_wake(dev);
 
 	/*
 	 * Add the device to our list of discovered devices

@@ -33,12 +33,14 @@ struct group_info {
 
 /**
  * get_group_info - Get a reference to a group info structure
- * @group_info: The group info to reference
+ * @gi: The group info to reference
  *
  * This gets a reference to a set of supplementary groups.
  *
  * If the caller is accessing a task's credentials, they must hold the RCU read
  * lock when reading.
+ *
+ * Returns: @gi
  */
 static inline struct group_info *get_group_info(struct group_info *gi)
 {
@@ -178,12 +180,18 @@ static inline bool cap_ambient_invariant_ok(const struct cred *cred)
 
 static inline const struct cred *override_creds(const struct cred *override_cred)
 {
-	return rcu_replace_pointer(current->cred, override_cred, 1);
+	const struct cred *old = current->cred;
+
+	current->cred = override_cred;
+	return old;
 }
 
 static inline const struct cred *revert_creds(const struct cred *revert_cred)
 {
-	return rcu_replace_pointer(current->cred, revert_cred, 1);
+	const struct cred *override_cred = current->cred;
+
+	current->cred = revert_cred;
+	return override_cred;
 }
 
 DEFINE_CLASS(override_creds,
@@ -209,6 +217,8 @@ DEFINE_CLASS(override_creds,
  * usage count.  The purpose of this is to attempt to catch at compile time the
  * accidental alteration of a set of credentials that should be considered
  * immutable.
+ *
+ * Returns: @cred when the references are acquired, NULL otherwise.
  */
 static inline const struct cred *get_cred_many(const struct cred *cred, int nr)
 {
@@ -246,8 +256,8 @@ static inline const struct cred *get_cred_rcu(const struct cred *cred)
 }
 
 /**
- * put_cred - Release a reference to a set of credentials
- * @cred: The credentials to release
+ * put_cred_many - Release a reference to a set of credentials
+ * @_cred: The credentials to release
  * @nr: Number of references to release
  *
  * Release a reference to a set of credentials, deleting them when the last ref
@@ -289,11 +299,10 @@ DEFINE_FREE(put_cred, struct cred *, if (!IS_ERR_OR_NULL(_T)) put_cred(_T))
 /**
  * current_cred - Access the current task's subjective credentials
  *
- * Access the subjective credentials of the current task.  RCU-safe,
- * since nobody else can modify it.
+ * Access the subjective credentials of the current task.
+ * Nobody else can modify it.
  */
-#define current_cred() \
-	rcu_dereference_protected(current->cred, 1)
+#define current_cred() (current->cred)
 
 /**
  * current_real_cred - Access the current task's objective credentials
@@ -367,7 +376,6 @@ DEFINE_FREE(put_cred, struct cred *, if (!IS_ERR_OR_NULL(_T)) put_cred(_T))
 })
 
 #define task_uid(task)		(task_cred_xxx((task), uid))
-#define task_euid(task)		(task_cred_xxx((task), euid))
 #define task_ucounts(task)	(task_cred_xxx((task), ucounts))
 
 #define current_cred_xxx(xxx)			\

@@ -25,11 +25,6 @@
 
 #include "amdgpu_smu.h"
 
-#define SMU14_DRIVER_IF_VERSION_INV 0xFFFFFFFF
-#define SMU14_DRIVER_IF_VERSION_SMU_V14_0_0 0x7
-#define SMU14_DRIVER_IF_VERSION_SMU_V14_0_1 0x6
-#define SMU14_DRIVER_IF_VERSION_SMU_V14_0_2 0x2E
-
 #define FEATURE_MASK(feature) (1ULL << feature)
 
 /* MP Apertures */
@@ -124,8 +119,6 @@ int smu_v14_0_setup_pptable(struct smu_context *smu);
 
 int smu_v14_0_get_vbios_bootup_values(struct smu_context *smu);
 
-int smu_v14_0_check_fw_version(struct smu_context *smu);
-
 int smu_v14_0_set_driver_table_location(struct smu_context *smu);
 
 int smu_v14_0_set_tool_table_location(struct smu_context *smu);
@@ -139,12 +132,13 @@ int smu_v14_0_set_allowed_mask(struct smu_context *smu);
 
 int smu_v14_0_notify_display_change(struct smu_context *smu);
 
-int smu_v14_0_get_current_power_limit(struct smu_context *smu,
-				      uint32_t *power_limit);
+int smu_v14_0_get_ppt_limit(struct smu_context *smu,
+			    enum smu_ppt_limit_type limit_type,
+			    uint32_t *ppt_limit);
 
-int smu_v14_0_set_power_limit(struct smu_context *smu,
-			      enum smu_ppt_limit_type limit_type,
-			      uint32_t limit);
+int smu_v14_0_set_ppt_limit(struct smu_context *smu,
+			    enum smu_ppt_limit_type limit_type,
+			    uint32_t limit);
 
 int smu_v14_0_gfx_off_control(struct smu_context *smu, bool enable);
 
@@ -210,10 +204,6 @@ int smu_v14_0_set_gfx_power_up_by_imu(struct smu_context *smu);
 
 int smu_v14_0_set_default_dpm_tables(struct smu_context *smu);
 
-int smu_v14_0_get_pptable_from_firmware(struct smu_context *smu,
-					void **table,
-					uint32_t *size,
-					uint32_t pptable_id);
 
 int smu_v14_0_od_edit_dpm_table(struct smu_context *smu,
 			enum PP_OD_DPM_TABLE_COMMAND type,

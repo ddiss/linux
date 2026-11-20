@@ -11,7 +11,6 @@
 #include <linux/hwmon.h>
 #include <linux/module.h>
 #include <linux/math64.h>
-#include <linux/mod_devicetable.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 
@@ -1072,7 +1071,7 @@ int ltc2947_core_probe(struct regmap *map, const char *name)
 	struct device *hwmon;
 	int ret;
 
-	st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
+	st = devm_kzalloc_obj(dev, *st);
 	if (!st)
 		return -ENOMEM;
 

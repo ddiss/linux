@@ -167,7 +167,7 @@ static int gicv5_its_create_itt_linear(struct gicv5_its_chip_data *its,
 	unsigned int num_ents = BIT(event_id_bits);
 	__le64 *itt;
 
-	itt = kcalloc(num_ents, sizeof(*itt), GFP_KERNEL);
+	itt = kzalloc_objs(*itt, num_ents);
 	if (!itt)
 		return -ENOMEM;
 
@@ -211,11 +211,11 @@ static int gicv5_its_create_itt_two_level(struct gicv5_its_chip_data *its,
 
 	num_ents = BIT(l1_bits);
 
-	itt_l1 = kcalloc(num_ents, sizeof(*itt_l1), GFP_KERNEL);
+	itt_l1 = kzalloc_objs(*itt_l1, num_ents);
 	if (!itt_l1)
 		return -ENOMEM;
 
-	l2ptrs = kcalloc(num_ents, sizeof(*l2ptrs), GFP_KERNEL);
+	l2ptrs = kzalloc_objs(*l2ptrs, num_ents);
 	if (!l2ptrs) {
 		kfree(itt_l1);
 		return -ENOMEM;
@@ -242,7 +242,7 @@ static int gicv5_its_create_itt_two_level(struct gicv5_its_chip_data *its,
 
 		span = i == complete_tables ? final_span : l2_bits;
 
-		itt_l2 = kcalloc(BIT(span), sizeof(*itt_l2), GFP_KERNEL);
+		itt_l2 = kzalloc_objs(*itt_l2, BIT(span));
 		if (!itt_l2) {
 			ret = -ENOMEM;
 			goto out_free;
@@ -403,7 +403,7 @@ static int gicv5_its_alloc_l2_devtab(struct gicv5_its_chip_data *its,
 	if (span > l2_bits)
 		span = l2_bits;
 
-	l2devtab = kcalloc(BIT(span), sizeof(*l2devtab), GFP_KERNEL);
+	l2devtab = kzalloc_objs(*l2devtab, BIT(span));
 	if (!l2devtab)
 		return -ENOMEM;
 
@@ -593,7 +593,7 @@ static int gicv5_its_alloc_devtab_linear(struct gicv5_its_chip_data *its,
 		device_id_bits = device_id_cap;
 	}
 
-	devtab = kcalloc(BIT(device_id_bits), sizeof(*devtab), GFP_KERNEL);
+	devtab = kzalloc_objs(*devtab, BIT(device_id_bits));
 	if (!devtab)
 		return -ENOMEM;
 
@@ -649,11 +649,11 @@ static int gicv5_its_alloc_devtab_two_level(struct gicv5_its_chip_data *its,
 		l1_sz = KMALLOC_MAX_SIZE;
 	}
 
-	l1devtab = kcalloc(BIT(l1_bits), sizeof(*l1devtab), GFP_KERNEL);
+	l1devtab = kzalloc_objs(*l1devtab, BIT(l1_bits));
 	if (!l1devtab)
 		return -ENOMEM;
 
-	l2ptrs = kcalloc(BIT(l1_bits), sizeof(*l2ptrs), GFP_KERNEL);
+	l2ptrs = kzalloc_objs(*l2ptrs, BIT(l1_bits));
 	if (!l2ptrs) {
 		kfree(l1devtab);
 		return -ENOMEM;
@@ -929,14 +929,15 @@ static void gicv5_its_free_eventid(struct gicv5_its_dev *its_dev, u32 event_id_b
 static int gicv5_its_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
 				      unsigned int nr_irqs, void *arg)
 {
-	u32 device_id, event_id_base, lpi;
 	struct gicv5_its_dev *its_dev;
+	u32 device_id, event_id_base;
 	msi_alloc_info_t *info = arg;
 	irq_hw_number_t hwirq;
 	struct irq_data *irqd;
 	int ret, i;
 
 	its_dev = info->scratchpad[0].ptr;
+	device_id = its_dev->device_id;
 
 	ret = gicv5_its_alloc_eventid(its_dev, info, nr_irqs, &event_id_base);
 	if (ret)
@@ -946,22 +947,11 @@ static int gicv5_its_irq_domain_alloc(struct irq_domain *domain, unsigned int vi
 	if (ret)
 		goto out_eventid;
 
-	device_id = its_dev->device_id;
+	ret = irq_domain_alloc_irqs_parent(domain, virq, nr_irqs, NULL);
+	if (ret)
+		goto out_eventid;
 
 	for (i = 0; i < nr_irqs; i++) {
-		ret = gicv5_alloc_lpi();
-		if (ret < 0) {
-			pr_debug("Failed to find free LPI!\n");
-			goto out_free_irqs;
-		}
-		lpi = ret;
-
-		ret = irq_domain_alloc_irqs_parent(domain, virq + i, 1, &lpi);
-		if (ret) {
-			gicv5_free_lpi(lpi);
-			goto out_free_irqs;
-		}
-
 		/*
 		 * Store eventid and deviceid into the hwirq for later use.
 		 *
@@ -980,13 +970,6 @@ static int gicv5_its_irq_domain_alloc(struct irq_domain *domain, unsigned int vi
 
 	return 0;
 
-out_free_irqs:
-	while (--i >= 0) {
-		irqd = irq_domain_get_irq_data(domain, virq + i);
-		gicv5_free_lpi(irqd->parent_data->hwirq);
-		irq_domain_reset_irq_data(irqd);
-		irq_domain_free_irqs_parent(domain, virq + i, 1);
-	}
 out_eventid:
 	gicv5_its_free_eventid(its_dev, event_id_base, nr_irqs);
 	return ret;
@@ -1009,14 +992,13 @@ static void gicv5_its_irq_domain_free(struct irq_domain *domain, unsigned int vi
 	bitmap_release_region(its_dev->event_map, event_id_base,
 			      get_count_order(nr_irqs));
 
-	/*  Hierarchically free irq data */
 	for (i = 0; i < nr_irqs; i++) {
 		d = irq_domain_get_irq_data(domain, virq + i);
-
-		gicv5_free_lpi(d->parent_data->hwirq);
 		irq_domain_reset_irq_data(d);
-		irq_domain_free_irqs_parent(domain, virq + i, 1);
 	}
+
+	/*  Hierarchically free irq data */
+	irq_domain_free_irqs_parent(domain, virq, nr_irqs);
 
 	gicv5_its_syncr(its, its_dev);
 	gicv5_irs_syncr();

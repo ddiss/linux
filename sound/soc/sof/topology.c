@@ -23,6 +23,13 @@ static bool disable_function_topology;
 module_param(disable_function_topology, bool, 0444);
 MODULE_PARM_DESC(disable_function_topology, "Disable function topology loading");
 
+#define MAX_FEATURE_TPLG_COUNT 16
+
+static char *feature_topologies[MAX_FEATURE_TPLG_COUNT];
+static int feature_tplg_cnt;
+module_param_array(feature_topologies, charp, &feature_tplg_cnt, 0444);
+MODULE_PARM_DESC(feature_topologies, "Topology list for virtual loop DAI link");
+
 #define COMP_ID_UNASSIGNED		0xffffffff
 /*
  * Constants used in the computation of linear volume gain
@@ -302,7 +309,7 @@ static const struct sof_dai_types sof_dais[] = {
 	{"ACPHS_VIRTUAL", SOF_DAI_AMD_HS_VIRTUAL},
 	{"MICFIL", SOF_DAI_IMX_MICFIL},
 	{"ACP_SDW", SOF_DAI_AMD_SDW},
-
+	{"ACPTDM", SOF_DAI_AMD_I2S},
 };
 
 static enum sof_ipc_dai_type find_dai(const char *name)
@@ -733,10 +740,13 @@ static int sof_parse_token_sets(struct snd_soc_component *scomp,
 	int ret;
 
 	while (array_size > 0 && total < count * token_instance_num) {
+		if (array_size < (int)sizeof(*array))
+			return -EINVAL;
+
 		asize = le32_to_cpu(array->size);
 
 		/* validate asize */
-		if (asize < 0) { /* FIXME: A zero-size array makes no sense */
+		if (asize < (int)sizeof(*array)) {
 			dev_err(scomp->dev, "error: invalid array size 0x%x\n",
 				asize);
 			return -EINVAL;
@@ -775,8 +785,8 @@ static int sof_parse_token_sets(struct snd_soc_component *scomp,
 						       array);
 			break;
 		default:
-			dev_err(scomp->dev, "error: unknown token type %d\n",
-				array->type);
+			dev_err(scomp->dev, "error: unknown token type %u\n",
+				le32_to_cpu(array->type));
 			return -EINVAL;
 		}
 
@@ -836,11 +846,17 @@ static int sof_control_load_volume(struct snd_soc_component *scomp,
 	struct snd_soc_tplg_mixer_control *mc =
 		container_of(hdr, struct snd_soc_tplg_mixer_control, hdr);
 	int tlv[SOF_TLV_ITEMS];
+	u32 min, max;
 	unsigned int mask;
 	int ret;
 
 	/* validate topology data */
 	if (le32_to_cpu(mc->num_channels) > SND_SOC_TPLG_MAX_CHAN)
+		return -EINVAL;
+
+	min = le32_to_cpu(mc->min);
+	max = le32_to_cpu(mc->max);
+	if (min > max || max >= INT_MAX)
 		return -EINVAL;
 
 	/*
@@ -853,12 +869,12 @@ static int sof_control_load_volume(struct snd_soc_component *scomp,
 		kc->info = snd_sof_volume_info;
 
 	scontrol->comp_id = sdev->next_comp_id;
-	scontrol->min_volume_step = le32_to_cpu(mc->min);
-	scontrol->max_volume_step = le32_to_cpu(mc->max);
+	scontrol->min_volume_step = min;
+	scontrol->max_volume_step = max;
 	scontrol->num_channels = le32_to_cpu(mc->num_channels);
 
-	scontrol->max = le32_to_cpu(mc->max);
-	if (le32_to_cpu(mc->max) == 1)
+	scontrol->max = max;
+	if (max == 1)
 		goto skip;
 
 	/* extract tlv data */
@@ -868,7 +884,7 @@ static int sof_control_load_volume(struct snd_soc_component *scomp,
 	}
 
 	/* set up volume table */
-	ret = set_up_volume_table(scontrol, tlv, le32_to_cpu(mc->max) + 1);
+	ret = set_up_volume_table(scontrol, tlv, max + 1);
 	if (ret < 0) {
 		dev_err(scomp->dev, "error: setting up volume table\n");
 		return ret;
@@ -880,7 +896,7 @@ skip:
 			       ARRAY_SIZE(led_tokens), mc->priv.array,
 			       le32_to_cpu(mc->priv.size));
 	if (ret != 0) {
-		dev_err(scomp->dev, "error: parse led tokens failed %d\n",
+		dev_err(scomp->dev, "error: parse led tokens failed %u\n",
 			le32_to_cpu(mc->priv.size));
 		goto err;
 	}
@@ -901,7 +917,7 @@ skip:
 	return 0;
 
 err:
-	if (le32_to_cpu(mc->max) > 1)
+	if (max > 1)
 		kfree(scontrol->volume_table);
 
 	return ret;
@@ -970,8 +986,8 @@ static int sof_control_load(struct snd_soc_component *scomp, int index,
 	struct snd_sof_control *scontrol;
 	int ret;
 
-	dev_dbg(scomp->dev, "tplg: load control type %d name : %s\n",
-		hdr->type, hdr->name);
+	dev_dbg(scomp->dev, "tplg: load control type %u name : %s\n",
+		le32_to_cpu(hdr->type), hdr->name);
 
 	scontrol = kzalloc_obj(*scontrol);
 	if (!scontrol)
@@ -1015,8 +1031,10 @@ static int sof_control_load(struct snd_soc_component *scomp, int index,
 	case SND_SOC_TPLG_DAPM_CTL_ENUM_VALUE:
 	case SND_SOC_TPLG_DAPM_CTL_PIN:
 	default:
-		dev_warn(scomp->dev, "control type not supported %d:%d:%d\n",
-			 hdr->ops.get, hdr->ops.put, hdr->ops.info);
+		dev_warn(scomp->dev, "control type not supported %u:%u:%u\n",
+			 le32_to_cpu(hdr->ops.get),
+			 le32_to_cpu(hdr->ops.put),
+			 le32_to_cpu(hdr->ops.info));
 		kfree(scontrol->name);
 		kfree(scontrol);
 		return 0;
@@ -1090,7 +1108,7 @@ static int sof_connect_dai_widget(struct snd_soc_component *scomp,
 
 	full = NULL;
 	partial = NULL;
-	list_for_each_entry(rtd, &card->rtd_list, list) {
+	for_each_card_rtds(card, rtd) {
 		/* does stream match DAI link ? */
 		if (rtd->dai_link->stream_name) {
 			if (!strcmp(rtd->dai_link->stream_name, w->sname)) {
@@ -1155,7 +1173,7 @@ static void sof_disconnect_dai_widget(struct snd_soc_component *scomp,
 	else
 		return;
 
-	list_for_each_entry(rtd, &card->rtd_list, list) {
+	for_each_card_rtds(card, rtd) {
 		/* does stream match DAI link ? */
 		if (!rtd->dai_link->stream_name ||
 		    !strstr(rtd->dai_link->stream_name, sname))
@@ -1512,6 +1530,8 @@ static int sof_widget_ready(struct snd_soc_component *scomp, int index,
 		list_add(&dai->list, &sdev->dai_list);
 		swidget->private = dai;
 		break;
+	case snd_soc_dapm_decoder:
+	case snd_soc_dapm_encoder:
 	case snd_soc_dapm_effect:
 		/* check we have some tokens - we need at least process type */
 		if (le32_to_cpu(tw->priv.size) == 0) {
@@ -1523,8 +1543,8 @@ static int sof_widget_ready(struct snd_soc_component *scomp, int index,
 		break;
 	case snd_soc_dapm_pga:
 		if (!le32_to_cpu(tw->num_kcontrols)) {
-			dev_err(scomp->dev, "invalid kcontrol count %d for volume\n",
-				tw->num_kcontrols);
+			dev_err(scomp->dev, "invalid kcontrol count %u for volume\n",
+				le32_to_cpu(tw->num_kcontrols));
 			ret = -EINVAL;
 			break;
 		}
@@ -1565,8 +1585,15 @@ static int sof_widget_ready(struct snd_soc_component *scomp, int index,
 		int core = sof_get_token_value(SOF_TKN_COMP_CORE_ID, swidget->tuples,
 					       swidget->num_tuples);
 
-		if (core >= 0)
+		if (core >= 0) {
+			if (core > sdev->num_cores - 1) {
+				dev_info(scomp->dev,
+					 "out of range core id for %s, moving it %d -> %d\n",
+					 swidget->widget->name, core, SOF_DSP_PRIMARY_CORE);
+				core = SOF_DSP_PRIMARY_CORE;
+			}
 			swidget->core = core;
+		}
 	}
 
 	/* bind widget to external event */
@@ -1772,7 +1799,7 @@ static int sof_dai_load(struct snd_soc_component *scomp, int index,
 			       ARRAY_SIZE(stream_tokens), private->array,
 			       le32_to_cpu(private->size));
 	if (ret) {
-		dev_err(scomp->dev, "error: parse stream tokens failed %d\n",
+		dev_err(scomp->dev, "error: parse stream tokens failed %u\n",
 			le32_to_cpu(private->size));
 		return ret;
 	}
@@ -1906,18 +1933,12 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 		return -EINVAL;
 	}
 
-	slink = kzalloc_obj(*slink);
+	slink = kzalloc_flex(*slink, hw_configs, le32_to_cpu(cfg->num_hw_configs));
 	if (!slink)
 		return -ENOMEM;
 
 	slink->num_hw_configs = le32_to_cpu(cfg->num_hw_configs);
-	slink->hw_configs = kmemdup_array(cfg->hw_config,
-					  slink->num_hw_configs, sizeof(*slink->hw_configs),
-					  GFP_KERNEL);
-	if (!slink->hw_configs) {
-		kfree(slink);
-		return -ENOMEM;
-	}
+	memcpy(slink->hw_configs, cfg->hw_config, le32_to_cpu(cfg->num_hw_configs) * sizeof(*slink->hw_configs));
 
 	slink->default_hw_cfg_id = le32_to_cpu(cfg->default_hw_config_id);
 	slink->link = link;
@@ -1930,9 +1951,7 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 			       private->array, le32_to_cpu(private->size));
 	if (ret < 0) {
 		dev_err(scomp->dev, "Failed tp parse common DAI link tokens\n");
-		kfree(slink->hw_configs);
-		kfree(slink);
-		return ret;
+		goto free_slink;
 	}
 
 	token_list = tplg_ops ? tplg_ops->token_list : NULL;
@@ -1983,6 +2002,7 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 	case SOF_DAI_AMD_HS:
 	case SOF_DAI_AMD_SP_VIRTUAL:
 	case SOF_DAI_AMD_HS_VIRTUAL:
+	case SOF_DAI_AMD_I2S:
 		token_id = SOF_ACPI2S_TOKENS;
 		num_tuples += token_list[SOF_ACPI2S_TOKENS].count;
 		break;
@@ -2001,9 +2021,8 @@ static int sof_link_load(struct snd_soc_component *scomp, int index, struct snd_
 	/* allocate memory for tuples array */
 	slink->tuples = kzalloc_objs(*slink->tuples, num_tuples);
 	if (!slink->tuples) {
-		kfree(slink->hw_configs);
-		kfree(slink);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_slink;
 	}
 
 	if (token_list[SOF_DAI_LINK_TOKENS].tokens) {
@@ -2059,7 +2078,7 @@ out:
 
 err:
 	kfree(slink->tuples);
-	kfree(slink->hw_configs);
+free_slink:
 	kfree(slink);
 
 	return ret;
@@ -2076,7 +2095,6 @@ static int sof_link_unload(struct snd_soc_component *scomp, struct snd_soc_dobj 
 
 	kfree(slink->tuples);
 	list_del(&slink->list);
-	kfree(slink->hw_configs);
 	kfree(slink);
 	dobj->private = NULL;
 
@@ -2496,13 +2514,12 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 	struct snd_sof_dev *sdev = snd_soc_component_get_drvdata(scomp);
 	struct snd_sof_pdata *sof_pdata = sdev->pdata;
 	const char *tplg_filename_prefix = sof_pdata->tplg_filename_prefix;
-	const struct firmware *fw;
-	const char **tplg_files;
 	int tplg_cnt = 0;
 	int ret;
 	int i;
 
-	tplg_files = kcalloc(scomp->card->num_links, sizeof(char *), GFP_KERNEL);
+	const char **tplg_files __free(kfree) =
+		kzalloc_objs(*tplg_files, scomp->card->num_links);
 	if (!tplg_files)
 		return -ENOMEM;
 
@@ -2528,10 +2545,8 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 								       tplg_filename_prefix,
 								       &tplg_files,
 								       no_fallback);
-		if (tplg_cnt < 0) {
-			kfree(tplg_files);
+		if (tplg_cnt < 0)
 			return tplg_cnt;
-		}
 	}
 
 	/*
@@ -2556,6 +2571,7 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 		if (tplg_files[0] != file)
 			dev_info(scomp->dev, "loading topology %d: %s\n", i, tplg_files[i]);
 
+		const struct firmware *fw __free(firmware) = NULL;
 		ret = request_firmware(&fw, tplg_files[i], scomp->dev);
 		if (ret < 0) {
 			/*
@@ -2574,11 +2590,57 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 		else
 			ret = snd_soc_tplg_component_load(scomp, &sof_tplg_ops, fw);
 
-		release_firmware(fw);
-
 		if (ret < 0) {
 			dev_err(scomp->dev, "tplg %s component load failed %d\n",
 				tplg_files[i], ret);
+			goto out;
+		}
+	}
+
+	/* Loading user defined topologies */
+	for (i = 0; i < feature_tplg_cnt; i++) {
+		const char *feature_topology = devm_kasprintf(scomp->dev, GFP_KERNEL, "%s/%s",
+							   tplg_filename_prefix,
+							   feature_topologies[i]);
+
+		if (!feature_topology) {
+			ret = -ENOMEM;
+			goto out;
+		}
+		dev_info(scomp->dev, "loading feature topology %d: %s\n", i, feature_topology);
+
+		const struct firmware *fw __free(firmware) = NULL;
+		ret = request_firmware(&fw, feature_topology, scomp->dev);
+		if (ret < 0) {
+			/*
+			 * snd_soc_tplg_component_remove(scomp) will be called
+			 * if snd_soc_tplg_component_load(scomp) failed and all
+			 * objects in the scomp will be removed. No need to call
+			 * snd_soc_tplg_component_remove(scomp) here.
+			 */
+			dev_warn(scomp->dev, "feature tplg request firmware %s failed err: %d\n",
+				 feature_topologies[i], ret);
+			/*
+			 * We don't return error here because we can still have the basic
+			 * audio feature when the function topology load complete. No need
+			 * to convert the error code because we will get new 'ret' out of the
+			 * loop.
+			 */
+			continue;
+		}
+
+		if (sdev->dspless_mode_selected)
+			ret = snd_soc_tplg_component_load(scomp, &sof_dspless_tplg_ops, fw);
+		else
+			ret = snd_soc_tplg_component_load(scomp, &sof_tplg_ops, fw);
+
+		if (ret < 0) {
+			dev_err(scomp->dev, "feature tplg %s component load failed %d\n",
+				feature_topologies[i], ret);
+			/*
+			 * We need to return error here because it may lead to kernel NULL pointer
+			 * dereference if we continue the remaining tasks.
+			 */
 			goto out;
 		}
 	}
@@ -2589,8 +2651,6 @@ int snd_sof_load_topology(struct snd_soc_component *scomp, const char *file)
 out:
 	if (ret >= 0 && sdev->led_present)
 		ret = snd_ctl_led_request();
-
-	kfree(tplg_files);
 
 	return ret;
 }

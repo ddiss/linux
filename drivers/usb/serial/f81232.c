@@ -11,13 +11,10 @@
 #include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/tty.h>
-#include <linux/tty_driver.h>
 #include <linux/tty_flip.h>
 #include <linux/serial.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
 #include <linux/mutex.h>
-#include <linux/uaccess.h>
 #include <linux/usb.h>
 #include <linux/usb/serial.h>
 #include <linux/serial_reg.h>
@@ -918,7 +915,7 @@ static int f81232_port_probe(struct usb_serial_port *port)
 {
 	struct f81232_private *priv;
 
-	priv = devm_kzalloc(&port->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&port->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 

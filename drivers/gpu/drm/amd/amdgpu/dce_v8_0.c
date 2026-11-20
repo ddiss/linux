@@ -126,10 +126,10 @@ static u32 dce_v8_0_audio_endpt_rreg(struct amdgpu_device *adev,
 	unsigned long flags;
 	u32 r;
 
-	spin_lock_irqsave(&adev->audio_endpt_idx_lock, flags);
+	spin_lock_irqsave(&adev->reg.audio_endpt.lock, flags);
 	WREG32(mmAZALIA_F0_CODEC_ENDPOINT_INDEX + block_offset, reg);
 	r = RREG32(mmAZALIA_F0_CODEC_ENDPOINT_DATA + block_offset);
-	spin_unlock_irqrestore(&adev->audio_endpt_idx_lock, flags);
+	spin_unlock_irqrestore(&adev->reg.audio_endpt.lock, flags);
 
 	return r;
 }
@@ -139,10 +139,10 @@ static void dce_v8_0_audio_endpt_wreg(struct amdgpu_device *adev,
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&adev->audio_endpt_idx_lock, flags);
+	spin_lock_irqsave(&adev->reg.audio_endpt.lock, flags);
 	WREG32(mmAZALIA_F0_CODEC_ENDPOINT_INDEX + block_offset, reg);
 	WREG32(mmAZALIA_F0_CODEC_ENDPOINT_DATA + block_offset, v);
-	spin_unlock_irqrestore(&adev->audio_endpt_idx_lock, flags);
+	spin_unlock_irqrestore(&adev->reg.audio_endpt.lock, flags);
 }
 
 static u32 dce_v8_0_vblank_get_counter(struct amdgpu_device *adev, int crtc)
@@ -360,35 +360,6 @@ static void dce_v8_0_hpd_fini(struct amdgpu_device *adev)
 static u32 dce_v8_0_hpd_get_gpio_reg(struct amdgpu_device *adev)
 {
 	return mmDC_GPIO_HPD_A;
-}
-
-static bool dce_v8_0_is_display_hung(struct amdgpu_device *adev)
-{
-	u32 crtc_hung = 0;
-	u32 crtc_status[6];
-	u32 i, j, tmp;
-
-	for (i = 0; i < adev->mode_info.num_crtc; i++) {
-		if (RREG32(mmCRTC_CONTROL + crtc_offsets[i]) & CRTC_CONTROL__CRTC_MASTER_EN_MASK) {
-			crtc_status[i] = RREG32(mmCRTC_STATUS_HV_COUNT + crtc_offsets[i]);
-			crtc_hung |= (1 << i);
-		}
-	}
-
-	for (j = 0; j < 10; j++) {
-		for (i = 0; i < adev->mode_info.num_crtc; i++) {
-			if (crtc_hung & (1 << i)) {
-				tmp = RREG32(mmCRTC_STATUS_HV_COUNT + crtc_offsets[i]);
-				if (tmp != crtc_status[i])
-					crtc_hung &= ~(1 << i);
-			}
-		}
-		if (crtc_hung == 0)
-			return false;
-		udelay(100);
-	}
-
-	return true;
 }
 
 static void dce_v8_0_set_vga_render_state(struct amdgpu_device *adev,
@@ -1271,7 +1242,7 @@ static void dce_v8_0_audio_write_speaker_allocation(struct drm_encoder *encoder)
 		return;
 	}
 
-	sad_count = drm_edid_to_speaker_allocation(amdgpu_connector->edid, &sadb);
+	sad_count = drm_edid_to_speaker_allocation(drm_edid_raw(amdgpu_connector->edid), &sadb);
 	if (sad_count < 0) {
 		DRM_ERROR("Couldn't read Speaker Allocation Data Block: %d\n", sad_count);
 		sad_count = 0;
@@ -1339,7 +1310,7 @@ static void dce_v8_0_audio_write_sad_regs(struct drm_encoder *encoder)
 		return;
 	}
 
-	sad_count = drm_edid_to_sad(amdgpu_connector->edid, &sads);
+	sad_count = drm_edid_to_sad(drm_edid_raw(amdgpu_connector->edid), &sads);
 	if (sad_count < 0)
 		DRM_ERROR("Couldn't read SADs: %d\n", sad_count);
 	if (sad_count <= 0)
@@ -1682,8 +1653,9 @@ static void dce_v8_0_afmt_setmode(struct drm_encoder *encoder,
 	WREG32(mmAFMT_RAMP_CONTROL2 + offset, 0x00000001);
 	WREG32(mmAFMT_RAMP_CONTROL3 + offset, 0x00000001);
 
-	/* enable audio after setting up hw */
-	dce_v8_0_audio_enable(adev, dig->afmt->pin, true);
+	/* Only enable audio if the display supports it */
+	if (connector->display_info.has_audio)
+		dce_v8_0_audio_enable(adev, dig->afmt->pin, true);
 }
 
 static void dce_v8_0_afmt_enable(struct drm_encoder *encoder, bool enable)
@@ -2655,8 +2627,8 @@ static int dce_v8_0_early_init(struct amdgpu_ip_block *ip_block)
 {
 	struct amdgpu_device *adev = ip_block->adev;
 
-	adev->audio_endpt_rreg = &dce_v8_0_audio_endpt_rreg;
-	adev->audio_endpt_wreg = &dce_v8_0_audio_endpt_wreg;
+	adev->reg.audio_endpt.rreg = &dce_v8_0_audio_endpt_rreg;
+	adev->reg.audio_endpt.wreg = &dce_v8_0_audio_endpt_wreg;
 
 	dce_v8_0_set_display_funcs(adev);
 
@@ -2866,38 +2838,6 @@ static int dce_v8_0_resume(struct amdgpu_ip_block *ip_block)
 		return ret;
 
 	return amdgpu_display_resume_helper(adev);
-}
-
-static bool dce_v8_0_is_idle(struct amdgpu_ip_block *ip_block)
-{
-	return true;
-}
-
-static int dce_v8_0_soft_reset(struct amdgpu_ip_block *ip_block)
-{
-	u32 srbm_soft_reset = 0, tmp;
-	struct amdgpu_device *adev = ip_block->adev;
-
-	if (dce_v8_0_is_display_hung(adev))
-		srbm_soft_reset |= SRBM_SOFT_RESET__SOFT_RESET_DC_MASK;
-
-	if (srbm_soft_reset) {
-		tmp = RREG32(mmSRBM_SOFT_RESET);
-		tmp |= srbm_soft_reset;
-		dev_info(adev->dev, "SRBM_SOFT_RESET=0x%08X\n", tmp);
-		WREG32(mmSRBM_SOFT_RESET, tmp);
-		tmp = RREG32(mmSRBM_SOFT_RESET);
-
-		udelay(50);
-
-		tmp &= ~srbm_soft_reset;
-		WREG32(mmSRBM_SOFT_RESET, tmp);
-		tmp = RREG32(mmSRBM_SOFT_RESET);
-
-		/* Wait a little for things to settle down */
-		udelay(50);
-	}
-	return 0;
 }
 
 static void dce_v8_0_set_crtc_vblank_interrupt_state(struct amdgpu_device *adev,
@@ -3240,8 +3180,6 @@ static const struct amd_ip_funcs dce_v8_0_ip_funcs = {
 	.hw_fini = dce_v8_0_hw_fini,
 	.suspend = dce_v8_0_suspend,
 	.resume = dce_v8_0_resume,
-	.is_idle = dce_v8_0_is_idle,
-	.soft_reset = dce_v8_0_soft_reset,
 	.set_clockgating_state = dce_v8_0_set_clockgating_state,
 	.set_powergating_state = dce_v8_0_set_powergating_state,
 };

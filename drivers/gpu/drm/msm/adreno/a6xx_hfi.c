@@ -34,7 +34,7 @@ static int a6xx_hfi_queue_read(struct a6xx_gmu *gmu,
 	struct a6xx_hfi_queue_header *header = queue->header;
 	u32 i, hdr, index = header->read_index;
 
-	if (header->read_index == header->write_index) {
+	if (header->read_index == READ_ONCE(header->write_index)) {
 		header->rx_request = 1;
 		return 0;
 	}
@@ -62,7 +62,10 @@ static int a6xx_hfi_queue_read(struct a6xx_gmu *gmu,
 	if (!gmu->legacy)
 		index = ALIGN(index, 4) % header->size;
 
-	header->read_index = index;
+	/* Ensure all memory operations are complete before updating the read index */
+	dma_mb();
+
+	WRITE_ONCE(header->read_index, index);
 	return HFI_HEADER_SIZE(hdr);
 }
 
@@ -74,7 +77,7 @@ static int a6xx_hfi_queue_write(struct a6xx_gmu *gmu,
 
 	spin_lock(&queue->lock);
 
-	space = CIRC_SPACE(header->write_index, header->read_index,
+	space = CIRC_SPACE(header->write_index, READ_ONCE(header->read_index),
 		header->size);
 	if (space < dwords) {
 		header->dropped++;
@@ -95,7 +98,10 @@ static int a6xx_hfi_queue_write(struct a6xx_gmu *gmu,
 			queue->data[index] = 0xfafafafa;
 	}
 
-	header->write_index = index;
+	/* Ensure all memory operations are complete before updating the write index */
+	dma_mb();
+
+	WRITE_ONCE(header->write_index, index);
 	spin_unlock(&queue->lock);
 
 	gmu_write(gmu, REG_A6XX_GMU_HOST2GMU_INTR_SET, 0x01);
@@ -283,6 +289,8 @@ static int a8xx_hfi_send_perf_table(struct a6xx_gmu *gmu)
 		(gmu->nr_gpu_freqs * num_gx_votes * sizeof(gmu->gx_arc_votes[0])) +
 		(gmu->nr_gmu_freqs * num_cx_votes * sizeof(gmu->cx_arc_votes[0]));
 	tbl = kzalloc(size, GFP_KERNEL);
+	if (!tbl)
+		return -ENOMEM;
 	tbl->type = HFI_TABLE_GPU_PERF;
 
 	/* First fill GX votes */
@@ -798,7 +806,7 @@ static int a6xx_hfi_send_bw_table(struct a6xx_gmu *gmu)
 	if (gmu->bw_table)
 		goto send;
 
-	msg = devm_kzalloc(gmu->dev, sizeof(*msg), GFP_KERNEL);
+	msg = devm_kzalloc_obj(gmu->dev, *msg);
 	if (!msg)
 		return -ENOMEM;
 
@@ -845,7 +853,6 @@ static int a6xx_hfi_feature_ctrl_msg(struct a6xx_gmu *gmu, u32 feature, u32 enab
 	return a6xx_hfi_send_msg(gmu, HFI_H2F_FEATURE_CTRL, &msg, sizeof(msg), NULL, 0);
 }
 
-#define HFI_FEATURE_IFPC 9
 #define IFPC_LONG_HYST 0x1680
 
 static int a6xx_hfi_enable_ifpc(struct a6xx_gmu *gmu)
@@ -855,8 +862,6 @@ static int a6xx_hfi_enable_ifpc(struct a6xx_gmu *gmu)
 
 	return a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_IFPC, 1, IFPC_LONG_HYST);
 }
-
-#define HFI_FEATURE_ACD 12
 
 static int a6xx_hfi_enable_acd(struct a6xx_gmu *gmu)
 {
@@ -881,6 +886,94 @@ static int a6xx_hfi_enable_acd(struct a6xx_gmu *gmu)
 	}
 
 	return 0;
+}
+
+static int a6xx_hfi_enable_iff_pclx(struct a6xx_gmu *gmu, const struct a6xx_limits_tbl *limits)
+{
+	struct a6xx_hfi_table_entry *entry;
+	struct a6xx_hfi_table *tbl;
+	size_t entry_size;
+	size_t size;
+	int ret;
+
+	if (!limits)
+		return 0;
+
+	ret = a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_IFF_PCLX, 1, 0);
+	if (ret) {
+		DRM_DEV_ERROR(gmu->dev, "Unable to enable IFF PCLX (%d)\n", ret);
+		return ret;
+	}
+
+	entry_size = limits->count * sizeof(struct a6xx_hfi_limits_tbl);
+	size = sizeof(*tbl) + sizeof(*entry) + entry_size;
+
+	tbl = kzalloc(size, GFP_KERNEL);
+	if (!tbl)
+		return -ENOMEM;
+
+	tbl->type = HFI_TABLE_LIMITS_MIT;
+	entry = &tbl->entry[0];
+	entry->count = limits->count;
+	entry->stride = sizeof(struct a6xx_hfi_limits_tbl) >> 2;
+
+	memcpy(entry->data, limits->tbl, entry_size);
+
+	ret = a6xx_hfi_send_msg(gmu, HFI_H2F_MSG_TABLE, tbl, size, NULL, 0);
+	if (ret)
+		DRM_DEV_ERROR(gmu->dev, "Unable to send PCLX table (%d)\n", ret);
+
+	kfree(tbl);
+	return ret;
+}
+
+static int a6xx_hfi_enable_clx(struct a6xx_gmu *gmu)
+{
+	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
+	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
+	const struct a6xx_info *info = adreno_gpu->info->a6xx;
+	struct a6xx_hfi_clx_table_v2_cmd cmd = { 0 };
+	int ret;
+
+	if (!info->clx_tbl)
+		return 0;
+
+	ret = a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_CLX, 1, 0);
+	if (ret) {
+		DRM_DEV_ERROR(gmu->dev, "Unable to enable CLX (%d)\n", ret);
+		return ret;
+	}
+
+	memcpy(&cmd, info->clx_tbl, sizeof(cmd));
+
+	ret = a6xx_hfi_send_msg(gmu, HFI_H2F_MSG_CLX_TBL, &cmd, sizeof(cmd), NULL, 0);
+	if (ret) {
+		DRM_DEV_ERROR(gmu->dev, "Unable to send CLX table (%d)\n", ret);
+		return ret;
+	}
+
+	return a6xx_hfi_enable_iff_pclx(gmu, info->limits_tbl);
+}
+
+static int a6xx_hfi_send_thinmem_config(struct a6xx_gmu *gmu)
+{
+	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
+	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
+	const struct a6xx_info *info = adreno_gpu->info->a6xx;
+	u32 data;
+	int ret;
+
+	if (!info->thinmem_config)
+		return 0;
+
+	/* Bits [7:4] contain the thinmem_cfg data. */
+	data = FIELD_PREP(GENMASK(7, 4), info->thinmem_config);
+
+	ret = a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_THINMEM_CFG, 1, data);
+	if (ret)
+		DRM_DEV_ERROR(gmu->dev, "Unable to send THINMEM_CFG (%d)\n", ret);
+
+	return ret;
 }
 
 static int a6xx_hfi_send_test(struct a6xx_gmu *gmu)
@@ -984,7 +1077,15 @@ int a6xx_hfi_start(struct a6xx_gmu *gmu, int boot_state)
 	if (ret)
 		return ret;
 
+	ret = a6xx_hfi_enable_clx(gmu);
+	if (ret)
+		return ret;
+
 	ret = a6xx_hfi_enable_ifpc(gmu);
+	if (ret)
+		return ret;
+
+	ret = a6xx_hfi_send_thinmem_config(gmu);
 	if (ret)
 		return ret;
 
@@ -1056,8 +1157,8 @@ void a6xx_hfi_init(struct a6xx_gmu *gmu)
 	struct a6xx_gmu_bo *hfi = &gmu->hfi;
 	struct a6xx_hfi_queue_table_header *table = hfi->virt;
 	struct a6xx_hfi_queue_header *headers = hfi->virt + sizeof(*table);
+	int table_size, idx;
 	u64 offset;
-	int table_size;
 
 	/*
 	 * The table size is the size of the table header plus all of the queue
@@ -1076,12 +1177,22 @@ void a6xx_hfi_init(struct a6xx_gmu *gmu)
 	table->active_queues = ARRAY_SIZE(gmu->queues);
 
 	/* Command queue */
+	idx = 0;
 	offset = SZ_4K;
-	a6xx_hfi_queue_init(&gmu->queues[0], &headers[0], hfi->virt + offset,
+	a6xx_hfi_queue_init(&gmu->queues[idx], &headers[idx], hfi->virt + offset,
 		hfi->iova + offset, 0);
 
 	/* GMU response queue */
+	idx++;
 	offset += SZ_4K;
-	a6xx_hfi_queue_init(&gmu->queues[1], &headers[1], hfi->virt + offset,
+	a6xx_hfi_queue_init(&gmu->queues[idx], &headers[idx], hfi->virt + offset,
 		hfi->iova + offset, gmu->legacy ? 4 : 1);
+
+	/* GMU Debug queue */
+	idx++;
+	offset += SZ_4K;
+	a6xx_hfi_queue_init(&gmu->queues[idx], &headers[idx], hfi->virt + offset,
+		hfi->iova + offset, gmu->legacy ? 5 : 2);
+
+	WARN_ON(idx >= HFI_MAX_QUEUES);
 }

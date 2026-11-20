@@ -2,7 +2,6 @@
 
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
-#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
@@ -118,7 +117,7 @@ static int tegra_clock_probe(struct platform_device *pdev)
 	if (!dev->pm_domain)
 		return -EINVAL;
 
-	clk_dev = devm_kzalloc(dev, sizeof(*clk_dev), GFP_KERNEL);
+	clk_dev = devm_kzalloc_obj(dev, *clk_dev);
 	if (!clk_dev)
 		return -ENOMEM;
 

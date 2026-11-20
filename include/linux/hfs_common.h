@@ -166,6 +166,11 @@ struct hfsplus_attr_unistr {
 	hfsplus_unichr unicode[HFSPLUS_ATTR_MAX_STRLEN];
 } __packed;
 
+enum {
+	HFS_REGULAR_NAME,
+	HFS_XATTR_NAME,
+};
+
 struct hfs_extent {
 	__be16 block;
 	__be16 count;
@@ -505,12 +510,24 @@ struct hfs_btree_header_rec {
 						   b-tree but not in extents
 						   b-tree (hfsplus). */
 
+/* HFS BTree misc info */
+#define HFS_TREE_HEAD				0
+#define HFS_BTREE_HDR_MAP_REC_INDEX		2	/* Map (bitmap) record in Header node */
+#define HFS_BTREE_MAP_NODE_REC_INDEX		0	/* Map record in Map Node */
+
 /* HFS+ BTree misc info */
-#define HFSPLUS_TREE_HEAD			0
+#define HFSPLUS_TREE_HEAD			HFS_TREE_HEAD
 #define HFSPLUS_NODE_MXSZ			32768
+#define HFSPLUS_NODE_MINSZ			512
 #define HFSPLUS_ATTR_TREE_NODE_SIZE		8192
 #define HFSPLUS_BTREE_HDR_NODE_RECS_COUNT	3
+/* Map (bitmap) record in Header node */
+#define HFSPLUS_BTREE_HDR_MAP_REC_INDEX		HFS_BTREE_HDR_MAP_REC_INDEX
+/* Map record in Map Node */
+#define HFSPLUS_BTREE_MAP_NODE_REC_INDEX	HFS_BTREE_MAP_NODE_REC_INDEX
 #define HFSPLUS_BTREE_HDR_USER_BYTES		128
+#define HFSPLUS_BTREE_MAP_NODE_RECS_COUNT	2
+#define HFSPLUS_BTREE_MAP_NODE_RESERVED_BYTES	2
 
 /* btree key type */
 #define HFSPLUS_KEY_CASEFOLDING		0xCF	/* case-insensitive */

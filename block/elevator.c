@@ -807,16 +807,35 @@ ssize_t elv_iosched_store(struct gendisk *disk, const char *buf,
 	elv_iosched_load_module(ctx.name);
 	ctx.type = elevator_find_get(ctx.name);
 
-	down_read(&set->update_nr_hwq_lock);
-	if (!blk_queue_no_elv_switch(q)) {
-		ret = elevator_change(q, &ctx);
-		if (!ret)
-			ret = count;
-	} else {
-		ret = -ENOENT;
+	/*
+	 * Use trylock to avoid circular lock dependency with kernfs active
+	 * reference during concurrent disk deletion:
+	 *   update_nr_hwq_lock -> kn->active (via del_gendisk -> kobject_del)
+	 *   kn->active -> update_nr_hwq_lock (via this sysfs write path)
+	 */
+	if (!down_read_trylock(&set->update_nr_hwq_lock)) {
+		ret = -EBUSY;
+		goto out;
 	}
-	up_read(&set->update_nr_hwq_lock);
 
+	/*
+	 * The reader lock is shared, so use QUEUE_FLAG_NO_ELV_SWITCH to allow
+	 * only one switch of this queue at a time, and none once the disk is
+	 * going away.
+	 */
+	if (test_and_set_bit(QUEUE_FLAG_NO_ELV_SWITCH, &q->queue_flags)) {
+		ret = -EBUSY;
+		goto out_unlock;
+	}
+
+	ret = elevator_change(q, &ctx);
+	if (!ret)
+		ret = count;
+
+	blk_queue_flag_clear(QUEUE_FLAG_NO_ELV_SWITCH, q);
+out_unlock:
+	up_read(&set->update_nr_hwq_lock);
+out:
 	if (ctx.type)
 		elevator_put(ctx.type);
 	return ret;

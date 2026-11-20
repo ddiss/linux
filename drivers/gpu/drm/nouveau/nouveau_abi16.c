@@ -176,7 +176,7 @@ nouveau_abi16_chan_fini(struct nouveau_abi16 *abi16,
 
 	/* Cancel all jobs from the entity's queue. */
 	if (chan->sched)
-		drm_sched_entity_fini(&chan->sched->entity);
+		drm_sched_entity_kill(&chan->sched->entity);
 
 	if (chan->chan)
 		nouveau_channel_idle(chan->chan);
@@ -306,7 +306,7 @@ nouveau_abi16_ioctl_getparam(ABI16_IOCTL_ARGS)
 		getparam->value = 1;
 		break;
 	case NOUVEAU_GETPARAM_GRAPH_UNITS:
-		getparam->value = nvkm_gr_units(gr);
+		getparam->value = gr ? nvkm_gr_units(gr) : 0;
 		break;
 	case NOUVEAU_GETPARAM_EXEC_PUSH_MAX: {
 		int ib_max = getparam_dma_ib_max(device);
@@ -331,6 +331,35 @@ nouveau_abi16_ioctl_getparam(ABI16_IOCTL_ARGS)
 	}
 
 	return 0;
+}
+
+int
+nouveau_abi16_ioctl_get_zcull_info(ABI16_IOCTL_ARGS)
+{
+	struct nouveau_drm *drm = nouveau_drm(dev);
+	struct nvkm_gr *gr = nvxx_gr(drm);
+	struct drm_nouveau_get_zcull_info *out = data;
+
+	if (gr->has_zcull_info) {
+		const struct nvkm_gr_zcull_info *i = &gr->zcull_info;
+
+		out->width_align_pixels = i->width_align_pixels;
+		out->height_align_pixels = i->height_align_pixels;
+		out->pixel_squares_by_aliquots = i->pixel_squares_by_aliquots;
+		out->aliquot_total = i->aliquot_total;
+		out->zcull_region_byte_multiplier = i->zcull_region_byte_multiplier;
+		out->zcull_region_header_size = i->zcull_region_header_size;
+		out->zcull_subregion_header_size = i->zcull_subregion_header_size;
+		out->subregion_count = i->subregion_count;
+		out->subregion_width_align_pixels = i->subregion_width_align_pixels;
+		out->subregion_height_align_pixels = i->subregion_height_align_pixels;
+		out->ctxsw_size = i->ctxsw_size;
+		out->ctxsw_align = i->ctxsw_align;
+
+		return 0;
+	} else {
+		return -ENOTTY;
+	}
 }
 
 int
@@ -378,6 +407,9 @@ nouveau_abi16_ioctl_channel_alloc(ABI16_IOCTL_ARGS)
 				break;
 			case NOUVEAU_FIFO_ENGINE_CE:
 				engine = NV_DEVICE_HOST_RUNLIST_ENGINES_CE;
+				break;
+			case NOUVEAU_FIFO_ENGINE_NVDEC:
+				engine = NV_DEVICE_HOST_RUNLIST_ENGINES_NVDEC;
 				break;
 			default:
 				return nouveau_abi16_put(abi16, -ENOSYS);
@@ -456,10 +488,13 @@ nouveau_abi16_ioctl_channel_alloc(ABI16_IOCTL_ARGS)
 			goto done;
 		break;
 	case NV_DEVICE_INFO_V0_TURING:
-		ret = nvif_object_ctor(&chan->chan->user, "abi16CeWar", 0, TURING_DMA_COPY_A,
-				       NULL, 0, &chan->ce);
-		if (ret)
-			goto done;
+		if (engine == NV_DEVICE_HOST_RUNLIST_ENGINES_GR) {
+			ret = nvif_object_ctor(&chan->chan->user, "abi16CeWar",
+					       0, TURING_DMA_COPY_A, NULL, 0,
+					       &chan->ce);
+			if (ret)
+				goto done;
+		}
 		break;
 	default:
 		break;
@@ -629,6 +664,10 @@ nouveau_abi16_ioctl_notifierobj_alloc(ABI16_IOCTL_ARGS)
 
 	/* completely unnecessary for these chipsets... */
 	if (unlikely(device->info.family >= NV_DEVICE_INFO_V0_FERMI))
+		return nouveau_abi16_put(abi16, -EINVAL);
+
+	/* zero size yields a zero-length node, underflowing args.limit */
+	if (unlikely(!info->size))
 		return nouveau_abi16_put(abi16, -EINVAL);
 
 	chan = nouveau_abi16_chan(abi16, info->channel);

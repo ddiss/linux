@@ -29,6 +29,9 @@ static int loongarch_call__parse(const struct arch *arch, struct ins_operands *o
 	ops->target.addr = strtoull(c, &endptr, 16);
 
 	name = strchr(endptr, '<');
+	if (name == NULL)
+		goto find_target;
+
 	name++;
 
 	if (arch->objdump.skip_functions_char &&
@@ -46,6 +49,7 @@ static int loongarch_call__parse(const struct arch *arch, struct ins_operands *o
 	if (ops->target.name == NULL)
 		return -1;
 
+find_target:
 	target = (struct addr_map_symbol) {
 		.ms = { .map = map__get(map), },
 		.addr = map__objdump_2mem(map, ops->target.addr),
@@ -93,7 +97,7 @@ static int loongarch_jump__parse(const struct arch *arch, struct ins_operands *o
 	start = map__unmap_ip(map, sym->start);
 	end = map__unmap_ip(map, sym->end);
 
-	ops->target.outside = target.addr < start || target.addr > end;
+	ops->target.outside = target.addr < start || target.addr >= end;
 
 	if (maps__find_ams(thread__maps(ms->thread), &target) == 0 &&
 	    map__rip_2objdump(target.ms.map, map__map_ip(target.ms.map, target.addr)) == ops->target.addr)
@@ -110,6 +114,7 @@ static int loongarch_jump__parse(const struct arch *arch, struct ins_operands *o
 }
 
 static const struct ins_ops loongarch_jump_ops = {
+	.free	   = jump__delete,
 	.parse	   = loongarch_jump__parse,
 	.scnprintf = jump__scnprintf,
 	.is_jump   = true,

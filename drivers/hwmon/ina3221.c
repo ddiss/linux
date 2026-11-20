@@ -821,7 +821,7 @@ static int ina3221_probe(struct i2c_client *client)
 	char name[32];
 	int i, ret;
 
-	ina = devm_kzalloc(dev, sizeof(*ina), GFP_KERNEL);
+	ina = devm_kzalloc_obj(dev, *ina);
 	if (!ina)
 		return -ENOMEM;
 
@@ -1002,7 +1002,7 @@ static const struct of_device_id ina3221_of_match_table[] = {
 MODULE_DEVICE_TABLE(of, ina3221_of_match_table);
 
 static const struct i2c_device_id ina3221_ids[] = {
-	{ "ina3221" },
+	{ .name = "ina3221" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(i2c, ina3221_ids);

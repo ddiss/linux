@@ -91,6 +91,7 @@ void mv88e6xxx_teardown_devlink_params(struct dsa_switch *ds)
 }
 
 enum mv88e6xxx_devlink_resource_id {
+	MV88E6XXX_RESOURCE_ID_NONE,  /* DEVLINK_RESOURCE_ID_PARENT_TOP */
 	MV88E6XXX_RESOURCE_ID_ATU,
 	MV88E6XXX_RESOURCE_ID_ATU_BIN_0,
 	MV88E6XXX_RESOURCE_ID_ATU_BIN_1,
@@ -200,7 +201,7 @@ int mv88e6xxx_setup_devlink_resources(struct dsa_switch *ds)
 	err = dsa_devlink_resource_register(ds, "ATU_bin_0",
 					    mv88e6xxx_num_macs(chip) / 4,
 					    MV88E6XXX_RESOURCE_ID_ATU_BIN_0,
-					    MV88E6XXX_RESOURCE_ID_ATU,
+					    DEVLINK_RESOURCE_ID_PARENT_TOP,
 					    &size_params);
 	if (err)
 		goto out;
@@ -208,7 +209,7 @@ int mv88e6xxx_setup_devlink_resources(struct dsa_switch *ds)
 	err = dsa_devlink_resource_register(ds, "ATU_bin_1",
 					    mv88e6xxx_num_macs(chip) / 4,
 					    MV88E6XXX_RESOURCE_ID_ATU_BIN_1,
-					    MV88E6XXX_RESOURCE_ID_ATU,
+					    DEVLINK_RESOURCE_ID_PARENT_TOP,
 					    &size_params);
 	if (err)
 		goto out;
@@ -216,7 +217,7 @@ int mv88e6xxx_setup_devlink_resources(struct dsa_switch *ds)
 	err = dsa_devlink_resource_register(ds, "ATU_bin_2",
 					    mv88e6xxx_num_macs(chip) / 4,
 					    MV88E6XXX_RESOURCE_ID_ATU_BIN_2,
-					    MV88E6XXX_RESOURCE_ID_ATU,
+					    DEVLINK_RESOURCE_ID_PARENT_TOP,
 					    &size_params);
 	if (err)
 		goto out;
@@ -224,7 +225,7 @@ int mv88e6xxx_setup_devlink_resources(struct dsa_switch *ds)
 	err = dsa_devlink_resource_register(ds, "ATU_bin_3",
 					    mv88e6xxx_num_macs(chip) / 4,
 					    MV88E6XXX_RESOURCE_ID_ATU_BIN_3,
-					    MV88E6XXX_RESOURCE_ID_ATU,
+					    DEVLINK_RESOURCE_ID_PARENT_TOP,
 					    &size_params);
 	if (err)
 		goto out;
@@ -272,7 +273,7 @@ static int mv88e6xxx_region_global_snapshot(struct devlink *dl,
 	u16 *registers;
 	int i, err;
 
-	registers = kmalloc_array(32, sizeof(u16), GFP_KERNEL);
+	registers = kmalloc_objs(u16, 32);
 	if (!registers)
 		return -ENOMEM;
 
@@ -577,7 +578,7 @@ static int mv88e6xxx_region_pvt_snapshot(struct devlink *dl,
 	int dev, port, err;
 	u16 *pvt, *cur;
 
-	pvt = kcalloc(MV88E6XXX_MAX_PVT_ENTRIES, sizeof(*pvt), GFP_KERNEL);
+	pvt = kzalloc_objs(*pvt, MV88E6XXX_MAX_PVT_ENTRIES);
 	if (!pvt)
 		return -ENOMEM;
 
@@ -616,7 +617,7 @@ static int mv88e6xxx_region_port_snapshot(struct devlink_port *devlink_port,
 	u16 *registers;
 	int i, err;
 
-	registers = kmalloc_array(32, sizeof(u16), GFP_KERNEL);
+	registers = kmalloc_objs(u16, 32);
 	if (!registers)
 		return -ENOMEM;
 

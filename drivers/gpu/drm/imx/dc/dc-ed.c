@@ -6,7 +6,6 @@
 #include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/component.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -198,7 +197,7 @@ static int dc_ed_bind(struct device *dev, struct device *master, void *data)
 	struct dc_ed *ed;
 	int id;
 
-	ed = devm_kzalloc(dev, sizeof(*ed), GFP_KERNEL);
+	ed = devm_kzalloc_obj(dev, *ed);
 	if (!ed)
 		return -ENOMEM;
 

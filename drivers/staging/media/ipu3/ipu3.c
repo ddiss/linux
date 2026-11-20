@@ -151,7 +151,7 @@ static int imgu_dummybufs_init(struct imgu_device *imgu, unsigned int pipe)
 
 /* May be called from atomic context */
 static struct imgu_css_buffer *imgu_dummybufs_get(struct imgu_device *imgu,
-						   int queue, unsigned int pipe)
+						  int queue, unsigned int pipe)
 {
 	unsigned int i;
 	struct imgu_media_pipe *imgu_pipe = &imgu->imgu_pipe[pipe];
@@ -622,7 +622,7 @@ static int imgu_pci_probe(struct pci_dev *pci_dev,
 	void __iomem *const *iomap;
 	int r;
 
-	imgu = devm_kzalloc(&pci_dev->dev, sizeof(*imgu), GFP_KERNEL);
+	imgu = devm_kzalloc_obj(&pci_dev->dev, *imgu);
 	if (!imgu)
 		return -ENOMEM;
 

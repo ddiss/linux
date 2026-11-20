@@ -15,6 +15,7 @@ static const struct rtw89_usb_info rtw8852a_usb_info = {
 	.usb3_mac_npi_config_intf_0	= R_AX_USB3_MAC_NPI_CONFIG_INTF_0,
 	.usb_endpoint_0			= R_AX_USB_ENDPOINT_0,
 	.usb_endpoint_2			= R_AX_USB_ENDPOINT_2,
+	.rx_agg_alignment		= 8,
 	.bulkout_id = {
 		[RTW89_DMA_ACH0] = 3,
 		[RTW89_DMA_ACH2] = 5,
@@ -31,7 +32,9 @@ static const struct rtw89_usb_info rtw8852a_usb_info = {
 static const struct rtw89_driver_info rtw89_8852au_info = {
 	.chip = &rtw8852a_chip_info,
 	.variant = NULL,
+	.board = NULL,
 	.quirks = NULL,
+	.dev_id_quirks = 0,
 	.bus = {
 		.usb = &rtw8852a_usb_info,
 	}
@@ -70,10 +73,16 @@ static const struct usb_device_id rtw_8852au_id_table[] = {
 };
 MODULE_DEVICE_TABLE(usb, rtw_8852au_id_table);
 
+static int rtw8852au_probe(struct usb_interface *intf,
+			   const struct usb_device_id *id)
+{
+	return rtw89_usb_probe(intf, id, &rtw89_8852au_info);
+}
+
 static struct usb_driver rtw_8852au_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = rtw_8852au_id_table,
-	.probe = rtw89_usb_probe,
+	.probe = rtw8852au_probe,
 	.disconnect = rtw89_usb_disconnect,
 };
 module_usb_driver(rtw_8852au_driver);

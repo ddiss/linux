@@ -2104,7 +2104,7 @@ static void destroy_id_handler_unlock(struct rdma_id_private *id_priv)
 	/*
 	 * Setting the state to destroyed under the handler mutex provides a
 	 * fence against calling handler callbacks. If this is invoked due to
-	 * the failure of a handler callback then it guarentees that no future
+	 * the failure of a handler callback then it guarantees that no future
 	 * handlers will be called.
 	 */
 	lockdep_assert_held(&id_priv->handler_mutex);
@@ -2729,6 +2729,9 @@ static int cma_listen_on_dev(struct rdma_id_private *id_priv,
 	*to_destroy = NULL;
 	if (cma_family(id_priv) == AF_IB && !rdma_cap_ib_cm(cma_dev->device, 1))
 		return 0;
+	if (id_priv->restricted_node_type != RDMA_NODE_UNSPECIFIED &&
+	    id_priv->restricted_node_type != cma_dev->device->node_type)
+		return 0;
 
 	dev_id_priv =
 		__rdma_create_id(net, cma_listen_handler, id_priv,
@@ -2736,6 +2739,7 @@ static int cma_listen_on_dev(struct rdma_id_private *id_priv,
 	if (IS_ERR(dev_id_priv))
 		return PTR_ERR(dev_id_priv);
 
+	dev_id_priv->restricted_node_type = id_priv->restricted_node_type;
 	dev_id_priv->state = RDMA_CM_ADDR_BOUND;
 	memcpy(cma_src_addr(dev_id_priv), cma_src_addr(id_priv),
 	       rdma_addr_size(cma_src_addr(id_priv)));
@@ -3524,10 +3528,12 @@ static void addr_handler(int status, struct sockaddr *src_addr,
 	memcpy(addr, src_addr, rdma_addr_size(src_addr));
 	if (!status && !id_priv->cma_dev) {
 		status = cma_acquire_dev_by_src_ip(id_priv);
-		if (status)
+		if (status) {
 			pr_debug_ratelimited("RDMA CM: ADDR_ERROR: failed to acquire device. status %d\n",
 					     status);
-		rdma_restrack_add(&id_priv->res);
+		} else {
+			rdma_restrack_add(&id_priv->res);
+		}
 	} else if (status) {
 		pr_debug_ratelimited("RDMA CM: ADDR_ERROR: failed to resolve IP. status %d\n", status);
 	}
@@ -4194,7 +4200,7 @@ int rdma_restrict_node_type(struct rdma_cm_id *id, u8 node_type)
 	}
 
 	mutex_lock(&lock);
-	if (id_priv->cma_dev)
+	if (READ_ONCE(id_priv->state) != RDMA_CM_IDLE)
 		ret = -EALREADY;
 	else
 		id_priv->restricted_node_type = node_type;
@@ -4817,6 +4823,29 @@ int rdma_reject(struct rdma_cm_id *id, const void *private_data,
 }
 EXPORT_SYMBOL(rdma_reject);
 
+static int cma_force_disconnect(struct rdma_id_private *id_priv)
+{
+	struct cma_work *work;
+
+	work = kzalloc_obj(*work);
+	if (!work)
+		return -ENOMEM;
+
+	INIT_WORK(&work->work, cma_work_handler);
+	work->old_state = RDMA_CM_CONNECT;
+	work->new_state = RDMA_CM_DISCONNECT;
+	work->event.event = RDMA_CM_EVENT_DISCONNECTED;
+	work->event.status = -ECONNABORTED;
+
+	cma_id_get(id_priv);
+	work->id = id_priv;
+
+	trace_cm_force_disconnect(id_priv);
+
+	queue_work(cma_wq, &work->work);
+	return 0;
+}
+
 int rdma_disconnect(struct rdma_cm_id *id)
 {
 	struct rdma_id_private *id_priv;
@@ -4832,12 +4861,15 @@ int rdma_disconnect(struct rdma_cm_id *id)
 			goto out;
 		/* Initiate or respond to a disconnect. */
 		trace_cm_disconnect(id_priv);
-		if (ib_send_cm_dreq(id_priv->cm_id.ib, NULL, 0)) {
-			if (!ib_send_cm_drep(id_priv->cm_id.ib, NULL, 0))
-				trace_cm_sent_drep(id_priv);
-		} else {
+		if (!ib_send_cm_dreq(id_priv->cm_id.ib, NULL, 0)) {
 			trace_cm_sent_dreq(id_priv);
+			goto out;
 		}
+		if (!ib_send_cm_drep(id_priv->cm_id.ib, NULL, 0)) {
+			trace_cm_sent_drep(id_priv);
+			goto out;
+		}
+		ret = cma_force_disconnect(id_priv);
 	} else if (rdma_cap_iw_cm(id->device, id->port_num)) {
 		ret = iw_cm_disconnect(id_priv->cm_id.iw, 0);
 	} else
@@ -5266,7 +5298,7 @@ static int cma_netevent_callback(struct notifier_block *self,
 
 	list_for_each_entry(current_id, &ips_node->id_list, id_list_entry) {
 		if (!memcmp(current_id->id.route.addr.dev_addr.dst_dev_addr,
-			   neigh->ha, ETH_ALEN))
+			   neigh->ha, neigh->dev->addr_len))
 			continue;
 		cma_id_get(current_id);
 		if (!queue_work(cma_wq, &current_id->id.net_work))

@@ -20,7 +20,6 @@
  * user interrupt wires that generate interrupts to the host.
  */
 
-#include <linux/mod_devicetable.h>
 #include <linux/bitfield.h>
 #include <linux/dmapool.h>
 #include <linux/regmap.h>
@@ -61,6 +60,8 @@ struct xdma_desc_block {
  * @dir: Transferring direction of the channel
  * @cfg: Transferring config of the channel
  * @irq: IRQ assigned to the channel
+ * @last_interrupt: task for comppleting last interrupt
+ * @stop_requested: stop request flag
  */
 struct xdma_chan {
 	struct virt_dma_chan		vchan;
@@ -443,8 +444,7 @@ static int xdma_alloc_channels(struct xdma_device *xdev,
 		return -EINVAL;
 	}
 
-	*chans = devm_kcalloc(&xdev->pdev->dev, *chan_num, sizeof(**chans),
-			      GFP_KERNEL);
+	*chans = devm_kzalloc_objs(&xdev->pdev->dev, **chans, *chan_num);
 	if (!*chans)
 		return -ENOMEM;
 
@@ -1205,7 +1205,7 @@ static int xdma_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	xdev = devm_kzalloc(&pdev->dev, sizeof(*xdev), GFP_KERNEL);
+	xdev = devm_kzalloc_obj(&pdev->dev, *xdev);
 	if (!xdev)
 		return -ENOMEM;
 
@@ -1234,8 +1234,8 @@ static int xdma_probe(struct platform_device *pdev)
 
 	xdev->rmap = devm_regmap_init_mmio(&pdev->dev, reg_base,
 					   &xdma_regmap_config);
-	if (!xdev->rmap) {
-		xdma_err(xdev, "config regmap failed: %d", ret);
+	if (IS_ERR(xdev->rmap)) {
+		xdma_err(xdev, "config regmap failed: %pe", xdev->rmap);
 		goto failed;
 	}
 	INIT_LIST_HEAD(&xdev->dma_dev.channels);

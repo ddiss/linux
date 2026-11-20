@@ -35,9 +35,6 @@
 
 #include "internal.h"
 
-#define ACPI_EC_CLASS			"embedded_controller"
-#define ACPI_EC_DEVICE_NAME		"Embedded Controller"
-
 /* EC status register */
 #define ACPI_EC_FLAG_OBF	0x01	/* Output buffer full */
 #define ACPI_EC_FLAG_IBF	0x02	/* Input buffer full */
@@ -1513,6 +1510,24 @@ static bool install_gpio_irq_event_handler(struct acpi_ec *ec)
 				    IRQF_SHARED | IRQF_ONESHOT, "ACPI EC", ec) >= 0;
 }
 
+static int ec_prepare_gpio_irq(struct acpi_ec *ec, struct acpi_device *device)
+{
+	int irq;
+
+	if (!device || ec->gpe >= 0 || ec->irq >= 0)
+		return 0;
+
+	/* ACPI reduced hardware platforms use a GpioInt from _CRS. */
+	irq = acpi_dev_gpio_irq_get(device, 0);
+	if (irq == -EPROBE_DEFER)
+		return irq;
+
+	if (irq >= 0)
+		ec->irq = irq;
+
+	return 0;
+}
+
 /**
  * ec_install_handlers - Install service callbacks and register query methods.
  * @ec: Target EC.
@@ -1527,7 +1542,6 @@ static bool install_gpio_irq_event_handler(struct acpi_ec *ec)
  * Return:
  * -ENODEV if the address space handler cannot be installed, which means
  *  "unable to handle transactions",
- * -EPROBE_DEFER if GPIO IRQ acquisition needs to be deferred,
  * or 0 (success) otherwise.
  */
 static int ec_install_handlers(struct acpi_ec *ec, struct acpi_device *device,
@@ -1559,19 +1573,6 @@ static int ec_install_handlers(struct acpi_ec *ec, struct acpi_device *device,
 
 	if (!device)
 		return 0;
-
-	if (ec->gpe < 0) {
-		/* ACPI reduced hardware platforms use a GpioInt from _CRS. */
-		int irq = acpi_dev_gpio_irq_get(device, 0);
-		/*
-		 * Bail out right away for deferred probing or complete the
-		 * initialization regardless of any other errors.
-		 */
-		if (irq == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		else if (irq >= 0)
-			ec->irq = irq;
-	}
 
 	if (!test_bit(EC_FLAGS_QUERY_METHODS_INSTALLED, &ec->flags)) {
 		/* Find and register all query methods */
@@ -1650,12 +1651,22 @@ static int acpi_ec_setup(struct acpi_ec *ec, struct acpi_device *device, bool ca
 {
 	int ret;
 
+	/*
+	 * GPIO IRQ lookup can defer.  Do it before publishing the EC
+	 * OpRegion to AML to avoid a spurious _REG(disconnect).
+	 */
+	ret = ec_prepare_gpio_irq(ec, device);
+	if (ret)
+		return ret;
+
 	/* First EC capable of handling transactions */
 	if (!first_ec)
 		first_ec = ec;
 
 	ret = ec_install_handlers(ec, device, call_reg);
 	if (ret) {
+		ec_remove_handlers(ec);
+
 		if (ec == first_ec)
 			first_ec = NULL;
 
@@ -1677,12 +1688,13 @@ static int acpi_ec_setup(struct acpi_ec *ec, struct acpi_device *device, bool ca
 
 static int acpi_ec_probe(struct platform_device *pdev)
 {
-	struct acpi_device *device = ACPI_COMPANION(&pdev->dev);
+	struct acpi_device *device;
 	struct acpi_ec *ec;
 	int ret;
 
-	strscpy(acpi_device_name(device), ACPI_EC_DEVICE_NAME);
-	strscpy(acpi_device_class(device), ACPI_EC_CLASS);
+	device = ACPI_COMPANION(&pdev->dev);
+	if (!device)
+		return -ENODEV;
 
 	if (boot_ec && (boot_ec->handle == device->handle ||
 	    !strcmp(acpi_device_hid(device), ACPI_ECDT_HID))) {
@@ -2155,19 +2167,19 @@ static bool acpi_ec_work_in_progress(struct acpi_ec *ec)
 	return ec->events_in_progress + ec->queries_in_progress > 0;
 }
 
-bool acpi_ec_dispatch_gpe(void)
+int acpi_ec_dispatch_gpe(void)
 {
 	bool work_in_progress = false;
 
 	if (!first_ec)
-		return acpi_any_gpe_status_set(U32_MAX);
+		return -ENODEV;
 
 	/*
 	 * Report wakeup if the status bit is set for any enabled GPE other
 	 * than the EC one.
 	 */
 	if (acpi_any_gpe_status_set(first_ec->gpe))
-		return true;
+		return 1;
 
 	/*
 	 * Cancel the SCI wakeup and process all pending events in case there
@@ -2195,7 +2207,7 @@ bool acpi_ec_dispatch_gpe(void)
 	spin_unlock_irq(&first_ec->lock);
 
 	if (!work_in_progress)
-		return false;
+		return 0;
 
 	pm_pr_dbg("ACPI EC GPE dispatched\n");
 
@@ -2212,7 +2224,7 @@ bool acpi_ec_dispatch_gpe(void)
 		spin_unlock_irq(&first_ec->lock);
 	} while (work_in_progress && !pm_wakeup_pending());
 
-	return false;
+	return 0;
 }
 #endif /* CONFIG_PM_SLEEP */
 

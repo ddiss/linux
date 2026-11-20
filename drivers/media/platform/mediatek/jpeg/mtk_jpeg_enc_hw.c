@@ -12,7 +12,6 @@
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -353,7 +352,7 @@ static int mtk_jpegenc_hw_probe(struct platform_device *pdev)
 	if (!master_dev)
 		return -EPROBE_DEFER;
 
-	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
+	dev = devm_kzalloc_obj(&pdev->dev, *dev);
 	if (!dev)
 		return -ENOMEM;
 

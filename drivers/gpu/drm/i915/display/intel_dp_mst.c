@@ -32,6 +32,7 @@
 #include <drm/drm_fixed.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/intel/step.h>
 
 #include "intel_atomic.h"
 #include "intel_audio.h"
@@ -43,8 +44,10 @@
 #include "intel_display_regs.h"
 #include "intel_display_types.h"
 #include "intel_display_utils.h"
+#include "intel_display_wa.h"
 #include "intel_dp.h"
 #include "intel_dp_hdcp.h"
+#include "intel_dp_link_caps.h"
 #include "intel_dp_link_training.h"
 #include "intel_dp_mst.h"
 #include "intel_dp_test.h"
@@ -55,7 +58,6 @@
 #include "intel_link_bw.h"
 #include "intel_pfit.h"
 #include "intel_psr.h"
-#include "intel_step.h"
 #include "intel_vdsc.h"
 #include "intel_vrr.h"
 #include "skl_scaler.h"
@@ -250,7 +252,7 @@ int intel_dp_mtp_tu_compute_config(struct intel_dp *intel_dp,
 				   int min_bpp_x16, int max_bpp_x16, int bpp_step_x16, bool dsc)
 {
 	struct intel_display *display = to_intel_display(intel_dp);
-	struct drm_atomic_state *state = crtc_state->uapi.state;
+	struct drm_atomic_commit *state = crtc_state->uapi.state;
 	struct drm_dp_mst_topology_state *mst_state = NULL;
 	struct intel_connector *connector =
 		to_intel_connector(conn_state->connector);
@@ -443,8 +445,20 @@ static int mst_stream_compute_link_config(struct intel_dp *intel_dp,
 					  struct drm_connector_state *conn_state,
 					  const struct link_config_limits *limits)
 {
-	crtc_state->lane_count = limits->max_lane_count;
-	crtc_state->port_clock = limits->max_rate;
+	struct intel_connector *connector = to_intel_connector(conn_state->connector);
+	struct intel_dp_link_config max_link_config;
+
+	/*
+	 * FIXME: Use a proper iteration over the link configurations, instead
+	 * of using only the max BW config. For instance UHBR rate configs may
+	 * have additional limitations over non-UHBR ones, due to the DSC DPT
+	 * bpp maximum limit.
+	 */
+	if (!intel_dp_get_connector_max_link_config(connector, limits, &max_link_config))
+		return -EINVAL;
+
+	crtc_state->port_clock = max_link_config.rate;
+	crtc_state->lane_count = max_link_config.lane_count;
 
 	/*
 	 * FIXME: allocate the BW according to link_bpp, which in the case of
@@ -463,6 +477,7 @@ static int mst_stream_dsc_compute_link_config(struct intel_dp *intel_dp,
 {
 	struct intel_display *display = to_intel_display(intel_dp);
 	struct intel_connector *connector = to_intel_connector(conn_state->connector);
+	struct intel_dp_link_config max_link_config;
 
 	crtc_state->pipe_bpp = limits->pipe.max_bpp;
 
@@ -470,8 +485,17 @@ static int mst_stream_dsc_compute_link_config(struct intel_dp *intel_dp,
 		    "DSC Sink supported compressed min bpp " FXP_Q4_FMT " compressed max bpp " FXP_Q4_FMT "\n",
 		    FXP_Q4_ARGS(limits->link.min_bpp_x16), FXP_Q4_ARGS(limits->link.max_bpp_x16));
 
-	crtc_state->lane_count = limits->max_lane_count;
-	crtc_state->port_clock = limits->max_rate;
+	/*
+	 * FIXME: Use a proper iteration over the link configurations, instead
+	 * of using only the max BW config. For instance UHBR rate configs may
+	 * have additional limitations over non-UHBR ones, due to the DSC DPT
+	 * bpp maximum limit.
+	 */
+	if (!intel_dp_get_connector_max_link_config(connector, limits, &max_link_config))
+		return -EINVAL;
+
+	crtc_state->port_clock = max_link_config.rate;
+	crtc_state->lane_count = max_link_config.lane_count;
 
 	return intel_dp_mtp_tu_compute_config(intel_dp, crtc_state, conn_state,
 					      limits->link.min_bpp_x16,
@@ -487,6 +511,20 @@ static int mode_hblank_period_ns(const struct drm_display_mode *mode)
 				     mode->crtc_clock);
 }
 
+static int get_connector_max_rate(const struct intel_connector *connector,
+				  const struct link_config_limits *limits)
+{
+	struct intel_dp *intel_dp = intel_attached_dp((struct intel_connector *)connector);
+	struct intel_dp_link_caps *link_caps = intel_dp->link.caps;
+	struct intel_dp_link_config max_link_config;
+
+	intel_dp_link_caps_get_max_config(link_caps,
+					  INTEL_DP_LINK_CAPS_ORDER_KEY_RATE_LANE,
+					  limits->link_config_filter, &max_link_config);
+
+	return max_link_config.rate;
+}
+
 static bool
 hblank_expansion_quirk_needs_dsc(const struct intel_connector *connector,
 				 const struct intel_crtc_state *crtc_state,
@@ -497,11 +535,13 @@ hblank_expansion_quirk_needs_dsc(const struct intel_connector *connector,
 	bool is_uhbr_sink = connector->mst.dp &&
 			    drm_dp_128b132b_supported(connector->mst.dp->dpcd);
 	int hblank_limit = is_uhbr_sink ? 500 : 300;
+	int max_rate;
 
 	if (!connector->dp.dsc_hblank_expansion_quirk)
 		return false;
 
-	if (is_uhbr_sink && !drm_dp_is_uhbr_rate(limits->max_rate))
+	max_rate = get_connector_max_rate(connector, limits);
+	if (is_uhbr_sink && !drm_dp_is_uhbr_rate(max_rate))
 		return false;
 
 	if (mode_hblank_period_ns(adjusted_mode) > hblank_limit)
@@ -523,6 +563,7 @@ adjust_limits_for_dsc_hblank_expansion_quirk(struct intel_dp *intel_dp,
 	struct intel_display *display = to_intel_display(connector);
 	const struct intel_crtc *crtc = to_intel_crtc(crtc_state->uapi.crtc);
 	int min_bpp_x16 = limits->link.min_bpp_x16;
+	int max_rate;
 
 	if (!hblank_expansion_quirk_needs_dsc(connector, crtc_state, limits))
 		return true;
@@ -549,11 +590,10 @@ adjust_limits_for_dsc_hblank_expansion_quirk(struct intel_dp *intel_dp,
 		return true;
 	}
 
-	drm_WARN_ON(display->drm, limits->min_rate != limits->max_rate);
-
-	if (limits->max_rate < 540000)
+	max_rate = get_connector_max_rate(connector, limits);
+	if (max_rate < 540000)
 		min_bpp_x16 = fxp_q4_from_int(13);
-	else if (limits->max_rate < 810000)
+	else if (max_rate < 810000)
 		min_bpp_x16 = fxp_q4_from_int(10);
 
 	if (limits->link.min_bpp_x16 >= min_bpp_x16)
@@ -595,39 +635,22 @@ mst_stream_compute_config_limits(struct intel_dp *intel_dp,
 							    dsc);
 }
 
-static int mst_stream_compute_config(struct intel_encoder *encoder,
-				     struct intel_crtc_state *pipe_config,
-				     struct drm_connector_state *conn_state)
+static int mst_stream_compute_link_for_joined_pipes(struct intel_encoder *encoder,
+						    struct intel_crtc_state *pipe_config,
+						    struct drm_connector_state *conn_state,
+						    int num_joined_pipes)
 {
 	struct intel_display *display = to_intel_display(encoder);
-	struct intel_atomic_state *state = to_intel_atomic_state(conn_state->state);
-	struct intel_crtc *crtc = to_intel_crtc(pipe_config->uapi.crtc);
 	struct intel_dp *intel_dp = to_primary_dp(encoder);
-	struct intel_connector *connector =
-		to_intel_connector(conn_state->connector);
 	const struct drm_display_mode *adjusted_mode =
 		&pipe_config->hw.adjusted_mode;
+	struct intel_connector *connector =
+		to_intel_connector(conn_state->connector);
 	struct link_config_limits limits;
 	bool dsc_needed, joiner_needs_dsc;
-	int num_joined_pipes;
 	int ret = 0;
 
-	if (pipe_config->fec_enable &&
-	    !intel_dp_supports_fec(intel_dp, connector, pipe_config))
-		return -EINVAL;
-
-	if (adjusted_mode->flags & DRM_MODE_FLAG_DBLSCAN)
-		return -EINVAL;
-
-	num_joined_pipes = intel_dp_num_joined_pipes(intel_dp, connector,
-						     adjusted_mode->crtc_hdisplay,
-						     adjusted_mode->crtc_clock);
-	if (num_joined_pipes > 1)
-		pipe_config->joiner_pipes = GENMASK(crtc->pipe + num_joined_pipes - 1, crtc->pipe);
-
-	pipe_config->sink_format = INTEL_OUTPUT_FORMAT_RGB;
-	pipe_config->output_format = INTEL_OUTPUT_FORMAT_RGB;
-	pipe_config->has_pch_encoder = false;
+	intel_dp_dsc_reset_config(pipe_config);
 
 	joiner_needs_dsc = intel_dp_joiner_needs_dsc(display, num_joined_pipes);
 
@@ -642,7 +665,12 @@ static int mst_stream_compute_config(struct intel_encoder *encoder,
 		if (ret == -EDEADLK)
 			return ret;
 
-		if (ret)
+		if (ret ||
+		    !intel_dp_dotclk_valid(display,
+					   adjusted_mode->clock,
+					   adjusted_mode->htotal,
+					   0,
+					   num_joined_pipes))
 			dsc_needed = true;
 	}
 
@@ -653,6 +681,8 @@ static int mst_stream_compute_config(struct intel_encoder *encoder,
 
 	/* enable compression if the mode doesn't fit available BW */
 	if (dsc_needed) {
+		int dsc_slice_count;
+
 		drm_dbg_kms(display->drm, "Try DSC (fallback=%s, joiner=%s, force=%s)\n",
 			    str_yes_no(ret), str_yes_no(joiner_needs_dsc),
 			    str_yes_no(intel_dp->force_dsc_en));
@@ -683,6 +713,73 @@ static int mst_stream_compute_config(struct intel_encoder *encoder,
 		ret = intel_dp_dsc_compute_config(intel_dp, pipe_config,
 						  conn_state, &limits,
 						  pipe_config->dp_m_n.tu);
+		if (ret)
+			return ret;
+
+		dsc_slice_count = intel_dp_mst_dsc_get_slice_count(connector, pipe_config);
+
+		if (!intel_dp_dotclk_valid(display,
+					   adjusted_mode->clock,
+					   adjusted_mode->htotal,
+					   dsc_slice_count,
+					   num_joined_pipes))
+			return -EINVAL;
+	}
+
+	if (ret)
+		return ret;
+
+	ret = intel_dp_compute_min_hblank(pipe_config, conn_state);
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+static int mst_stream_compute_config(struct intel_atomic_state *state,
+				     struct intel_encoder *encoder,
+				     struct intel_crtc_state *pipe_config,
+				     struct drm_connector_state *conn_state)
+{
+	struct intel_display *display = to_intel_display(encoder);
+	struct intel_crtc *crtc = to_intel_crtc(pipe_config->uapi.crtc);
+	struct intel_dp *intel_dp = to_primary_dp(encoder);
+	struct intel_connector *connector =
+		to_intel_connector(conn_state->connector);
+	const struct drm_display_mode *adjusted_mode =
+		&pipe_config->hw.adjusted_mode;
+	int num_joined_pipes;
+	int ret = -EINVAL;
+
+	if (pipe_config->fec_enable &&
+	    !intel_dp_supports_fec(intel_dp, connector, pipe_config))
+		return -EINVAL;
+
+	if (adjusted_mode->flags & DRM_MODE_FLAG_DBLSCAN)
+		return -EINVAL;
+
+	pipe_config->sink_format = INTEL_OUTPUT_FORMAT_RGB;
+	pipe_config->output_format = INTEL_OUTPUT_FORMAT_RGB;
+
+	ret = intel_pfit_compute_config(pipe_config, conn_state);
+	if (ret)
+		return ret;
+
+	for_each_joiner_candidate(connector, adjusted_mode, num_joined_pipes) {
+		/* If the pipe can't be a joiner primary, skip early. */
+		if (!(intel_joiner_valid_primary_pipe_mask(display, num_joined_pipes) & BIT(crtc->pipe)))
+			continue;
+
+		if (num_joined_pipes > 1)
+			pipe_config->joiner_pipes = GENMASK(crtc->pipe + num_joined_pipes - 1,
+							    crtc->pipe);
+
+		ret = mst_stream_compute_link_for_joined_pipes(encoder,
+							       pipe_config,
+							       conn_state,
+							       num_joined_pipes);
+		if (ret == 0 || ret == -EDEADLK)
+			break;
 	}
 
 	if (ret)
@@ -694,10 +791,6 @@ static int mst_stream_compute_config(struct intel_encoder *encoder,
 	if (display->platform.geminilake || display->platform.broxton)
 		pipe_config->lane_lat_optim_mask =
 			bxt_dpio_phy_calc_lane_lat_optim_mask(pipe_config->lane_count);
-
-	ret = intel_dp_compute_min_hblank(pipe_config, conn_state);
-	if (ret)
-		return ret;
 
 	intel_vrr_compute_config(pipe_config, conn_state);
 
@@ -722,7 +815,7 @@ intel_dp_mst_transcoder_mask(struct intel_atomic_state *state,
 	struct intel_display *display = to_intel_display(state);
 	const struct intel_digital_connector_state *conn_state;
 	struct intel_connector *connector;
-	u8 transcoders = 0;
+	u16 transcoders = 0;
 	int i;
 
 	if (DISPLAY_VER(display) < 12)
@@ -763,7 +856,8 @@ static u8 get_pipes_downstream_of_mst_port(struct intel_atomic_state *state,
 		if (&connector->mst.dp->mst.mgr != mst_mgr)
 			continue;
 
-		if (connector->mst.port != parent_port &&
+		if (parent_port &&
+		    connector->mst.port != parent_port &&
 		    !drm_dp_mst_port_downstream_of_parent(mst_mgr,
 							  connector->mst.port,
 							  parent_port))
@@ -787,7 +881,7 @@ static int intel_dp_mst_check_dsc_change(struct intel_atomic_state *state,
 
 	mst_pipe_mask = get_pipes_downstream_of_mst_port(state, mst_mgr, NULL);
 
-	for_each_intel_crtc_in_pipe_mask(display->drm, crtc, mst_pipe_mask) {
+	for_each_intel_crtc_in_pipe_mask(display, crtc, mst_pipe_mask) {
 		struct intel_crtc_state *crtc_state =
 			intel_atomic_get_new_crtc_state(state, crtc);
 
@@ -871,11 +965,11 @@ int intel_dp_mst_atomic_check_link(struct intel_atomic_state *state,
 	return 0;
 }
 
-static int mst_stream_compute_config_late(struct intel_encoder *encoder,
+static int mst_stream_compute_config_late(struct intel_atomic_state *state,
+					  struct intel_encoder *encoder,
 					  struct intel_crtc_state *crtc_state,
 					  struct drm_connector_state *conn_state)
 {
-	struct intel_atomic_state *state = to_intel_atomic_state(conn_state->state);
 	struct intel_dp *intel_dp = to_primary_dp(encoder);
 
 	/* lowest numbered transcoder will be designated master */
@@ -949,7 +1043,7 @@ mst_connector_atomic_topology_check(struct intel_connector *connector,
 
 static int
 mst_connector_atomic_check(struct drm_connector *_connector,
-			   struct drm_atomic_state *_state)
+			   struct drm_atomic_commit *_state)
 {
 	struct intel_atomic_state *state = to_intel_atomic_state(_state);
 	struct intel_connector *connector = to_intel_connector(_connector);
@@ -1015,14 +1109,13 @@ static void mst_stream_post_disable(struct intel_atomic_state *state,
 		drm_atomic_get_mst_payload_state(new_mst_state, connector->mst.port);
 	struct intel_crtc *pipe_crtc;
 	bool last_mst_stream;
-	int i;
 
 	last_mst_stream = intel_dp_mst_dec_active_streams(intel_dp);
 
 	drm_WARN_ON(display->drm, DISPLAY_VER(display) >= 12 && last_mst_stream &&
 		    !intel_dp_mst_is_master_trans(old_crtc_state));
 
-	for_each_pipe_crtc_modeset_disable(display, pipe_crtc, old_crtc_state, i) {
+	for_each_pipe_crtc_modeset_disable(display, pipe_crtc, old_crtc_state) {
 		const struct intel_crtc_state *old_pipe_crtc_state =
 			intel_atomic_get_old_crtc_state(state, pipe_crtc);
 
@@ -1049,7 +1142,7 @@ static void mst_stream_post_disable(struct intel_atomic_state *state,
 
 	intel_ddi_disable_transcoder_func(old_crtc_state);
 
-	for_each_pipe_crtc_modeset_disable(display, pipe_crtc, old_crtc_state, i) {
+	for_each_pipe_crtc_modeset_disable(display, pipe_crtc, old_crtc_state) {
 		const struct intel_crtc_state *old_pipe_crtc_state =
 			intel_atomic_get_old_crtc_state(state, pipe_crtc);
 
@@ -1230,7 +1323,7 @@ static void enable_bs_jitter_was(const struct intel_crtc_state *crtc_state)
 		set |= DP_MST_FEC_BS_JITTER_WA(crtc_state->cpu_transcoder);
 
 	/* Wa_14014143976:adlp */
-	if (IS_DISPLAY_STEP(display, STEP_E0, STEP_FOREVER)) {
+	if (intel_display_wa(display, INTEL_DISPLAY_WA_14014143976)) {
 		if (intel_dp_is_uhbr(crtc_state))
 			set |= DP_MST_SHORT_HBLANK_WA(crtc_state->cpu_transcoder);
 		else if (crtc_state->fec_enable)
@@ -1260,7 +1353,7 @@ static void mst_stream_enable(struct intel_atomic_state *state,
 	enum transcoder trans = pipe_config->cpu_transcoder;
 	bool first_mst_stream = intel_dp_mst_active_streams(intel_dp) == 1;
 	struct intel_crtc *pipe_crtc;
-	int ret, i;
+	int ret;
 
 	drm_WARN_ON(display->drm, pipe_config->has_pch_encoder);
 
@@ -1305,7 +1398,7 @@ static void mst_stream_enable(struct intel_atomic_state *state,
 
 	intel_enable_transcoder(pipe_config);
 
-	for_each_pipe_crtc_modeset_enable(display, pipe_crtc, pipe_config, i) {
+	for_each_pipe_crtc_modeset_enable(display, pipe_crtc, pipe_config) {
 		const struct intel_crtc_state *pipe_crtc_state =
 			intel_atomic_get_new_crtc_state(state, pipe_crtc);
 
@@ -1360,6 +1453,11 @@ static int mst_connector_get_ddc_modes(struct drm_connector *_connector)
 	ret = intel_connector_update_modes(&connector->base, drm_edid);
 
 	drm_edid_free(drm_edid);
+
+	if (intel_dp_tunnel_uhbr_lanes_wa_setup(intel_dp)) {
+		intel_dp_flush_connector_commits(connector);
+		intel_dp_tunnel_uhbr_lanes_wa_apply(intel_dp);
+	}
 
 	return ret;
 }
@@ -1419,11 +1517,12 @@ mst_connector_mode_valid_ctx(struct drm_connector *_connector,
 	struct intel_dp *intel_dp = connector->mst.dp;
 	struct drm_dp_mst_topology_mgr *mgr = &intel_dp->mst.mgr;
 	struct drm_dp_mst_port *port = connector->mst.port;
-	const int min_bpp = 18;
-	int max_dotclk = display->cdclk.max_dotclk_freq;
 	int max_rate, mode_rate, max_lanes, max_link_clock;
 	unsigned long bw_overhead_flags =
 		DRM_DP_BW_OVERHEAD_MST | DRM_DP_BW_OVERHEAD_SSC_REF_CLK;
+	int min_link_bpp_x16 = fxp_q4_from_int(18);
+	struct intel_dp_link_config max_bw_config;
+	static bool supports_dsc;
 	int ret;
 	bool dsc = false;
 	int target_clock = mode->clock;
@@ -1448,19 +1547,34 @@ mst_connector_mode_valid_ctx(struct drm_connector *_connector,
 		return 0;
 	}
 
-	max_link_clock = intel_dp_max_link_rate(intel_dp);
-	max_lanes = intel_dp_max_lane_count(intel_dp);
+	supports_dsc = intel_dp_has_dsc(connector) &&
+		       drm_dp_sink_supports_fec(connector->dp.fec_capability);
+
+	if (supports_dsc && connector->mst.port->passthrough_aux)
+		min_link_bpp_x16 = intel_dp_compute_min_compressed_bpp_x16(connector,
+									   INTEL_OUTPUT_FORMAT_RGB);
+
+	intel_dp_link_caps_get_max_bw_config(intel_dp->link.caps, &max_bw_config);
+	max_link_clock = max_bw_config.rate;
+	max_lanes = max_bw_config.lane_count;
 
 	max_rate = intel_dp_max_link_data_rate(intel_dp,
 					       max_link_clock, max_lanes);
 	mode_rate = intel_dp_link_required(max_link_clock, max_lanes,
 					   mode->clock, mode->hdisplay,
-					   fxp_q4_from_int(min_bpp),
+					   min_link_bpp_x16,
 					   bw_overhead_flags);
 
 	/*
 	 * TODO:
 	 * - Also check if compression would allow for the mode
+	 *   in non-passthrough mode, i.e. the last branch device
+	 *   decompressing the stream. This makes a difference only if
+	 *   the BW on the link between the last branch device and the
+	 *   sink is higher than the BW on the whole MST path from the
+	 *   source to the last branch device. Relying on the extra BW
+	 *   this provides also requires the
+	 *   DFP_Link_Available_Payload_Bandwidth_Number described below.
 	 * - Calculate the overhead using drm_dp_bw_overhead() /
 	 *   drm_dp_bw_channel_coding_efficiency(), similarly to the
 	 *   compute config code, as drm_dp_calc_pbn_mode() doesn't
@@ -1470,55 +1584,79 @@ mst_connector_mode_valid_ctx(struct drm_connector *_connector,
 	 *   corresponding link capabilities of the sink) in case the
 	 *   stream is uncompressed for it by the last branch device.
 	 */
-	num_joined_pipes = intel_dp_num_joined_pipes(intel_dp, connector,
-						     mode->hdisplay, target_clock);
-	max_dotclk *= num_joined_pipes;
-
 	ret = drm_modeset_lock(&mgr->base.lock, ctx);
 	if (ret)
 		return ret;
 
-	if (mode_rate > max_rate || mode->clock > max_dotclk ||
-	    drm_dp_calc_pbn_mode(mode->clock, min_bpp << 4) > port->full_pbn) {
+	if (mode_rate > max_rate ||
+	    drm_dp_calc_pbn_mode(mode->clock, min_link_bpp_x16) > port->full_pbn) {
 		*status = MODE_CLOCK_HIGH;
 		return 0;
 	}
 
-	if (intel_dp_has_dsc(connector) && drm_dp_sink_supports_fec(connector->dp.fec_capability)) {
-		/*
-		 * TBD pass the connector BPC,
-		 * for now U8_MAX so that max BPC on that platform would be picked
-		 */
-		int pipe_bpp = intel_dp_dsc_compute_max_bpp(connector, U8_MAX);
+	*status = MODE_CLOCK_HIGH;
+	for_each_joiner_candidate(connector, mode, num_joined_pipes) {
+		int dsc_slice_count = 0;
 
-		if (!drm_dp_is_uhbr_rate(max_link_clock))
-			bw_overhead_flags |= DRM_DP_BW_OVERHEAD_FEC;
+		if (supports_dsc) {
+			/*
+			 * TBD pass the connector BPC,
+			 * for now U8_MAX so that max BPC on that platform would be picked
+			 */
+			int pipe_bpp = intel_dp_dsc_compute_max_bpp(connector, U8_MAX);
 
-		dsc = intel_dp_mode_valid_with_dsc(connector,
-						   max_link_clock, max_lanes,
-						   target_clock, mode->hdisplay,
-						   num_joined_pipes,
-						   INTEL_OUTPUT_FORMAT_RGB, pipe_bpp,
-						   bw_overhead_flags);
+			dsc_slice_count = intel_dp_dsc_get_slice_count(connector,
+								       mode->clock,
+								       mode->hdisplay,
+								       num_joined_pipes);
+
+			if (!drm_dp_is_uhbr_rate(max_link_clock))
+				bw_overhead_flags |= DRM_DP_BW_OVERHEAD_FEC;
+
+			dsc = intel_dp_mode_valid_with_dsc(connector,
+							   max_link_clock, max_lanes,
+							   target_clock, mode->hdisplay,
+							   num_joined_pipes,
+							   INTEL_OUTPUT_FORMAT_RGB, pipe_bpp,
+							   bw_overhead_flags);
+		}
+
+		if (intel_dp_joiner_needs_dsc(display, num_joined_pipes) && !dsc) {
+			*status = MODE_CLOCK_HIGH;
+			continue;
+		}
+
+		if (mode_rate > max_rate && !dsc) {
+			*status = MODE_CLOCK_HIGH;
+			continue;
+		}
+
+		*status = intel_mode_valid_max_plane_size(display, mode, num_joined_pipes);
+
+		if (*status != MODE_OK)
+			continue;
+
+		if (!dsc)
+			dsc_slice_count = 0;
+
+		if (!intel_dp_dotclk_valid(display,
+					   mode->clock,
+					   mode->htotal,
+					   dsc_slice_count,
+					   num_joined_pipes)) {
+			*status = MODE_CLOCK_HIGH;
+			continue;
+		}
+
+		break;
 	}
 
-	if (intel_dp_joiner_needs_dsc(display, num_joined_pipes) && !dsc) {
-		*status = MODE_CLOCK_HIGH;
-		return 0;
-	}
-
-	if (mode_rate > max_rate && !dsc) {
-		*status = MODE_CLOCK_HIGH;
-		return 0;
-	}
-
-	*status = intel_mode_valid_max_plane_size(display, mode, num_joined_pipes);
 	return 0;
 }
 
 static struct drm_encoder *
 mst_connector_atomic_best_encoder(struct drm_connector *_connector,
-				  struct drm_atomic_state *state)
+				  struct drm_atomic_commit *state)
 {
 	struct intel_connector *connector = to_intel_connector(_connector);
 	struct drm_connector_state *connector_state =
@@ -2034,6 +2172,27 @@ bool intel_dp_mst_crtc_needs_modeset(struct intel_atomic_state *state,
 	return false;
 }
 
+bool intel_dp_mst_stream_disconnected(struct intel_atomic_state *state,
+				      const struct intel_crtc *crtc)
+{
+	struct intel_connector *connector;
+
+	connector = get_connector_in_state_for_crtc(state, crtc);
+	if (!connector)
+		return false;
+
+	if (!connector->mst.dp)
+		return false;
+
+	if (!connector->mst.dp->mst.mgr.mst_state)
+		return true;
+
+	if (drm_connector_is_unregistered(&connector->base))
+		return true;
+
+	return false;
+}
+
 /**
  * intel_dp_mst_prepare_probe - Prepare an MST link for topology probing
  * @intel_dp: DP port object
@@ -2044,22 +2203,27 @@ bool intel_dp_mst_crtc_needs_modeset(struct intel_atomic_state *state,
  */
 void intel_dp_mst_prepare_probe(struct intel_dp *intel_dp)
 {
-	int link_rate = intel_dp_max_link_rate(intel_dp);
-	int lane_count = intel_dp_max_lane_count(intel_dp);
+	struct intel_dp_link_config max_bw_config;
+	int link_rate;
+	int lane_count;
 	u8 rate_select;
 	u8 link_bw;
 
 	if (intel_dp->link.active)
 		return;
 
+	intel_dp_link_caps_get_max_bw_config(intel_dp->link.caps, &max_bw_config);
+	link_rate = max_bw_config.rate;
+	lane_count = max_bw_config.lane_count;
+
 	if (intel_mst_probed_link_params_valid(intel_dp, link_rate, lane_count))
 		return;
 
 	intel_dp_compute_rate(intel_dp, link_rate, &link_bw, &rate_select);
 
-	intel_dp_link_training_set_mode(intel_dp, link_rate, false);
+	intel_dp_link_training_set_mode(intel_dp, link_rate, false, false);
 	intel_dp_link_training_set_bw(intel_dp, link_bw, rate_select, lane_count,
-				      drm_dp_enhanced_frame_cap(intel_dp->dpcd));
+				      drm_dp_enhanced_frame_cap(intel_dp->dpcd), false);
 
 	intel_mst_set_probed_link_params(intel_dp, link_rate, lane_count);
 }
@@ -2088,7 +2252,7 @@ bool intel_dp_mst_verify_dpcd_state(struct intel_dp *intel_dp)
 	if (!intel_dp->is_mst)
 		return true;
 
-	ret = drm_dp_dpcd_readb(intel_dp->mst.mgr.aux, DP_MSTM_CTRL, &val);
+	ret = drm_dp_dpcd_read_byte(intel_dp->mst.mgr.aux, DP_MSTM_CTRL, &val);
 
 	/* Adjust the expected register value for SST + SideBand. */
 	if (ret < 0 || val != (DP_MST_EN | DP_UP_REQ_EN | DP_UPSTREAM_IS_SRC)) {

@@ -110,10 +110,7 @@ xfs_perag_uninit(
 	struct xfs_group	*xg)
 {
 #ifdef __KERNEL__
-	struct xfs_perag	*pag = to_perag(xg);
-
-	cancel_delayed_work_sync(&pag->pag_blockgc_work);
-	xfs_buf_cache_destroy(&pag->pag_bcache);
+	cancel_delayed_work_sync(&to_perag(xg)->pag_blockgc_work);
 #endif
 }
 
@@ -235,10 +232,6 @@ xfs_perag_alloc(
 	INIT_RADIX_TREE(&pag->pag_ici_root, GFP_ATOMIC);
 #endif /* __KERNEL__ */
 
-	error = xfs_buf_cache_init(&pag->pag_bcache);
-	if (error)
-		goto out_free_perag;
-
 	/*
 	 * Pre-calculated geometry
 	 */
@@ -250,12 +243,10 @@ xfs_perag_alloc(
 
 	error = xfs_group_insert(mp, pag_group(pag), index, XG_TYPE_AG);
 	if (error)
-		goto out_buf_cache_destroy;
+		goto out_free_perag;
 
 	return 0;
 
-out_buf_cache_destroy:
-	xfs_buf_cache_destroy(&pag->pag_bcache);
 out_free_perag:
 	kfree(pag);
 	return error;
@@ -870,6 +861,32 @@ resv_err:
 	xfs_warn(mp, "Error %d reserving per-AG metadata reserve pool.", err2);
 	xfs_force_shutdown(mp, SHUTDOWN_CORRUPT_INCORE);
 	return err2;
+}
+
+/*
+ * Return the agcount for the new file system size passed in *nb and adjust *nb
+ * when it has to be reduced because of maximum AG count or because it would
+ * create a below minimum size AG.
+ */
+xfs_agnumber_t
+xfs_growfs_compute_agcount(
+	struct xfs_mount	*mp,
+	xfs_rfsblock_t		*nb)
+{
+	uint64_t		agcount; /* 64-bits wide to catch overflows */
+	xfs_extlen_t		remainder;
+
+	agcount = div_u64_rem(*nb, mp->m_sb.sb_agblocks, &remainder);
+	if (agcount >= XFS_MAX_AGNUMBER + 1) {
+		agcount = XFS_MAX_AGNUMBER + 1;
+		remainder = 0;
+	}
+	*nb = (xfs_rfsblock_t)agcount * mp->m_sb.sb_agblocks;
+	if (remainder >= XFS_MIN_AG_BLOCKS) {
+		*nb += remainder;
+		agcount++;
+	}
+	return agcount;
 }
 
 /*

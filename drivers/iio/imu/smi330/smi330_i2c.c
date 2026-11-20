@@ -3,7 +3,6 @@
  * Copyright (c) 2025 Robert Bosch GmbH.
  */
 #include <linux/i2c.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
 
@@ -88,7 +87,7 @@ static int smi330_i2c_probe(struct i2c_client *i2c)
 	struct smi330_i2c_priv *priv;
 	struct regmap *regmap;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 

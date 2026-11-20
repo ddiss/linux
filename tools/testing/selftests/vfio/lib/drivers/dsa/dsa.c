@@ -65,9 +65,20 @@ static bool dsa_int_handle_request_required(struct vfio_pci_device *device)
 
 static int dsa_probe(struct vfio_pci_device *device)
 {
-	if (!vfio_pci_device_match(device, PCI_VENDOR_ID_INTEL,
-				   PCI_DEVICE_ID_INTEL_DSA_SPR0))
+	const u16 vendor_id = vfio_pci_config_readw(device, PCI_VENDOR_ID);
+	const u16 device_id = vfio_pci_config_readw(device, PCI_DEVICE_ID);
+
+	if (vendor_id != PCI_VENDOR_ID_INTEL)
 		return -EINVAL;
+
+	switch (device_id) {
+	case PCI_DEVICE_ID_INTEL_DSA_SPR0:
+	case PCI_DEVICE_ID_INTEL_DSA_DMR:
+	case PCI_DEVICE_ID_INTEL_DSA_GNRD:
+		break;
+	default:
+		return -EINVAL;
+	}
 
 	if (dsa_int_handle_request_required(device)) {
 		dev_err(device, "Device requires requesting interrupt handles\n");
@@ -407,6 +418,7 @@ static void dsa_send_msi(struct vfio_pci_device *device)
 
 const struct vfio_pci_driver_ops dsa_ops = {
 	.name = "dsa",
+	.region_size = sizeof(struct dsa_state),
 	.probe = dsa_probe,
 	.init = dsa_init,
 	.remove = dsa_remove,

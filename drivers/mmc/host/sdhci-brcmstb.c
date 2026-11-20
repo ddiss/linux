@@ -116,7 +116,7 @@ static void sdhci_brcmstb_restore_regs(struct mmc_host *mmc, enum cfg_core_ver v
 		writel(sr->boot_main_ctl, priv->boot_regs + SDIO_BOOT_MAIN_CTL);
 
 	if (ver == SDIO_CFG_CORE_V1) {
-		writel(sr->sd_pin_sel, cr + SDIO_CFG_SD_PIN_SEL);
+		writel(sr->sd_pin_sel, cr + SDIO_CFG_V1_SD_PIN_SEL);
 		return;
 	}
 
@@ -430,7 +430,7 @@ static u32 sdhci_brcmstb_cqhci_irq(struct sdhci_host *host, u32 intmask)
 	if (!sdhci_cqe_irq(host, intmask, &cmd_error, &data_error))
 		return intmask;
 
-	cqhci_irq(host->mmc, intmask, cmd_error, data_error);
+	cqhci_irq(host->mmc, cmd_error, data_error);
 
 	return 0;
 }
@@ -451,8 +451,7 @@ static int sdhci_brcmstb_add_host(struct sdhci_host *host,
 	if (ret)
 		return ret;
 
-	cq_host = devm_kzalloc(mmc_dev(host->mmc),
-			       sizeof(*cq_host), GFP_KERNEL);
+	cq_host = devm_kzalloc_obj(mmc_dev(host->mmc), *cq_host);
 	if (!cq_host) {
 		ret = -ENOMEM;
 		goto cleanup;
@@ -491,6 +490,7 @@ static int sdhci_brcmstb_probe(struct platform_device *pdev)
 	struct sdhci_brcmstb_priv *priv;
 	u32 actual_clock_mhz;
 	struct sdhci_host *host;
+	struct resource *boot_res;
 	struct clk *clk;
 	struct clk *base_clk = NULL;
 	int res;
@@ -534,9 +534,13 @@ static int sdhci_brcmstb_probe(struct platform_device *pdev)
 
 	/* map non-standard BOOT registers if present */
 	if (host->mmc->caps & MMC_CAP_NONREMOVABLE) {
-		priv->boot_regs = devm_platform_get_and_ioremap_resource(pdev, 2, NULL);
-		if (IS_ERR(priv->boot_regs))
-			priv->boot_regs = NULL;
+		boot_res = platform_get_resource(pdev, IORESOURCE_MEM, 2);
+		if (boot_res) {
+			priv->boot_regs = devm_ioremap_resource(&pdev->dev,
+								boot_res);
+			if (IS_ERR(priv->boot_regs))
+				priv->boot_regs = NULL;
+		}
 	}
 
 	/*

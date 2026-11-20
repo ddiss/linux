@@ -1234,8 +1234,16 @@ static int handle_incoming_queue(struct netfront_queue *queue,
 	while ((skb = __skb_dequeue(rxq)) != NULL) {
 		int pull_to = NETFRONT_SKB_CB(skb)->pull_to;
 
-		if (pull_to > skb_headlen(skb))
-			__pskb_pull_tail(skb, pull_to - skb_headlen(skb));
+		/* pull_to comes from the first slot's length, which the
+		 * backend controls.  Make sure the head holds at least an
+		 * Ethernet header for eth_type_trans().
+		 */
+		if (!pskb_may_pull(skb, max(pull_to, ETH_HLEN))) {
+			kfree_skb(skb);
+			packets_dropped++;
+			queue->info->netdev->stats.rx_errors++;
+			continue;
+		}
 
 		/* Ethernet work: Delayed to here as it peeks the header. */
 		skb->protocol = eth_type_trans(skb, queue->info->netdev);
@@ -1338,8 +1346,10 @@ err:
 		skb->data_len = rx->status;
 		skb->len += rx->status;
 
-		if (unlikely(xennet_fill_frags(queue, skb, &tmpq)))
+		if (unlikely(xennet_fill_frags(queue, skb, &tmpq))) {
+			__skb_queue_head(&tmpq, skb);
 			goto err;
+		}
 
 		if (rx->flags & XEN_NETRXF_csum_blank)
 			skb->ip_summed = CHECKSUM_PARTIAL;
@@ -1646,7 +1656,7 @@ static int xennet_xdp_set(struct net_device *dev, struct bpf_prog *prog,
 
 	/* avoid the race with XDP headroom adjustment */
 	wait_event(module_wq,
-		   xenbus_read_driver_state(np->xbdev->otherend) ==
+		   xenbus_read_driver_state(np->xbdev, np->xbdev->otherend) ==
 		   XenbusStateReconfigured);
 	np->netfront_xdp_enabled = true;
 
@@ -1764,9 +1774,9 @@ static struct net_device *xennet_create_dev(struct xenbus_device *dev)
 	do {
 		xenbus_switch_state(dev, XenbusStateInitialising);
 		err = wait_event_timeout(module_wq,
-				 xenbus_read_driver_state(dev->otherend) !=
+				 xenbus_read_driver_state(dev, dev->otherend) !=
 				 XenbusStateClosed &&
-				 xenbus_read_driver_state(dev->otherend) !=
+				 xenbus_read_driver_state(dev, dev->otherend) !=
 				 XenbusStateUnknown, XENNET_TIMEOUT);
 	} while (!err);
 
@@ -2626,31 +2636,31 @@ static void xennet_bus_close(struct xenbus_device *dev)
 {
 	int ret;
 
-	if (xenbus_read_driver_state(dev->otherend) == XenbusStateClosed)
+	if (xenbus_read_driver_state(dev, dev->otherend) == XenbusStateClosed)
 		return;
 	do {
 		xenbus_switch_state(dev, XenbusStateClosing);
 		ret = wait_event_timeout(module_wq,
-				   xenbus_read_driver_state(dev->otherend) ==
-				   XenbusStateClosing ||
-				   xenbus_read_driver_state(dev->otherend) ==
-				   XenbusStateClosed ||
-				   xenbus_read_driver_state(dev->otherend) ==
-				   XenbusStateUnknown,
-				   XENNET_TIMEOUT);
+				xenbus_read_driver_state(dev, dev->otherend) ==
+				XenbusStateClosing ||
+				xenbus_read_driver_state(dev, dev->otherend) ==
+				XenbusStateClosed ||
+				xenbus_read_driver_state(dev, dev->otherend) ==
+				XenbusStateUnknown,
+				XENNET_TIMEOUT);
 	} while (!ret);
 
-	if (xenbus_read_driver_state(dev->otherend) == XenbusStateClosed)
+	if (xenbus_read_driver_state(dev, dev->otherend) == XenbusStateClosed)
 		return;
 
 	do {
 		xenbus_switch_state(dev, XenbusStateClosed);
 		ret = wait_event_timeout(module_wq,
-				   xenbus_read_driver_state(dev->otherend) ==
-				   XenbusStateClosed ||
-				   xenbus_read_driver_state(dev->otherend) ==
-				   XenbusStateUnknown,
-				   XENNET_TIMEOUT);
+				xenbus_read_driver_state(dev, dev->otherend) ==
+				XenbusStateClosed ||
+				xenbus_read_driver_state(dev, dev->otherend) ==
+				XenbusStateUnknown,
+				XENNET_TIMEOUT);
 	} while (!ret);
 }
 

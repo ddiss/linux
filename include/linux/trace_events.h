@@ -22,20 +22,23 @@ union bpf_attr;
 
 const char *trace_print_flags_seq(struct trace_seq *p, const char *delim,
 				  unsigned long flags,
-				  const struct trace_print_flags *flag_array);
+				  const struct trace_print_flags *flag_array,
+				  size_t flag_array_size);
 
 const char *trace_print_symbols_seq(struct trace_seq *p, unsigned long val,
-				    const struct trace_print_flags *symbol_array);
+				    const struct trace_print_flags *symbol_array,
+				    size_t symbol_array_size);
 
 #if BITS_PER_LONG == 32
 const char *trace_print_flags_seq_u64(struct trace_seq *p, const char *delim,
 		      unsigned long long flags,
-		      const struct trace_print_flags_u64 *flag_array);
+		      const struct trace_print_flags_u64 *flag_array,
+		      size_t flag_array_size);
 
 const char *trace_print_symbols_seq_u64(struct trace_seq *p,
 					unsigned long long val,
-					const struct trace_print_flags_u64
-								 *symbol_array);
+					const struct trace_print_flags_u64 *symbol_array,
+					size_t symbol_array_size);
 #endif
 
 struct trace_iterator;
@@ -295,6 +298,15 @@ struct trace_event_class {
 	struct list_head	*(*get_fields)(struct trace_event_call *);
 	struct list_head	fields;
 	int			(*raw_init)(struct trace_event_call *);
+#ifdef CONFIG_BPF_EVENTS
+	/*
+	 * Per-template BTF ids set by DECLARE_EVENT_CLASS via BTF_ID() and
+	 * patched by resolve_btfids at link time. NULL for handcrafted classes.
+	 *   [0] FUNC   __bpf_trace_<template>
+	 *   [1] STRUCT trace_event_raw_<template>
+	 */
+	const u32		*btf_ids;
+#endif
 };
 
 extern int trace_event_reg(struct trace_event_call *event,
@@ -767,6 +779,7 @@ trace_trigger_soft_disabled(struct trace_event_file *file)
 
 #ifdef CONFIG_BPF_EVENTS
 unsigned int trace_call_bpf(struct trace_event_call *call, void *ctx);
+unsigned int trace_call_bpf_faultable(struct trace_event_call *call, void *ctx);
 int perf_event_attach_bpf_prog(struct perf_event *event, struct bpf_prog *prog, u64 bpf_cookie);
 void perf_event_detach_bpf_prog(struct perf_event *event);
 int perf_event_query_prog_array(struct perf_event *event, void __user *info);
@@ -783,8 +796,14 @@ int bpf_get_perf_event_info(const struct perf_event *event, u32 *prog_id,
 			    unsigned long *missed);
 int bpf_kprobe_multi_link_attach(const union bpf_attr *attr, struct bpf_prog *prog);
 int bpf_uprobe_multi_link_attach(const union bpf_attr *attr, struct bpf_prog *prog);
+int bpf_tracing_multi_attach(struct bpf_prog *prog, const union bpf_attr *attr);
 #else
 static inline unsigned int trace_call_bpf(struct trace_event_call *call, void *ctx)
+{
+	return 1;
+}
+
+static inline unsigned int trace_call_bpf_faultable(struct trace_event_call *call, void *ctx)
 {
 	return 1;
 }
@@ -835,6 +854,11 @@ bpf_uprobe_multi_link_attach(const union bpf_attr *attr, struct bpf_prog *prog)
 {
 	return -EOPNOTSUPP;
 }
+static inline int
+bpf_tracing_multi_attach(struct bpf_prog *prog, const union bpf_attr *attr)
+{
+	return -EOPNOTSUPP;
+}
 #endif
 
 enum {
@@ -848,6 +872,7 @@ enum {
 	FILTER_COMM,
 	FILTER_CPU,
 	FILTER_STACKTRACE,
+	FILTER_WITHIN,
 };
 
 extern int trace_event_raw_init(struct trace_event_call *call);
@@ -858,7 +883,7 @@ extern int trace_add_event_call(struct trace_event_call *call);
 extern int trace_remove_event_call(struct trace_event_call *call);
 extern int trace_event_get_offsets(struct trace_event_call *call);
 
-int ftrace_set_clr_event(struct trace_array *tr, char *buf, int set);
+int ftrace_set_clr_event(struct trace_array *tr, const char *buf, int set, bool handle_filter);
 int trace_set_clr_event(const char *system, const char *event, int set);
 int trace_array_set_clr_event(struct trace_array *tr, const char *system,
 		const char *event, bool enable);

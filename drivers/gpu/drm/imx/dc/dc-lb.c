@@ -6,7 +6,6 @@
 #include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/component.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -251,7 +250,7 @@ static int dc_lb_bind(struct device *dev, struct device *master, void *data)
 	void __iomem *base_cfg;
 	struct dc_lb *lb;
 
-	lb = devm_kzalloc(dev, sizeof(*lb), GFP_KERNEL);
+	lb = devm_kzalloc_obj(dev, *lb);
 	if (!lb)
 		return -ENOMEM;
 

@@ -88,8 +88,7 @@ static int probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		dev_warn(&pdev->dev,
 			 "No IRQ vectors available (%d), using polling\n", ret);
 
-	udev = devm_kzalloc(&pdev->dev, sizeof(struct uio_pci_sva_dev),
-			    GFP_KERNEL);
+	udev = devm_kzalloc_obj(&pdev->dev, struct uio_pci_sva_dev);
 	if (!udev) {
 		ret =  -ENOMEM;
 		goto out_disable;
@@ -129,15 +128,13 @@ static int probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = devm_uio_register_device(&pdev->dev, &udev->info);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to register uio device\n");
-		goto out_free;
+		goto out_disable;
 	}
 
 	pci_set_drvdata(pdev, udev);
 
 	return 0;
 
-out_free:
-	kfree(udev);
 out_disable:
 	pci_disable_device(pdev);
 
@@ -146,11 +143,8 @@ out_disable:
 
 static void remove(struct pci_dev *pdev)
 {
-	struct uio_pci_sva_dev *udev = pci_get_drvdata(pdev);
-
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
-	kfree(udev);
 }
 
 static ssize_t pasid_show(struct device *dev,

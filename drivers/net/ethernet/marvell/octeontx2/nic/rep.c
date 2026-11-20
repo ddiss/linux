@@ -47,7 +47,7 @@ static int rvu_rep_mcam_flow_init(struct rep_dev *rep)
 
 	count = OTX2_DEFAULT_FLOWCOUNT;
 
-	rep->flow_cfg->flow_ent = kcalloc(count, sizeof(u16), GFP_KERNEL);
+	rep->flow_cfg->flow_ent = kzalloc_objs(u16, count);
 	if (!rep->flow_cfg->flow_ent)
 		return -ENOMEM;
 
@@ -609,7 +609,7 @@ static int rvu_rep_rsrc_init(struct otx2_nic *priv)
 
 	err = otx2_init_hw_resources(priv);
 	if (err)
-		goto err_free_rsrc;
+		goto err_free_mem;
 
 	/* Set maximum frame size allowed in HW */
 	err = otx2_hw_set_mtu(priv, priv->hw.max_mtu);
@@ -621,6 +621,7 @@ static int rvu_rep_rsrc_init(struct otx2_nic *priv)
 
 err_free_rsrc:
 	otx2_free_hw_resources(priv);
+err_free_mem:
 	otx2_free_queue_mem(qset);
 	return err;
 }
@@ -791,7 +792,7 @@ static int rvu_rep_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pci_set_master(pdev);
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv) {
 		err = -ENOMEM;
 		goto err_set_drv_data;

@@ -61,7 +61,7 @@ typedef void *efi_handle_t;
 
 /*
  * The UEFI spec and EDK2 reference implementation both define EFI_GUID as
- * struct { u32 a; u16; b; u16 c; u8 d[8]; }; and so the implied alignment
+ * struct { u32 a; u16 b; u16 c; u8 d[8]; }; and so the implied alignment
  * is 32 bits not 8 bits like our guid_t. In some cases (i.e., on 32-bit ARM),
  * this means that firmware services invoked by the kernel may assume that
  * efi_guid_t* arguments are 32-bit aligned, and use memory accessors that
@@ -631,6 +631,8 @@ typedef struct {
 
 extern unsigned long __ro_after_init efi_rng_seed;		/* RNG Seed table */
 
+enum efi_rts_ids;
+
 /*
  * All runtime access to EFI goes through this structure:
  */
@@ -650,6 +652,7 @@ extern struct efi {
 	unsigned long			mokvar_table;		/* MOK variable config table */
 	unsigned long			coco_secret;		/* Confidential computing secret table */
 	unsigned long			unaccepted;		/* Unaccepted memory table */
+	unsigned long			mem_reserve;		/* Persistent memory reservations */
 
 	efi_get_time_t			*get_time;
 	efi_set_time_t			*set_time;
@@ -665,6 +668,10 @@ extern struct efi {
 	efi_query_capsule_caps_t	*query_capsule_caps;
 	efi_get_next_high_mono_count_t	*get_next_high_mono_count;
 	efi_reset_system_t		*reset_system;
+
+#if IS_ENABLED(CONFIG_LKDTM)
+	efi_status_t			(*lkdtm_rt_test)(enum efi_rts_ids id);
+#endif
 
 	struct efi_memory_map		memmap;
 	unsigned long			flags;
@@ -705,7 +712,7 @@ efi_guidcmp (efi_guid_t left, efi_guid_t right)
 }
 
 static inline char *
-efi_guid_to_str(efi_guid_t *guid, char *out)
+efi_guid_to_str(const efi_guid_t *guid, char *out)
 {
 	sprintf(out, "%pUl", guid->b);
         return out;
@@ -832,27 +839,6 @@ extern int __init parse_efi_signature_list(
 	const void *data, size_t size,
 	efi_element_handler_t (*get_handler_for_guid)(const efi_guid_t *));
 
-/**
- * efi_range_is_wc - check the WC bit on an address range
- * @start: starting kvirt address
- * @len: length of range
- *
- * Consult the EFI memory map and make sure it's ok to set this range WC.
- * Returns true or false.
- */
-static inline int efi_range_is_wc(unsigned long start, unsigned long len)
-{
-	unsigned long i;
-
-	for (i = 0; i < len; i += (1UL << EFI_PAGE_SHIFT)) {
-		unsigned long paddr = __pa(start + i);
-		if (!(efi_mem_attributes(paddr) & EFI_MEMORY_WC))
-			return 0;
-	}
-	/* The range checked out */
-	return 1;
-}
-
 /*
  * We play games with efi_enabled so that the compiler will, if
  * possible, remove EFI-related code altogether.
@@ -978,6 +964,17 @@ extern int efi_status_to_err(efi_status_t status);
 #define   EFI_DEV_END_INSTANCE			0x01
 #define   EFI_DEV_END_ENTIRE			0xFF
 
+enum efi_hd_partition_format {
+	EFI_HD_PARTITION_FORMAT_MBR = 1,
+	EFI_HD_PARTITION_FORMAT_GPT,
+};
+
+enum efi_hd_signature_type {
+	EFI_HD_SIGNATURE_TYPE_NONE,
+	EFI_HD_SIGNATURE_TYPE_MBR,
+	EFI_HD_SIGNATURE_TYPE_GUID,
+};
+
 struct efi_generic_dev_path {
 	u8				type;
 	u8				sub_type;
@@ -1009,6 +1006,16 @@ struct efi_rel_offset_dev_path {
 	u64				ending_offset;
 } __packed;
 
+struct efi_hd_dev_path {
+	struct efi_generic_dev_path	header;
+	u32				partition_number;
+	u64				partition_start;
+	u64				partition_size;
+	efi_guid_t			signature;
+	u8				partition_format;
+	u8				signature_type;
+} __packed;
+
 struct efi_mem_mapped_dev_path {
 	struct efi_generic_dev_path	header;
 	u32				memory_type;
@@ -1028,6 +1035,7 @@ struct efi_dev_path {
 		struct efi_pci_dev_path		pci;
 		struct efi_vendor_dev_path	vendor;
 		struct efi_rel_offset_dev_path	rel_offset;
+		struct efi_hd_dev_path		hd;
 	};
 } __packed;
 
@@ -1130,6 +1138,7 @@ extern void efi_call_virt_check_flags(unsigned long flags, const void *caller);
 extern unsigned long efi_call_virt_save_flags(void);
 
 void efi_runtime_assert_lock_held(void);
+efi_status_t efi_runtime_set_enable_flag(bool enable);
 
 enum efi_secureboot_mode {
 	efi_secureboot_mode_unset,
@@ -1233,8 +1242,8 @@ efi_call_acpi_prm_handler(efi_status_t (__efiapi *handler_addr)(u64, void *),
 
 /*
  * efi_runtime_service() function identifiers.
- * "NONE" is used by efi_recover_from_page_fault() to check if the page
- * fault happened while executing an efi runtime service.
+ * "NONE" is used by efi_crash_gracefully_on_page_fault() to check if the
+ * page fault happened while executing an efi runtime service.
  */
 enum efi_rts_ids {
 	EFI_NONE,
@@ -1251,6 +1260,10 @@ enum efi_rts_ids {
 	EFI_UPDATE_CAPSULE,
 	EFI_QUERY_CAPSULE_CAPS,
 	EFI_ACPI_PRM_HANDLER,
+#if IS_ENABLED(CONFIG_LKDTM)
+	EFI_LKDTM_RUNTIME_RO_TEST,
+	EFI_LKDTM_RUNTIME_NX_TEST,
+#endif
 };
 
 union efi_rts_args;
@@ -1276,6 +1289,8 @@ extern struct efi_runtime_work efi_rts_work;
 
 /* Workqueue to queue EFI Runtime Services */
 extern struct workqueue_struct *efi_rts_wq;
+
+void __noreturn efi_rts_park_worker(void);
 
 struct linux_efi_memreserve {
 	int		size;			// allocated size of the array
@@ -1349,7 +1364,8 @@ bool efi_config_table_is_usable(const efi_guid_t *guid, unsigned long table)
 	return xen_efi_config_table_is_usable(guid, table);
 }
 
-umode_t efi_attr_is_visible(struct kobject *kobj, struct attribute *attr, int n);
+umode_t efi_attr_is_visible(struct kobject *kobj, const struct attribute *attr,
+			    int n);
 
 int ovmf_log_probe(unsigned long ovmf_debug_log_table);
 

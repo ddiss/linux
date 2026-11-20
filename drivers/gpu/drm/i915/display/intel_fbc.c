@@ -44,8 +44,8 @@
 #include <drm/drm_blend.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_print.h>
+#include <drm/intel/step.h>
 
-#include "i915_vma.h"
 #include "i9xx_plane_regs.h"
 #include "intel_de.h"
 #include "intel_display_device.h"
@@ -59,7 +59,7 @@
 #include "intel_fbc_regs.h"
 #include "intel_frontbuffer.h"
 #include "intel_parent.h"
-#include "intel_step.h"
+#include "skl_universal_plane.h"
 
 #define for_each_fbc_id(__display, __fbc_id) \
 	for ((__fbc_id) = INTEL_FBC_A; (__fbc_id) < I915_MAX_FBCS; (__fbc_id)++) \
@@ -184,7 +184,7 @@ static unsigned int skl_fbc_min_cfb_stride(struct intel_display *display,
 	 * Wa_16011863758: icl+
 	 * Avoid some hardware segment address miscalculation.
 	 */
-	if (DISPLAY_VER(display) >= 11)
+	if (intel_display_wa(display, INTEL_DISPLAY_WA_16011863758))
 		stride += 64;
 
 	/*
@@ -950,7 +950,7 @@ static void intel_fbc_program_workarounds(struct intel_fbc *fbc)
 	}
 
 	/* Wa_1409120013:icl,jsl,tgl,dg1 */
-	if (IS_DISPLAY_VER(display, 11, 12))
+	if (intel_display_wa(display, INTEL_DISPLAY_WA_1409120013))
 		intel_de_rmw(display, ILK_DPFC_CHICKEN(fbc->id),
 			     0, DPFC_CHICKEN_COMP_DUMMY_PIXEL);
 	/*
@@ -958,7 +958,7 @@ static void intel_fbc_program_workarounds(struct intel_fbc *fbc)
 	 * Fixes: Screen flicker with FBC and Package C state enabled
 	 * Workaround: Forced SLB invalidation before start of new frame.
 	 */
-	if (intel_display_wa(display, 22014263786))
+	if (intel_display_wa(display, INTEL_DISPLAY_WA_22014263786))
 		intel_de_rmw(display, ILK_DPFC_CHICKEN(fbc->id),
 			     0, DPFC_CHICKEN_FORCE_SLB_INVALIDATION);
 
@@ -980,7 +980,7 @@ static void fbc_sys_cache_update_config(struct intel_display *display, u32 reg,
 	 * Fixes: SoC hardware issue in read caching
 	 * Workaround: disable cache read setting which is enabled by default.
 	 */
-	if (!intel_display_wa(display, 14025769978))
+	if (!intel_display_wa(display, INTEL_DISPLAY_WA_14025769978))
 		/* Cache read enable is set by default */
 		reg |= FBC_SYS_CACHE_READ_ENABLE;
 
@@ -1196,23 +1196,13 @@ xe3p_lpd_fbc_fp16_format_is_valid(const struct intel_plane_state *plane_state)
 
 static bool xe3p_lpd_fbc_pixel_format_is_valid(const struct intel_plane_state *plane_state)
 {
-	const struct drm_framebuffer *fb = plane_state->hw.fb;
-
 	if (lnl_fbc_pixel_format_is_valid(plane_state))
 		return true;
 
 	if (xe3p_lpd_fbc_fp16_format_is_valid(plane_state))
 		return true;
 
-	switch (fb->format->format) {
-	case DRM_FORMAT_XRGB16161616:
-	case DRM_FORMAT_XBGR16161616:
-	case DRM_FORMAT_ARGB16161616:
-	case DRM_FORMAT_ABGR16161616:
-		return true;
-	default:
-		return false;
-	}
+	return false;
 }
 
 bool intel_fbc_need_pixel_normalizer(const struct intel_plane_state *plane_state)
@@ -1306,6 +1296,9 @@ static bool intel_fbc_surface_size_ok(const struct intel_plane_state *plane_stat
 	struct intel_display *display = to_intel_display(plane_state);
 	unsigned int effective_w, effective_h, max_w, max_h;
 
+	if (DISPLAY_VER(display) >= 20)
+		return true;
+
 	intel_fbc_max_surface_size(display, &max_w, &max_h);
 
 	effective_w = plane_state->view.color_plane[0].x +
@@ -1316,10 +1309,18 @@ static bool intel_fbc_surface_size_ok(const struct intel_plane_state *plane_stat
 	return effective_w <= max_w && effective_h <= max_h;
 }
 
-static void intel_fbc_max_plane_size(struct intel_display *display,
+static void intel_fbc_max_plane_size(const struct intel_plane_state *plane_state,
 				     unsigned int *w, unsigned int *h)
 {
-	if (DISPLAY_VER(display) >= 10) {
+	struct intel_display *display = to_intel_display(plane_state);
+	struct intel_plane *plane = to_intel_plane(plane_state->uapi.plane);
+	const struct drm_framebuffer *fb = plane_state->hw.fb;
+	unsigned int rotation = plane_state->hw.rotation;
+
+	if (DISPLAY_VER(display) >= 20) {
+		*w = intel_plane_max_width(plane, fb, 0, rotation);
+		*h = 4096;
+	} else if (DISPLAY_VER(display) >= 10) {
 		*w = 5120;
 		*h = 4096;
 	} else if (DISPLAY_VER(display) >= 8 || display->platform.haswell) {
@@ -1336,10 +1337,9 @@ static void intel_fbc_max_plane_size(struct intel_display *display,
 
 static bool intel_fbc_plane_size_valid(const struct intel_plane_state *plane_state)
 {
-	struct intel_display *display = to_intel_display(plane_state);
 	unsigned int w, h, max_w, max_h;
 
-	intel_fbc_max_plane_size(display, &max_w, &max_h);
+	intel_fbc_max_plane_size(plane_state, &max_w, &max_h);
 
 	w = drm_rect_width(&plane_state->uapi.src) >> 16;
 	h = drm_rect_height(&plane_state->uapi.src) >> 16;
@@ -1459,13 +1459,10 @@ static void intel_fbc_update_state(struct intel_atomic_state *state,
 
 	fbc_state->fence_y_offset = intel_plane_fence_y_offset(plane_state);
 
-	drm_WARN_ON(display->drm, plane_state->flags & PLANE_HAS_FENCE &&
+	drm_WARN_ON(display->drm, plane_state->fence_id >= 0 &&
 		    !intel_fbc_has_fences(display));
 
-	if (plane_state->flags & PLANE_HAS_FENCE)
-		fbc_state->fence_id =  i915_vma_fence_id(plane_state->ggtt_vma);
-	else
-		fbc_state->fence_id = -1;
+	fbc_state->fence_id = plane_state->fence_id;
 
 	fbc_state->cfb_stride = intel_fbc_cfb_stride(plane_state);
 	fbc_state->cfb_size = intel_fbc_cfb_size(plane_state);
@@ -1488,9 +1485,7 @@ static bool intel_fbc_is_fence_ok(const struct intel_plane_state *plane_state)
 	 * so have no fence associated with it) due to aperture constraints
 	 * at the time of pinning.
 	 */
-	return DISPLAY_VER(display) >= 9 ||
-		(plane_state->flags & PLANE_HAS_FENCE &&
-		 i915_vma_fence_id(plane_state->ggtt_vma) != -1);
+	return DISPLAY_VER(display) >= 9 || plane_state->fence_id >= 0;
 }
 
 static bool intel_fbc_is_cfb_ok(const struct intel_plane_state *plane_state)
@@ -1573,7 +1568,7 @@ static int _intel_fbc_min_cdclk(const struct intel_crtc_state *crtc_state)
 
 	/* WaFbcExceedCdClockThreshold:hsw,bdw */
 	if (display->platform.haswell || display->platform.broadwell)
-		return DIV_ROUND_UP(crtc_state->pixel_rate * 100, 95);
+		return DIV_ROUND_UP(crtc_state->pixel_rate_cdclk * 100, 95);
 
 	/* no FBC specific limits to worry about */
 	return 0;
@@ -1613,7 +1608,7 @@ static int intel_fbc_check_plane(struct intel_atomic_state *state,
 		return 0;
 	}
 
-	if (intel_display_wa(display, 16023588340)) {
+	if (intel_display_wa(display, INTEL_DISPLAY_WA_16023588340)) {
 		plane_state->no_fbc_reason = "Wa_16023588340";
 		return 0;
 	}
@@ -1623,7 +1618,7 @@ static int intel_fbc_check_plane(struct intel_atomic_state *state,
 	 * Fixes: Underrun during media decode
 	 * Workaround: Do not enable FBC
 	 */
-	if (intel_display_wa(display, 15018326506)) {
+	if (intel_display_wa(display, INTEL_DISPLAY_WA_15018326506)) {
 		plane_state->no_fbc_reason = "Wa_15018326506";
 		return 0;
 	}

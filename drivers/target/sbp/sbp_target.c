@@ -1813,7 +1813,7 @@ static int sbp_update_unit_directory(struct sbp_tport *tport)
 		num_entries++;
 
 	/* allocate num_entries + 4 for the header and unique ID leaf */
-	data = kcalloc((num_entries + 4), sizeof(u32), GFP_KERNEL);
+	data = kzalloc_objs(u32, (num_entries + 4));
 	if (!data)
 		return -ENOMEM;
 
@@ -2278,6 +2278,7 @@ static const struct target_core_fabric_ops sbp_ops = {
 	.tfc_tpg_base_attrs		= sbp_tpg_base_attrs,
 	.tfc_tpg_attrib_attrs		= sbp_tpg_attrib_attrs,
 
+	.default_compl_type		= TARGET_QUEUE_COMPL,
 	.default_submit_type		= TARGET_DIRECT_SUBMIT,
 	.direct_submit_supp		= 1,
 };

@@ -4,7 +4,7 @@
   Broadcom B43 wireless driver
   IEEE 802.11n PHY support
 
-  Copyright (c) 2008 Michael Buesch <m@bues.ch>
+  Copyright (c) 2008 Michael Buesch
   Copyright (c) 2010-2011 Rafał Miłecki <zajec5@gmail.com>
 
 
@@ -1506,7 +1506,7 @@ static int b43_nphy_load_samples(struct b43_wldev *dev,
 	u16 i;
 	u32 *data;
 
-	data = kcalloc(len, sizeof(u32), GFP_KERNEL);
+	data = kzalloc_objs(u32, len);
 	if (!data) {
 		b43err(dev->wl, "allocation for samples loading failed\n");
 		return -ENOMEM;
@@ -6566,19 +6566,19 @@ static void b43_nphy_op_software_rfkill(struct b43_wldev *dev,
 
 			b43_radio_mask(dev, 0x09, ~0x2);
 
-			b43_radio_write(dev, 0x204D, 0);
-			b43_radio_write(dev, 0x2053, 0);
-			b43_radio_write(dev, 0x2058, 0);
-			b43_radio_write(dev, 0x205E, 0);
-			b43_radio_mask(dev, 0x2062, ~0xF0);
-			b43_radio_write(dev, 0x2064, 0);
+			b43_radio_write(dev, B2056_TX0 | B2056_TX_PADA_BOOST_TUNE, 0);
+			b43_radio_write(dev, B2056_TX0 | B2056_TX_PADG_BOOST_TUNE, 0);
+			b43_radio_write(dev, B2056_TX0 | B2056_TX_PGAA_BOOST_TUNE, 0);
+			b43_radio_write(dev, B2056_TX0 | B2056_TX_PGAG_BOOST_TUNE, 0);
+			b43_radio_mask(dev, B2056_TX0 | B2056_TX_MIXA_BOOST_TUNE, ~0xF0);
+			b43_radio_write(dev, B2056_TX0 | B2056_TX_MIXG_BOOST_TUNE, 0);
 
-			b43_radio_write(dev, 0x304D, 0);
-			b43_radio_write(dev, 0x3053, 0);
-			b43_radio_write(dev, 0x3058, 0);
-			b43_radio_write(dev, 0x305E, 0);
-			b43_radio_mask(dev, 0x3062, ~0xF0);
-			b43_radio_write(dev, 0x3064, 0);
+			b43_radio_write(dev, B2056_TX1 | B2056_TX_PADA_BOOST_TUNE, 0);
+			b43_radio_write(dev, B2056_TX1 | B2056_TX_PADG_BOOST_TUNE, 0);
+			b43_radio_write(dev, B2056_TX1 | B2056_TX_PGAA_BOOST_TUNE, 0);
+			b43_radio_write(dev, B2056_TX1 | B2056_TX_PGAG_BOOST_TUNE, 0);
+			b43_radio_mask(dev, B2056_TX1 | B2056_TX_MIXA_BOOST_TUNE, ~0xF0);
+			b43_radio_write(dev, B2056_TX1 | B2056_TX_MIXG_BOOST_TUNE, 0);
 		}
 	} else {
 		if (phy->rev >= 19) {

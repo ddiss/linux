@@ -119,12 +119,14 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 					sq_idx);
 				break;
 			}
-			if ((++sq_head & sq_mask) == 0) {
+			if (sq_idx == sq_mask) {
 				seq_printf(m,
 					"%5u: corrupted sqe, wrapping 128B entry\n",
 					sq_idx);
 				break;
 			}
+			sq_head++;
+			i++;
 			sqe128 = true;
 		}
 		seq_printf(m, "%5u: opcode:%s, fd:%d, flags:%x, off:%llu, "
@@ -152,11 +154,26 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 	cq_entries = min(cq_tail - cq_head, ctx->cq_entries);
 	for (i = 0; i < cq_entries; i++) {
 		struct io_uring_cqe *cqe;
-		bool cqe32 = false;
+		bool cqe32 = false, two_entries = false;
+		bool is_last_cqarray_slot = (cq_head & cq_mask) == cq_mask;
 
-		cqe = &r->cqes[(cq_head & cq_mask)];
-		if (cqe->flags & IORING_CQE_F_32 || ctx->flags & IORING_SETUP_CQE32)
+		if (ctx->flags & IORING_SETUP_CQE32) {
+			/* all entries have twice the size */
+			cqe = &r->cqes[(cq_head & cq_mask) << 1];
 			cqe32 = true;
+		} else {
+			cqe = &r->cqes[(cq_head & cq_mask)];
+			/*
+			 * Userspace can manipulate the last cqarray slot to
+			 * have IORING_CQE_F_32 set, which would cause the second
+			 * half of that CQE to be read out of bounds.
+			 * Ignore the flag for the last cqarray slot, which can't
+			 * legitimately have the flag set.
+			 */
+			two_entries = (cqe->flags & IORING_CQE_F_32) &&
+				      !is_last_cqarray_slot;
+			cqe32 = two_entries;
+		}
 		seq_printf(m, "%5u: user_data:%llu, res:%d, flags:%x",
 			   cq_head & cq_mask, cqe->user_data, cqe->res,
 			   cqe->flags);
@@ -165,7 +182,7 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 					cqe->big_cqe[0], cqe->big_cqe[1]);
 		seq_printf(m, "\n");
 		cq_head++;
-		if (cqe32) {
+		if (two_entries) {
 			cq_head++;
 			i++;
 		}
@@ -188,8 +205,9 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 			get_task_struct(tsk);
 			rcu_read_unlock();
 			usec = io_sq_cpu_usec(tsk);
+			sq_pid = task_pid_nr_ns(tsk,
+						proc_pid_ns(file_inode(m->file)->i_sb));
 			put_task_struct(tsk);
-			sq_pid = sq->task_pid;
 			sq_cpu = sq->sq_cpu;
 			sq_total_time = usec;
 			sq_work_time = sq->work_time;
@@ -221,7 +239,7 @@ static void __io_uring_show_fdinfo(struct io_ring_ctx *ctx, struct seq_file *m)
 		if (ctx->buf_table.nodes[i])
 			buf = ctx->buf_table.nodes[i]->buf;
 		if (buf)
-			seq_printf(m, "%5u: 0x%llx/%u\n", i, buf->ubuf, buf->len);
+			seq_printf(m, "%5u: 0x%llx/%zu\n", i, buf->ubuf, buf->len);
 		else
 			seq_printf(m, "%5u: <none>\n", i);
 	}

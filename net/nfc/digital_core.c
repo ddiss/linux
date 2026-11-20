@@ -127,7 +127,7 @@ static void digital_wq_cmd_complete(struct work_struct *work)
 
 	mutex_unlock(&ddev->cmd_lock);
 
-	if (!IS_ERR(cmd->resp))
+	if (!IS_ERR_OR_NULL(cmd->resp))
 		print_hex_dump_debug("DIGITAL RX: ", DUMP_PREFIX_NONE, 16, 1,
 				     cmd->resp->data, cmd->resp->len, false);
 
@@ -707,8 +707,10 @@ static int digital_in_send(struct nfc_dev *nfc_dev, struct nfc_target *target,
 	int rc;
 
 	data_exch = kzalloc_obj(*data_exch);
-	if (!data_exch)
+	if (!data_exch) {
+		kfree_skb(skb);
 		return -ENOMEM;
+	}
 
 	data_exch->cb = cb;
 	data_exch->cb_context = cb_context;
@@ -731,8 +733,10 @@ static int digital_in_send(struct nfc_dev *nfc_dev, struct nfc_target *target,
 				 data_exch);
 
 exit:
-	if (rc)
+	if (rc) {
+		kfree_skb(skb);
 		kfree(data_exch);
+	}
 
 	return rc;
 }

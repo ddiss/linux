@@ -37,48 +37,18 @@ struct fp9931_data {
 };
 
 static const unsigned int VPOSNEG_table[] = {
-	7040000,
-	7040000,
-	7040000,
-	7040000,
-	7040000,
-	7040000,
-	7260000,
-	7490000,
-	7710000,
-	7930000,
-	8150000,
-	8380000,
-	8600000,
-	8820000,
-	9040000,
-	9270000,
-	9490000,
-	9710000,
-	9940000,
-	10160000,
-	10380000,
-	10600000,
-	10830000,
-	11050000,
-	11270000,
-	11490000,
-	11720000,
-	11940000,
-	12160000,
-	12380000,
-	12610000,
-	12830000,
-	13050000,
-	13280000,
-	13500000,
-	13720000,
-	13940000,
-	14170000,
-	14390000,
-	14610000,
-	14830000,
-	15060000,
+	7040000,  7040000,  7040000,  7040000,  7040000,            /* 00h-04h */
+	7260000,  7490000,  7710000,  7930000,  8150000,  8380000,  /* 05h-0Ah */
+	8600000,  8820000,  9040000,  9270000,  9490000,  9710000,  /* 0Bh-10h */
+	9940000,  10160000, 10380000, 10600000, 10830000, 11050000, /* 11h-16h */
+	11270000, 11490000, 11720000, 11940000, 12160000, 12380000, /* 17h-1Ch */
+	12610000, 12830000, 13050000, 13280000, 13500000, 13720000, /* 1Dh-22h */
+	13940000, 14170000, 14390000, 14610000, 14830000, 15060000, /* 23h-28h */
+	/* 29h-3Fh: clamped to 15.06V per datasheet */
+	15060000, 15060000, 15060000, 15060000, 15060000, 15060000,
+	15060000, 15060000, 15060000, 15060000, 15060000, 15060000,
+	15060000, 15060000, 15060000, 15060000, 15060000, 15060000,
+	15060000, 15060000, 15060000, 15060000, 15060000,
 };
 
 static const struct hwmon_channel_info *fp9931_info[] = {
@@ -144,13 +114,12 @@ static int fp9931_hwmon_read(struct device *dev, enum hwmon_sensor_types type,
 		return ret;
 
 	ret = regmap_read(data->regmap, FP9931_REG_TMST_VALUE, &val);
-	if (ret)
-		return ret;
+	if (!ret)
+		*temp = (s8)val * 1000;
 
 	pm_runtime_put_autosuspend(data->dev);
-	*temp = (s8)val * 1000;
 
-	return 0;
+	return ret;
 }
 
 static umode_t fp9931_hwmon_is_visible(const void *data,
@@ -438,7 +407,7 @@ static int fp9931_probe(struct i2c_client *client)
 	int ret = 0;
 	int i;
 
-	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&client->dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -447,7 +416,7 @@ static int fp9931_probe(struct i2c_client *client)
 		return dev_err_probe(&client->dev, PTR_ERR(data->regmap),
 				     "failed to allocate regmap!\n");
 
-	data->vin_reg = devm_regulator_get_optional(&client->dev, "vin");
+	data->vin_reg = devm_regulator_get(&client->dev, "vin");
 	if (IS_ERR(data->vin_reg))
 		return dev_err_probe(&client->dev, PTR_ERR(data->vin_reg),
 				     "failed to get vin regulator\n");

@@ -9,7 +9,6 @@
 #include <linux/clk-provider.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -890,8 +889,7 @@ static int bm1880_clk_probe(struct platform_device *pdev)
 		   ARRAY_SIZE(bm1880_composite_clks) +
 		   ARRAY_SIZE(bm1880_gate_clks);
 
-	clk_data = devm_kzalloc(dev, struct_size(clk_data, hw_data.hws,
-						 num_clks), GFP_KERNEL);
+	clk_data = devm_kzalloc_flex(dev, *clk_data, hw_data.hws, num_clks);
 	if (!clk_data)
 		return -ENOMEM;
 

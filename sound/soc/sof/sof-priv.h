@@ -17,6 +17,7 @@
 #include <sound/sof/info.h>
 #include <sound/sof/pm.h>
 #include <sound/sof/trace.h>
+#include <sound/compress_params.h>
 #include <uapi/sound/sof/fw.h>
 #include <sound/sof/ext_manifest.h>
 
@@ -111,6 +112,7 @@ struct sof_compr_stream {
 	u32 sampling_rate;
 	u16 channels;
 	u16 sample_container_bytes;
+	struct snd_codec codec_params;
 	size_t posn_offset;
 };
 
@@ -254,6 +256,18 @@ struct snd_sof_dsp_ops {
 	/* pcm ack */
 	int (*pcm_ack)(struct snd_sof_dev *sdev, struct snd_pcm_substream *substream); /* optional */
 
+	int (*compr_open)(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream);
+	int (*compr_close)(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream);
+	int (*compr_hw_params)(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream,
+			       struct snd_compr_params *params,
+			       struct snd_sof_platform_stream_params *platform_params);
+	int (*compr_hw_free)(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream);
+	int (*compr_trigger)(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream,
+			     int cmd);
+	int (*compr_pointer)(struct snd_sof_dev *sdev, struct snd_compr_stream *cstream,
+			     struct snd_compr_tstamp64 *tstamp);
+	u64 (*compr_get_dai_frame_counter)(struct snd_sof_dev *sdev,
+					   struct snd_compr_stream *cstream);
 	/*
 	 * optional callback to retrieve the number of frames left/arrived from/to
 	 * the DSP on the DAI side (link/codec/DMIC/etc).

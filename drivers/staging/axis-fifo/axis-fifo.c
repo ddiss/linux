@@ -15,7 +15,6 @@
 #include <linux/wait.h>
 #include <linux/mutex.h>
 #include <linux/device.h>
-#include <linux/cdev.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -24,7 +23,6 @@
 #include <linux/fs.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
-#include <linux/jiffies.h>
 #include <linux/miscdevice.h>
 #include <linux/debugfs.h>
 #include <linux/poll.h>
@@ -71,8 +69,8 @@ struct axis_fifo {
 
 	unsigned int rx_fifo_depth;
 	unsigned int tx_fifo_depth;
-	int has_rx_fifo;
-	int has_tx_fifo;
+	u32 has_rx_fifo;
+	u32 has_tx_fifo;
 
 	wait_queue_head_t read_queue;
 	struct mutex read_lock; /* lock for reading */
@@ -114,7 +112,7 @@ static void reset_ip_core(struct axis_fifo *fifo)
  * operations must be executed atomically, in order and one after the other
  * without missing any.
  *
- * Returns the number of bytes read from the device or negative error code
+ * Return: The number of bytes read from the device or negative error code
  *	on failure.
  */
 static ssize_t axis_fifo_read(struct file *f, char __user *buf,
@@ -207,16 +205,16 @@ end_unlock:
  * we need to lock before checking if the device has available space to avoid
  * any concurrency issue.
  *
- * Returns the number of bytes written to the device or negative error code
+ * Return: The number of bytes written to the device or negative error code
  *	on failure.
  */
 static ssize_t axis_fifo_write(struct file *f, const char __user *buf,
 			       size_t len, loff_t *off)
 {
 	struct axis_fifo *fifo = f->private_data;
-	unsigned int words_to_write;
+	size_t words_to_write;
 	u32 *txbuf;
-	int ret;
+	ssize_t ret;
 
 	words_to_write = len / sizeof(u32);
 
@@ -246,7 +244,8 @@ static ssize_t axis_fifo_write(struct file *f, const char __user *buf,
 		mutex_lock(&fifo->write_lock);
 
 		ret = wait_event_interruptible(fifo->write_queue,
-			ioread32(fifo->base_addr + XLLF_TDFV_OFFSET) >= words_to_write);
+					       ioread32(fifo->base_addr + XLLF_TDFV_OFFSET) >=
+					       words_to_write);
 		if (ret)
 			goto end_unlock;
 	}
@@ -257,7 +256,7 @@ static ssize_t axis_fifo_write(struct file *f, const char __user *buf,
 		goto end_unlock;
 	}
 
-	for (int i = 0; i < words_to_write; ++i)
+	for (size_t i = 0; i < words_to_write; ++i)
 		iowrite32(txbuf[i], fifo->base_addr + XLLF_TDFD_OFFSET);
 
 	iowrite32(len, fifo->base_addr + XLLF_TLR_OFFSET);
@@ -392,60 +391,39 @@ static int axis_fifo_parse_dt(struct axis_fifo *fifo)
 
 	ret = of_property_read_u32(node, "xlnx,axi-str-rxd-tdata-width",
 				   &value);
-	if (ret) {
-		dev_err(fifo->dt_device, "missing xlnx,axi-str-rxd-tdata-width property\n");
-		goto end;
-	} else if (value != 32) {
-		dev_err(fifo->dt_device, "xlnx,axi-str-rxd-tdata-width only supports 32 bits\n");
-		ret = -EIO;
-		goto end;
-	}
+	if (ret)
+		return ret;
+	if (value != 32)
+		return -EINVAL;
 
 	ret = of_property_read_u32(node, "xlnx,axi-str-txd-tdata-width",
 				   &value);
-	if (ret) {
-		dev_err(fifo->dt_device, "missing xlnx,axi-str-txd-tdata-width property\n");
-		goto end;
-	} else if (value != 32) {
-		dev_err(fifo->dt_device, "xlnx,axi-str-txd-tdata-width only supports 32 bits\n");
-		ret = -EIO;
-		goto end;
-	}
+	if (ret)
+		return ret;
+	if (value != 32)
+		return -EINVAL;
 
 	ret = of_property_read_u32(node, "xlnx,rx-fifo-depth",
 				   &fifo->rx_fifo_depth);
-	if (ret) {
-		dev_err(fifo->dt_device, "missing xlnx,rx-fifo-depth property\n");
-		ret = -EIO;
-		goto end;
-	}
+	if (ret)
+		return ret;
 
 	ret = of_property_read_u32(node, "xlnx,tx-fifo-depth",
 				   &fifo->tx_fifo_depth);
-	if (ret) {
-		dev_err(fifo->dt_device, "missing xlnx,tx-fifo-depth property\n");
-		ret = -EIO;
-		goto end;
-	}
+	if (ret)
+		return ret;
 
 	ret = of_property_read_u32(node, "xlnx,use-rx-data",
 				   &fifo->has_rx_fifo);
-	if (ret) {
-		dev_err(fifo->dt_device, "missing xlnx,use-rx-data property\n");
-		ret = -EIO;
-		goto end;
-	}
+	if (ret)
+		return ret;
 
 	ret = of_property_read_u32(node, "xlnx,use-tx-data",
 				   &fifo->has_tx_fifo);
-	if (ret) {
-		dev_err(fifo->dt_device, "missing xlnx,use-tx-data property\n");
-		ret = -EIO;
-		goto end;
-	}
+	if (ret)
+		return ret;
 
-end:
-	return ret;
+	return 0;
 }
 
 static int axis_fifo_probe(struct platform_device *pdev)
@@ -456,7 +434,7 @@ static int axis_fifo_probe(struct platform_device *pdev)
 	int rc = 0; /* error return value */
 	int irq;
 
-	fifo = devm_kzalloc(dev, sizeof(*fifo), GFP_KERNEL);
+	fifo = devm_kzalloc_obj(dev, *fifo);
 	if (!fifo)
 		return -ENOMEM;
 

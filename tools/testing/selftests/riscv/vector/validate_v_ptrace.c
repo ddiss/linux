@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <sys/ptrace.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
@@ -25,9 +26,9 @@ TEST(ptrace_v_not_enabled)
 		SKIP(return, "Vector not supported");
 
 	chld_lock = 1;
-	pid = fork();
+	pid = (pid_t)syscall(SYS_clone, SIGCHLD, 0, NULL, 0, NULL);
 	ASSERT_LE(0, pid)
-		TH_LOG("fork: %m");
+		TH_LOG("clone: %m");
 
 	if (pid == 0) {
 		while (chld_lock == 1)
@@ -74,7 +75,7 @@ TEST(ptrace_v_not_enabled)
 		ASSERT_EQ(-1, ret);
 
 		/* cleanup */
-
+		free(regset_data);
 		ASSERT_EQ(0, kill(pid, SIGKILL));
 	}
 }
@@ -206,7 +207,7 @@ TEST(ptrace_v_early_debug)
 		EXPECT_EQ(vl_csr, regset_data->vl);
 
 		/* cleanup */
-
+		free(regset_data);
 		ASSERT_EQ(0, kill(pid, SIGKILL));
 	}
 }
@@ -290,10 +291,11 @@ TEST(ptrace_v_syscall_clobbering)
 
 		/* verify initial vsetvli settings */
 
-		if (is_xtheadvector_supported())
+		if (is_xtheadvector_supported()) {
 			EXPECT_EQ(5UL, regset_data->vtype);
-		else
+		} else {
 			EXPECT_EQ(9UL, regset_data->vtype);
+		}
 
 		EXPECT_EQ(regset_data->vlenb, regset_data->vl);
 		EXPECT_EQ(vlenb, regset_data->vlenb);
@@ -329,7 +331,7 @@ TEST(ptrace_v_syscall_clobbering)
 		EXPECT_EQ(0UL, regset_data->vl);
 
 		/* cleanup */
-
+		free(regset_data);
 		ASSERT_EQ(0, kill(pid, SIGKILL));
 	}
 }
@@ -346,8 +348,8 @@ FIXTURE_TEARDOWN(v_csr_invalid)
 {
 }
 
-#define VECTOR_1_0		BIT(0)
-#define XTHEAD_VECTOR_0_7	BIT(1)
+#define VECTOR_1_0		_BITUL(0)
+#define XTHEAD_VECTOR_0_7	_BITUL(1)
 
 #define vector_test(x)		((x) & VECTOR_1_0)
 #define xthead_test(x)		((x) & XTHEAD_VECTOR_0_7)
@@ -619,10 +621,11 @@ TEST_F(v_csr_invalid, ptrace_v_invalid_values)
 
 		/* verify initial vsetvli settings */
 
-		if (is_xtheadvector_supported())
+		if (is_xtheadvector_supported()) {
 			EXPECT_EQ(5UL, regset_data->vtype);
-		else
+		} else {
 			EXPECT_EQ(9UL, regset_data->vtype);
+		}
 
 		EXPECT_EQ(regset_data->vlenb, regset_data->vl);
 		EXPECT_EQ(vlenb, regset_data->vlenb);
@@ -646,7 +649,7 @@ TEST_F(v_csr_invalid, ptrace_v_invalid_values)
 		ASSERT_EQ(ret, -1);
 
 		/* cleanup */
-
+		free(regset_data);
 		ASSERT_EQ(0, kill(pid, SIGKILL));
 	}
 }
@@ -827,10 +830,11 @@ TEST_F(v_csr_valid, ptrace_v_valid_values)
 
 		/* verify initial vsetvli settings */
 
-		if (is_xtheadvector_supported())
+		if (is_xtheadvector_supported()) {
 			EXPECT_EQ(5UL, regset_data->vtype);
-		else
+		} else {
 			EXPECT_EQ(9UL, regset_data->vtype);
+		}
 
 		EXPECT_EQ(regset_data->vlenb, regset_data->vl);
 		EXPECT_EQ(vlenb, regset_data->vlenb);
@@ -907,7 +911,7 @@ TEST_F(v_csr_valid, ptrace_v_valid_values)
 		EXPECT_EQ(regset_data->vlenb, vlenb);
 
 		/* cleanup */
-
+		free(regset_data);
 		ASSERT_EQ(0, kill(pid, SIGKILL));
 	}
 }

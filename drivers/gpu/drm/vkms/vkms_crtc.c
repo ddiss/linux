@@ -4,6 +4,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_blend.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -85,22 +86,24 @@ static void vkms_atomic_crtc_destroy_state(struct drm_crtc *crtc,
 	kfree(vkms_state);
 }
 
-static void vkms_atomic_crtc_reset(struct drm_crtc *crtc)
+static struct drm_crtc_state *vkms_atomic_crtc_create_state(struct drm_crtc *crtc)
 {
-	struct vkms_crtc_state *vkms_state = kzalloc_obj(*vkms_state);
+	struct vkms_crtc_state *vkms_state;
 
-	if (crtc->state)
-		vkms_atomic_crtc_destroy_state(crtc, crtc->state);
+	vkms_state = kzalloc_obj(*vkms_state);
+	if (!vkms_state)
+		return ERR_PTR(-ENOMEM);
 
-	__drm_atomic_helper_crtc_reset(crtc, &vkms_state->base);
-	if (vkms_state)
-		INIT_WORK(&vkms_state->composer_work, vkms_composer_worker);
+	__drm_atomic_helper_crtc_state_init(&vkms_state->base, crtc);
+	INIT_WORK(&vkms_state->composer_work, vkms_composer_worker);
+
+	return &vkms_state->base;
 }
 
 static const struct drm_crtc_funcs vkms_crtc_funcs = {
 	.set_config             = drm_atomic_helper_set_config,
 	.page_flip              = drm_atomic_helper_page_flip,
-	.reset                  = vkms_atomic_crtc_reset,
+	.atomic_create_state = vkms_atomic_crtc_create_state,
 	.atomic_duplicate_state = vkms_atomic_crtc_duplicate_state,
 	.atomic_destroy_state   = vkms_atomic_crtc_destroy_state,
 	DRM_CRTC_VBLANK_TIMER_FUNCS,
@@ -110,7 +113,7 @@ static const struct drm_crtc_funcs vkms_crtc_funcs = {
 };
 
 static int vkms_crtc_atomic_check(struct drm_crtc *crtc,
-				  struct drm_atomic_state *state)
+				  struct drm_atomic_commit *state)
 {
 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state,
 									  crtc);
@@ -156,7 +159,7 @@ static int vkms_crtc_atomic_check(struct drm_crtc *crtc,
 }
 
 static void vkms_crtc_atomic_begin(struct drm_crtc *crtc,
-				   struct drm_atomic_state *state)
+				   struct drm_atomic_commit *state)
 	__acquires(&vkms_output->lock)
 {
 	struct vkms_output *vkms_output = drm_crtc_to_vkms_output(crtc);
@@ -168,7 +171,7 @@ static void vkms_crtc_atomic_begin(struct drm_crtc *crtc,
 }
 
 static void vkms_crtc_atomic_flush(struct drm_crtc *crtc,
-				   struct drm_atomic_state *state)
+				   struct drm_atomic_commit *state)
 	__releases(&vkms_output->lock)
 {
 	struct vkms_output *vkms_output = drm_crtc_to_vkms_output(crtc);
@@ -226,6 +229,8 @@ struct vkms_output *vkms_crtc_init(struct drm_device *dev, struct drm_plane *pri
 	}
 
 	drm_crtc_enable_color_mgmt(crtc, 0, false, VKMS_LUT_SIZE);
+
+	drm_crtc_attach_background_color_property(crtc);
 
 	spin_lock_init(&vkms_out->lock);
 	spin_lock_init(&vkms_out->composer_lock);

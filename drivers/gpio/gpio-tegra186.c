@@ -19,6 +19,7 @@
 #include <dt-bindings/gpio/tegra186-gpio.h>
 #include <dt-bindings/gpio/tegra194-gpio.h>
 #include <dt-bindings/gpio/tegra234-gpio.h>
+#include <dt-bindings/gpio/nvidia,tegra238-gpio.h>
 #include <dt-bindings/gpio/tegra241-gpio.h>
 #include <dt-bindings/gpio/tegra256-gpio.h>
 #include <dt-bindings/gpio/nvidia,tegra264-gpio.h>
@@ -125,7 +126,6 @@ struct tegra_gpio_soc {
 struct tegra_gpio {
 	struct gpio_chip gpio;
 	unsigned int num_irq;
-	unsigned int *irq;
 
 	const struct tegra_gpio_soc *soc;
 	unsigned int num_irqs_per_bank;
@@ -133,6 +133,8 @@ struct tegra_gpio {
 
 	void __iomem *secure;
 	void __iomem *base;
+
+	unsigned int irq[] __counted_by(num_irq);
 };
 
 static const struct tegra_gpio_port *
@@ -857,11 +859,17 @@ static int tegra186_gpio_probe(struct platform_device *pdev)
 	struct device_node *np;
 	struct resource *res;
 	char **names;
-	int err;
+	int node, err;
 
-	gpio = devm_kzalloc(&pdev->dev, sizeof(*gpio), GFP_KERNEL);
+	err = platform_irq_count(pdev);
+	if (err < 0)
+		return err;
+
+	gpio = devm_kzalloc_flex(&pdev->dev, *gpio, irq, err);
 	if (!gpio)
 		return -ENOMEM;
+
+	gpio->num_irq = err;
 
 	gpio->soc = device_get_match_data(&pdev->dev);
 	gpio->gpio.label = gpio->soc->name;
@@ -889,20 +897,9 @@ static int tegra186_gpio_probe(struct platform_device *pdev)
 	if (IS_ERR(gpio->base))
 		return PTR_ERR(gpio->base);
 
-	err = platform_irq_count(pdev);
-	if (err < 0)
-		return err;
-
-	gpio->num_irq = err;
-
 	err = tegra186_gpio_irqs_per_bank(gpio);
 	if (err < 0)
 		return err;
-
-	gpio->irq = devm_kcalloc(&pdev->dev, gpio->num_irq, sizeof(*gpio->irq),
-				 GFP_KERNEL);
-	if (!gpio->irq)
-		return -ENOMEM;
 
 	for (i = 0; i < gpio->num_irq; i++) {
 		err = platform_get_irq(pdev, i);
@@ -932,21 +929,26 @@ static int tegra186_gpio_probe(struct platform_device *pdev)
 	for (i = 0; i < gpio->soc->num_ports; i++)
 		gpio->gpio.ngpio += gpio->soc->ports[i].pins;
 
-	names = devm_kcalloc(gpio->gpio.parent, gpio->gpio.ngpio,
-			     sizeof(*names), GFP_KERNEL);
+	names = devm_kzalloc_objs(gpio->gpio.parent, *names, gpio->gpio.ngpio);
 	if (!names)
 		return -ENOMEM;
+
+	node = dev_to_node(&pdev->dev);
 
 	for (i = 0, offset = 0; i < gpio->soc->num_ports; i++) {
 		const struct tegra_gpio_port *port = &gpio->soc->ports[i];
 		char *name;
 
 		for (j = 0; j < port->pins; j++) {
-			if (gpio->soc->prefix)
-				name = devm_kasprintf(gpio->gpio.parent, GFP_KERNEL, "%s-P%s.%02x",
-						      gpio->soc->prefix, port->name, j);
+			if (node >= 0)
+				name = devm_kasprintf(gpio->gpio.parent, GFP_KERNEL,
+						      "%d-%sP%s.%02x", node,
+						      gpio->soc->prefix ?: "",
+						      port->name, j);
 			else
-				name = devm_kasprintf(gpio->gpio.parent, GFP_KERNEL, "P%s.%02x",
+				name = devm_kasprintf(gpio->gpio.parent, GFP_KERNEL,
+						      "%sP%s.%02x",
+						      gpio->soc->prefix ?: "",
 						      port->name, j);
 			if (!name)
 				return -ENOMEM;
@@ -985,8 +987,8 @@ static int tegra186_gpio_probe(struct platform_device *pdev)
 	 * currently program.
 	 */
 	if (gpio->num_irqs_per_bank > 1) {
-		irq->parents = devm_kcalloc(&pdev->dev, gpio->num_banks,
-					    sizeof(*irq->parents), GFP_KERNEL);
+		irq->parents = devm_kzalloc_objs(&pdev->dev, *irq->parents,
+						 gpio->num_banks);
 		if (!irq->parents)
 			return -ENOMEM;
 
@@ -1017,8 +1019,7 @@ static int tegra186_gpio_probe(struct platform_device *pdev)
 		}
 	}
 
-	irq->map = devm_kcalloc(&pdev->dev, gpio->gpio.ngpio,
-				sizeof(*irq->map), GFP_KERNEL);
+	irq->map = devm_kzalloc_objs(&pdev->dev, *irq->map, gpio->gpio.ngpio);
 	if (!irq->map)
 		return -ENOMEM;
 
@@ -1237,6 +1238,67 @@ static const struct tegra_gpio_soc tegra234_aon_soc = {
 	.has_vm_support = false,
 };
 
+#define TEGRA238_MAIN_GPIO_PORT(_name, _bank, _port, _pins) \
+	TEGRA_GPIO_PORT(TEGRA238_MAIN, _name, _bank, _port, _pins)
+
+static const struct tegra_gpio_port tegra238_main_ports[] = {
+	TEGRA238_MAIN_GPIO_PORT(A, 0, 0, 8),
+	TEGRA238_MAIN_GPIO_PORT(B, 0, 1, 5),
+	TEGRA238_MAIN_GPIO_PORT(C, 0, 2, 8),
+	TEGRA238_MAIN_GPIO_PORT(D, 0, 3, 8),
+	TEGRA238_MAIN_GPIO_PORT(E, 0, 4, 4),
+	TEGRA238_MAIN_GPIO_PORT(F, 0, 5, 8),
+	TEGRA238_MAIN_GPIO_PORT(G, 0, 6, 8),
+	TEGRA238_MAIN_GPIO_PORT(H, 0, 7, 6),
+	TEGRA238_MAIN_GPIO_PORT(J, 1, 0, 8),
+	TEGRA238_MAIN_GPIO_PORT(K, 1, 1, 4),
+	TEGRA238_MAIN_GPIO_PORT(L, 1, 2, 8),
+	TEGRA238_MAIN_GPIO_PORT(M, 1, 3, 8),
+	TEGRA238_MAIN_GPIO_PORT(N, 1, 4, 3),
+	TEGRA238_MAIN_GPIO_PORT(P, 1, 5, 8),
+	TEGRA238_MAIN_GPIO_PORT(Q, 1, 6, 3),
+	TEGRA238_MAIN_GPIO_PORT(R, 2, 0, 8),
+	TEGRA238_MAIN_GPIO_PORT(S, 2, 1, 8),
+	TEGRA238_MAIN_GPIO_PORT(T, 2, 2, 8),
+	TEGRA238_MAIN_GPIO_PORT(U, 2, 3, 6),
+	TEGRA238_MAIN_GPIO_PORT(V, 2, 4, 2),
+	TEGRA238_MAIN_GPIO_PORT(W, 3, 0, 8),
+	TEGRA238_MAIN_GPIO_PORT(X, 3, 1, 2)
+};
+
+static const struct tegra_gpio_soc tegra238_main_soc = {
+	.num_ports = ARRAY_SIZE(tegra238_main_ports),
+	.ports = tegra238_main_ports,
+	.name = "tegra238-gpio",
+	.instance = 0,
+	.num_irqs_per_bank = 8,
+	.has_vm_support = true,
+};
+
+#define TEGRA238_AON_GPIO_PORT(_name, _bank, _port, _pins) \
+	TEGRA_GPIO_PORT(TEGRA238_AON, _name, _bank, _port, _pins)
+
+static const struct tegra_gpio_port tegra238_aon_ports[] = {
+	TEGRA238_AON_GPIO_PORT(AA, 0, 0, 8),
+	TEGRA238_AON_GPIO_PORT(BB, 0, 1, 1),
+	TEGRA238_AON_GPIO_PORT(CC, 0, 2, 8),
+	TEGRA238_AON_GPIO_PORT(DD, 0, 3, 8),
+	TEGRA238_AON_GPIO_PORT(EE, 0, 4, 6),
+	TEGRA238_AON_GPIO_PORT(FF, 0, 5, 8),
+	TEGRA238_AON_GPIO_PORT(GG, 0, 6, 8),
+	TEGRA238_AON_GPIO_PORT(HH, 0, 7, 4)
+};
+
+static const struct tegra_gpio_soc tegra238_aon_soc = {
+	.num_ports = ARRAY_SIZE(tegra238_aon_ports),
+	.ports = tegra238_aon_ports,
+	.name = "tegra238-gpio-aon",
+	.instance = 1,
+	.num_irqs_per_bank = 8,
+	.has_gte = true,
+	.has_vm_support = false,
+};
+
 #define TEGRA241_MAIN_GPIO_PORT(_name, _bank, _port, _pins) \
 	TEGRA_GPIO_PORT(TEGRA241_MAIN, _name, _bank, _port, _pins)
 
@@ -1331,6 +1393,7 @@ static const struct tegra_gpio_soc tegra264_aon_soc = {
 	.name = "tegra264-gpio-aon",
 	.instance = 1,
 	.num_irqs_per_bank = 8,
+	.has_gte = true,
 	.has_vm_support = true,
 };
 
@@ -1349,6 +1412,71 @@ static const struct tegra_gpio_soc tegra264_uphy_soc = {
 	.num_ports = ARRAY_SIZE(tegra264_uphy_ports),
 	.ports = tegra264_uphy_ports,
 	.name = "tegra264-gpio-uphy",
+	.instance = 2,
+	.num_irqs_per_bank = 8,
+	.has_vm_support = true,
+};
+
+static const struct tegra_gpio_port tegra268_main_ports[] = {
+	TEGRA264_MAIN_GPIO_PORT(F, 3, 0, 8),
+	TEGRA264_MAIN_GPIO_PORT(G, 3, 1, 5),
+	TEGRA264_MAIN_GPIO_PORT(H, 1, 0, 8),
+	TEGRA264_MAIN_GPIO_PORT(J, 1, 1, 8),
+	TEGRA264_MAIN_GPIO_PORT(K, 1, 2, 8),
+	TEGRA264_MAIN_GPIO_PORT(L, 1, 3, 8),
+	TEGRA264_MAIN_GPIO_PORT(M, 1, 4, 2),
+	TEGRA264_MAIN_GPIO_PORT(P, 2, 0, 8),
+	TEGRA264_MAIN_GPIO_PORT(Q, 2, 1, 8),
+	TEGRA264_MAIN_GPIO_PORT(R, 2, 2, 8),
+	TEGRA264_MAIN_GPIO_PORT(S, 2, 3, 2),
+	TEGRA264_MAIN_GPIO_PORT(T, 0, 0, 7),
+	TEGRA264_MAIN_GPIO_PORT(U, 0, 1, 8),
+	TEGRA264_MAIN_GPIO_PORT(V, 0, 2, 8),
+	TEGRA264_MAIN_GPIO_PORT(W, 0, 3, 8),
+	TEGRA264_MAIN_GPIO_PORT(Y, 0, 5, 8),
+	TEGRA264_MAIN_GPIO_PORT(Z, 0, 6, 8),
+	TEGRA264_MAIN_GPIO_PORT(AL, 0, 4, 3),
+};
+
+static const struct tegra_gpio_soc tegra268_main_soc = {
+	.num_ports = ARRAY_SIZE(tegra268_main_ports),
+	.ports = tegra268_main_ports,
+	.name = "tegra268-gpio",
+	.instance = 0,
+	.num_irqs_per_bank = 8,
+	.has_vm_support = true,
+};
+
+static const struct tegra_gpio_port tegra268_aon_ports[] = {
+	TEGRA264_AON_GPIO_PORT(AA, 0, 0, 8),
+	TEGRA264_AON_GPIO_PORT(BB, 0, 1, 2),
+	TEGRA264_AON_GPIO_PORT(CC, 0, 2, 8),
+	TEGRA264_AON_GPIO_PORT(DD, 0, 3, 8),
+	TEGRA264_AON_GPIO_PORT(EE, 0, 4, 2)
+};
+
+static const struct tegra_gpio_soc tegra268_aon_soc = {
+	.num_ports = ARRAY_SIZE(tegra268_aon_ports),
+	.ports = tegra268_aon_ports,
+	.name = "tegra268-gpio-aon",
+	.instance = 1,
+	.num_irqs_per_bank = 8,
+	.has_gte = true,
+	.has_vm_support = true,
+};
+
+static const struct tegra_gpio_port tegra268_uphy_ports[] = {
+	TEGRA264_UPHY_GPIO_PORT(A, 0, 0, 6),
+	TEGRA264_UPHY_GPIO_PORT(B, 0, 1, 8),
+	TEGRA264_UPHY_GPIO_PORT(C, 0, 2, 3),
+	TEGRA264_UPHY_GPIO_PORT(D, 1, 0, 6),
+	TEGRA264_UPHY_GPIO_PORT(E, 1, 1, 4),
+};
+
+static const struct tegra_gpio_soc tegra268_uphy_soc = {
+	.num_ports = ARRAY_SIZE(tegra268_uphy_ports),
+	.ports = tegra268_uphy_ports,
+	.name = "tegra268-gpio-uphy",
 	.instance = 2,
 	.num_irqs_per_bank = 8,
 	.has_vm_support = true,
@@ -1373,6 +1501,9 @@ static const struct tegra_gpio_soc tegra256_main_soc = {
 	.has_vm_support = true,
 };
 
+/* Macro to define GPIO name prefix with separator */
+#define TEGRA_GPIO_PREFIX(_x)	_x "-"
+
 #define TEGRA410_COMPUTE_GPIO_PORT(_name, _bank, _port, _pins)	\
 	TEGRA_GPIO_PORT(TEGRA410_COMPUTE, _name, _bank, _port, _pins)
 
@@ -1388,7 +1519,7 @@ static const struct tegra_gpio_soc tegra410_compute_soc = {
 	.num_ports = ARRAY_SIZE(tegra410_compute_ports),
 	.ports = tegra410_compute_ports,
 	.name = "tegra410-gpio-compute",
-	.prefix = "COMPUTE",
+	.prefix = TEGRA_GPIO_PREFIX("COMPUTE"),
 	.num_irqs_per_bank = 8,
 	.instance = 0,
 };
@@ -1418,7 +1549,7 @@ static const struct tegra_gpio_soc tegra410_system_soc = {
 	.num_ports = ARRAY_SIZE(tegra410_system_ports),
 	.ports = tegra410_system_ports,
 	.name = "tegra410-gpio-system",
-	.prefix = "SYSTEM",
+	.prefix = TEGRA_GPIO_PREFIX("SYSTEM"),
 	.num_irqs_per_bank = 8,
 	.instance = 0,
 };
@@ -1443,6 +1574,12 @@ static const struct of_device_id tegra186_gpio_of_match[] = {
 		.compatible = "nvidia,tegra234-gpio-aon",
 		.data = &tegra234_aon_soc
 	}, {
+		.compatible = "nvidia,tegra238-gpio",
+		.data = &tegra238_main_soc
+	}, {
+		.compatible = "nvidia,tegra238-gpio-aon",
+		.data = &tegra238_aon_soc
+	}, {
 		.compatible = "nvidia,tegra256-gpio",
 		.data = &tegra256_main_soc
 	}, {
@@ -1454,6 +1591,15 @@ static const struct of_device_id tegra186_gpio_of_match[] = {
 	}, {
 		.compatible = "nvidia,tegra264-gpio-uphy",
 		.data = &tegra264_uphy_soc
+	}, {
+		.compatible = "nvidia,tegra268-gpio",
+		.data = &tegra268_main_soc
+	}, {
+		.compatible = "nvidia,tegra268-gpio-aon",
+		.data = &tegra268_aon_soc
+	}, {
+		.compatible = "nvidia,tegra268-gpio-uphy",
+		.data = &tegra268_uphy_soc
 	}, {
 		/* sentinel */
 	}

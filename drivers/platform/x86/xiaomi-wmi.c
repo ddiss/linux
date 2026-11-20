@@ -33,7 +33,7 @@ static int xiaomi_wmi_probe(struct wmi_device *wdev, const void *context)
 	if (!context)
 		return -EINVAL;
 
-	data = devm_kzalloc(&wdev->dev, sizeof(struct xiaomi_wmi), GFP_KERNEL);
+	data = devm_kzalloc_obj(&wdev->dev, struct xiaomi_wmi);
 	if (data == NULL)
 		return -ENOMEM;
 	dev_set_drvdata(&wdev->dev, data);
@@ -83,6 +83,7 @@ static struct wmi_driver xiaomi_wmi_driver = {
 		.name = "xiaomi-wmi",
 	},
 	.id_table = xiaomi_wmi_id_table,
+	.min_event_size = 0,
 	.probe = xiaomi_wmi_probe,
 	.notify_new = xiaomi_wmi_notify,
 	.no_singleton = true,

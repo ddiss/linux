@@ -9,8 +9,8 @@
 #include <linux/entry-common.h>
 #include <linux/errno.h>
 #include <linux/linkage.h>
+#include <linux/nospec.h>
 #include <linux/objtool.h>
-#include <linux/randomize_kstack.h>
 #include <linux/syscalls.h>
 #include <linux/unistd.h>
 
@@ -57,8 +57,8 @@ typedef long (*sys_call_fn)(unsigned long, unsigned long,
 
 void noinstr __no_stack_protector do_syscall(struct pt_regs *regs)
 {
-	unsigned long nr;
 	sys_call_fn syscall_fn;
+	unsigned long nr;
 
 	nr = regs->regs[11];
 	/* Set for syscall restarting */
@@ -69,26 +69,13 @@ void noinstr __no_stack_protector do_syscall(struct pt_regs *regs)
 	regs->orig_a0 = regs->regs[4];
 	regs->regs[4] = -ENOSYS;
 
-	nr = syscall_enter_from_user_mode(regs, nr);
-
-	add_random_kstack_offset();
-
-	if (nr < NR_syscalls) {
-		syscall_fn = sys_call_table[nr];
-		regs->regs[4] = syscall_fn(regs->orig_a0, regs->regs[5], regs->regs[6],
-					   regs->regs[7], regs->regs[8], regs->regs[9]);
+	if (likely(syscall_enter_from_user_mode_randomize_stack(regs, &nr))) {
+		if (nr < NR_syscalls) {
+			syscall_fn = sys_call_table[array_index_nospec(nr, NR_syscalls)];
+			regs->regs[4] = syscall_fn(regs->orig_a0, regs->regs[5], regs->regs[6],
+						   regs->regs[7], regs->regs[8], regs->regs[9]);
+		}
 	}
-
-	/*
-	 * This value will get limited by KSTACK_OFFSET_MAX(), which is 10
-	 * bits. The actual entropy will be further reduced by the compiler
-	 * when applying stack alignment constraints: 16-bytes (i.e. 4-bits)
-	 * aligned, which will remove the 4 low bits from any entropy chosen
-	 * here.
-	 *
-	 * The resulting 6 bits of entropy is seen in SP[9:4].
-	 */
-	choose_random_kstack_offset(get_cycles());
 
 	syscall_exit_to_user_mode(regs);
 }

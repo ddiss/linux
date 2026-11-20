@@ -6,7 +6,6 @@
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/leds.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/regmap.h>
@@ -501,8 +500,8 @@ static int lp50xx_probe_dt(struct lp50xx *priv)
 		 * There are only 3 LEDs per module otherwise they should be
 		 * banked which also is presented as 3 LEDs.
 		 */
-		mc_led_info = devm_kcalloc(priv->dev, LP50XX_LEDS_PER_MODULE,
-					   sizeof(*mc_led_info), GFP_KERNEL);
+		mc_led_info = devm_kzalloc_objs(priv->dev, *mc_led_info,
+						LP50XX_LEDS_PER_MODULE);
 		if (!mc_led_info)
 			return -ENOMEM;
 
@@ -525,6 +524,7 @@ static int lp50xx_probe_dt(struct lp50xx *priv)
 			}
 
 			mc_led_info[multi_index].color_index = color_id;
+			mc_led_info[multi_index].max_intensity = 255;
 			num_colors++;
 		}
 
@@ -559,8 +559,7 @@ static int lp50xx_probe(struct i2c_client *client)
 		return -ENODEV;
 	}
 
-	led = devm_kzalloc(&client->dev, struct_size(led, leds, count),
-			   GFP_KERNEL);
+	led = devm_kzalloc_flex(&client->dev, *led, leds, count);
 	if (!led)
 		return -ENOMEM;
 
@@ -600,12 +599,12 @@ static void lp50xx_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id lp50xx_id[] = {
-	{ "lp5009", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5009] },
-	{ "lp5012", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5012] },
-	{ "lp5018", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5018] },
-	{ "lp5024", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5024] },
-	{ "lp5030", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5030] },
-	{ "lp5036", (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5036] },
+	{ .name = "lp5009", .driver_data = (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5009] },
+	{ .name = "lp5012", .driver_data = (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5012] },
+	{ .name = "lp5018", .driver_data = (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5018] },
+	{ .name = "lp5024", .driver_data = (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5024] },
+	{ .name = "lp5030", .driver_data = (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5030] },
+	{ .name = "lp5036", .driver_data = (kernel_ulong_t)&lp50xx_chip_info_tbl[LP5036] },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lp50xx_id);

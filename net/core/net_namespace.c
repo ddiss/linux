@@ -181,6 +181,7 @@ static void ops_exit_rtnl_list(const struct list_head *ops_list,
 				ops->exit_rtnl(net, &dev_kill_list);
 		}
 
+		unregister_netdevice_queue_many_net(net, &dev_kill_list);
 		__rtnl_net_unlock(net);
 	}
 
@@ -269,14 +270,19 @@ static void ops_undo_single(struct pernet_operations *ops,
 /* should be called with nsid_lock held */
 static int alloc_netid(struct net *net, struct net *peer, int reqid)
 {
-	int min = 0, max = 0;
+	int ret;
+	u32 id;
 
 	if (reqid >= 0) {
-		min = reqid;
-		max = reqid + 1;
+		id = reqid;
+		ret = idr_alloc_u32(&net->netns_ids, peer, &id, id,
+				    GFP_ATOMIC);
+		if (ret)
+			return ret;
+		return id;
 	}
 
-	return idr_alloc(&net->netns_ids, peer, min, max, GFP_ATOMIC);
+	return idr_alloc(&net->netns_ids, peer, 0, 0, GFP_ATOMIC);
 }
 
 /* This function is used by idr_for_each(). If net is equal to peer, the
@@ -399,19 +405,13 @@ static __net_init void preinit_net_sysctl(struct net *net)
 }
 
 /* init code that must occur even if setup_net() is not called. */
-static __net_init int preinit_net(struct net *net, struct user_namespace *user_ns)
+static __net_init void preinit_net(struct net *net, struct user_namespace *user_ns)
 {
-	int ret;
-
-	ret = ns_common_init(net);
-	if (ret)
-		return ret;
-
 	refcount_set(&net->passive, 1);
 	ref_tracker_dir_init(&net->refcnt_tracker, 128, "net_refcnt");
 	ref_tracker_dir_init(&net->notrefcnt_tracker, 128, "net_notrefcnt");
 
-	get_random_bytes(&net->hash_mix, sizeof(u32));
+	net->hash_mix = get_random_u32();
 	net->dev_base_seq = 1;
 	net->user_ns = user_ns;
 
@@ -422,12 +422,14 @@ static __net_init int preinit_net(struct net *net, struct user_namespace *user_n
 #ifdef CONFIG_DEBUG_NET_SMALL_RTNL
 	mutex_init(&net->rtnl_mutex);
 	lock_set_cmp_fn(&net->rtnl_mutex, rtnl_net_lock_cmp_fn, NULL);
+	INIT_WORK(&net->rtnl_work, rtnl_net_work_func);
+	INIT_LIST_HEAD(&net->dev_unreg_head);
+	spin_lock_init(&net->dev_unreg_lock);
 #endif
 
 	INIT_LIST_HEAD(&net->ptype_all);
 	INIT_LIST_HEAD(&net->ptype_specific);
 	preinit_net_sysctl(net);
-	return 0;
 }
 
 /*
@@ -440,7 +442,7 @@ static __net_init int setup_net(struct net *net)
 	LIST_HEAD(net_exit_list);
 	int error = 0;
 
-	net->net_cookie = ns_tree_gen_id(net);
+	net->net_cookie = to_ns_common(net)->ns_id;
 
 	list_for_each_entry(ops, &pernet_list, list) {
 		error = ops_init(ops, net);
@@ -450,7 +452,9 @@ static __net_init int setup_net(struct net *net)
 	down_write(&net_rwsem);
 	list_add_tail_rcu(&net->list, &net_namespace_list);
 	up_write(&net_rwsem);
-	ns_tree_add_raw(net);
+	/* Without CONFIG_NET_NS init_net isn't exposed as a namespace. */
+	if (IS_ENABLED(CONFIG_NET_NS))
+		ns_tree_add(net);
 out:
 	return error;
 
@@ -532,20 +536,22 @@ void net_passive_dec(struct net *net)
 	if (refcount_dec_and_test(&net->passive)) {
 		kfree(rcu_access_pointer(net->gen));
 
+#ifdef CONFIG_REF_TRACKER
 		/* There should not be any trackers left there. */
 		ref_tracker_dir_exit(&net->notrefcnt_tracker);
+		if (!net->refcnt_tracker.dead)
+			ref_tracker_dir_exit(&net->refcnt_tracker);
+#endif
 
 		/* Wait for an extra rcu_barrier() before final free. */
 		llist_add(&net->defer_free_list, &defer_free_list);
 	}
 }
 
-void net_drop_ns(void *p)
+void net_drop_ns(struct ns_common *ns)
 {
-	struct net *net = (struct net *)p;
-
-	if (net)
-		net_passive_dec(net);
+	if (ns)
+		net_passive_dec(to_net_ns(ns));
 }
 
 struct net *copy_net_ns(u64 flags,
@@ -568,11 +574,13 @@ struct net *copy_net_ns(u64 flags,
 		goto dec_ucounts;
 	}
 
-	rv = preinit_net(net, user_ns);
-	if (rv < 0)
-		goto dec_ucounts;
+	preinit_net(net, user_ns);
 	net->ucounts = ucounts;
 	get_user_ns(user_ns);
+
+	rv = ns_common_init(net);
+	if (rv)
+		goto put_userns_no_common;
 
 	rv = down_read_killable(&pernet_ops_rwsem);
 	if (rv < 0)
@@ -585,6 +593,7 @@ struct net *copy_net_ns(u64 flags,
 	if (rv < 0) {
 put_userns:
 		ns_common_free(net);
+put_userns_no_common:
 #ifdef CONFIG_KEYS
 		key_remove_domain(net->key_domain);
 #endif
@@ -635,10 +644,10 @@ static void unhash_nsid(struct net *last)
 	 * use for_each_net_rcu() or net_rwsem.
 	 */
 	for_each_net(tmp) {
-		int id = 0;
+		unsigned long id = 0;
 
 		spin_lock(&tmp->nsid_lock);
-		while ((peer = idr_get_next(&tmp->netns_ids, &id))) {
+		while ((peer = idr_get_next_ul(&tmp->netns_ids, &id))) {
 			int curr_id = id;
 
 			id++;
@@ -1287,7 +1296,8 @@ void __init net_ns_init(void)
 	 * This currently cannot fail as the initial network namespace
 	 * has a static inode number.
 	 */
-	if (preinit_net(&init_net, &init_user_ns))
+	preinit_net(&init_net, &init_user_ns);
+	if (ns_common_init(&init_net))
 		panic("Could not preinitialize the initial network namespace");
 
 	down_write(&pernet_ops_rwsem);

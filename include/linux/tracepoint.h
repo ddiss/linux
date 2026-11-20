@@ -20,6 +20,7 @@
 #include <linux/rcupdate_trace.h>
 #include <linux/tracepoint-defs.h>
 #include <linux/static_call.h>
+#include <linux/cfi.h>
 
 struct module;
 struct tracepoint;
@@ -122,6 +123,22 @@ static inline bool tracepoint_is_faultable(struct tracepoint *tp)
 {
 	return tp->ext && tp->ext->faultable;
 }
+/*
+ * Run RCU callback with the appropriate grace period wait for non-faultable
+ * tracepoints, e.g., those used in atomic context.
+ */
+static inline void call_tracepoint_unregister_atomic(struct rcu_head *rcu, rcu_callback_t func)
+{
+	call_srcu(&tracepoint_srcu, rcu, func);
+}
+/*
+ * Run RCU callback with the appropriate grace period wait for faultable
+ * tracepoints, e.g., those used in syscall context.
+ */
+static inline void call_tracepoint_unregister_syscall(struct rcu_head *rcu, rcu_callback_t func)
+{
+	call_rcu_tasks_trace(rcu, func);
+}
 #else
 static inline void tracepoint_synchronize_unregister(void)
 { }
@@ -129,6 +146,10 @@ static inline bool tracepoint_is_faultable(struct tracepoint *tp)
 {
 	return false;
 }
+static inline void call_tracepoint_unregister_atomic(struct rcu_head *rcu, rcu_callback_t func)
+{  }
+static inline void call_tracepoint_unregister_syscall(struct rcu_head *rcu, rcu_callback_t func)
+{  }
 #endif
 
 #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
@@ -182,7 +203,7 @@ static inline struct tracepoint *tracepoint_ptr_deref(tracepoint_ptr_t *p)
 #define TP_CONDITION(args...)	args
 
 /*
- * Individual subsystem my have a separate configuration to
+ * Individual subsystem may have a separate configuration to
  * enable their tracepoints. By default, this file will create
  * the tracepoints if CONFIG_TRACEPOINTS is defined. If a subsystem
  * wants to be able to disable its tracepoints from being created
@@ -271,9 +292,18 @@ static inline struct tracepoint *tracepoint_ptr_deref(tracepoint_ptr_t *p)
 	{								\
 	}								\
 	static inline bool						\
-	trace_##name##_enabled(void)					\
+	__trace_##name##_enabled(void)					\
 	{								\
 		return static_branch_unlikely(&__tracepoint_##name.key);\
+	}								\
+	static inline bool						\
+	trace_##name##_enabled(void)					\
+	{								\
+		if (IS_ENABLED(CONFIG_LOCKDEP)) {			\
+			WARN_ONCE(!rcu_is_watching(),			\
+				  "RCU not watching for tracepoint");	\
+		}							\
+		return __trace_##name##_enabled();			\
 	}
 
 #define __DECLARE_TRACE(name, proto, args, cond, data_proto)			\
@@ -294,6 +324,10 @@ static inline struct tracepoint *tracepoint_ptr_deref(tracepoint_ptr_t *p)
 			WARN_ONCE(!rcu_is_watching(),			\
 				  "RCU not watching for tracepoint");	\
 		}							\
+	}								\
+	static inline void trace_call__##name(proto)			\
+	{								\
+		__do_trace_##name(args);				\
 	}
 
 #define __DECLARE_TRACE_SYSCALL(name, proto, args, data_proto)		\
@@ -313,6 +347,11 @@ static inline struct tracepoint *tracepoint_ptr_deref(tracepoint_ptr_t *p)
 			WARN_ONCE(!rcu_is_watching(),			\
 				  "RCU not watching for tracepoint");	\
 		}							\
+	}								\
+	static inline void trace_call__##name(proto)			\
+	{								\
+		might_fault();						\
+		__do_trace_##name(args);				\
 	}
 
 /*
@@ -360,6 +399,13 @@ static inline struct tracepoint *tracepoint_ptr_deref(tracepoint_ptr_t *p)
 	void __probestub_##_name(void *__data, proto)			\
 	{								\
 	}								\
+	/*								\
+	 * Annotate the probestub 'CFI_NOSEAL' to stop objtool from	\
+	 * requesting the kernel remove the ENDBR, because the only	\
+	 * references to the function are in the __tracepoint section,	\
+	 * that objtool doesn't scan.					\
+	 */								\
+	CFI_NOSEAL(__probestub_##_name);				\
 	DEFINE_STATIC_CALL(tp_func_##_name, __traceiter_##_name);	\
 	DEFINE_RUST_DO_TRACE(_name, TP_PROTO(proto), TP_ARGS(args))
 
@@ -398,6 +444,8 @@ static inline struct tracepoint *tracepoint_ptr_deref(tracepoint_ptr_t *p)
 #define __DECLARE_TRACE_COMMON(name, proto, args, data_proto)		\
 	static inline void trace_##name(proto)				\
 	{ }								\
+	static inline void trace_call__##name(proto)			\
+	{ }								\
 	static inline int						\
 	register_trace_##name(void (*probe)(data_proto),		\
 			      void *data)				\
@@ -412,6 +460,11 @@ static inline struct tracepoint *tracepoint_ptr_deref(tracepoint_ptr_t *p)
 	}								\
 	static inline void check_trace_callback_type_##name(void (*cb)(data_proto)) \
 	{								\
+	}								\
+	static inline bool						\
+	__trace_##name##_enabled(void)					\
+	{								\
+		return false;						\
 	}								\
 	static inline bool						\
 	trace_##name##_enabled(void)					\

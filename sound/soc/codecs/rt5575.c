@@ -281,7 +281,7 @@ static int rt5575_i2c_probe(struct i2c_client *i2c)
 	int ret, val, boot;
 	struct device *dev = &i2c->dev;
 
-	rt5575 = devm_kzalloc(dev, sizeof(struct rt5575_priv), GFP_KERNEL);
+	rt5575 = devm_kzalloc_obj(dev, struct rt5575_priv);
 	if (!rt5575)
 		return -ENOMEM;
 
@@ -325,7 +325,7 @@ static int rt5575_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id rt5575_i2c_id[] = {
-	{ "rt5575" },
+	{ .name = "rt5575" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt5575_i2c_id);
@@ -339,7 +339,6 @@ MODULE_DEVICE_TABLE(of, rt5575_of_match);
 static struct i2c_driver rt5575_i2c_driver = {
 	.driver = {
 		.name = "rt5575",
-		.owner = THIS_MODULE,
 		.of_match_table = rt5575_of_match,
 	},
 	.probe = rt5575_i2c_probe,

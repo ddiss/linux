@@ -6,7 +6,6 @@
 // Author: KaiChieh Chuang <kaichieh.chuang@mediatek.com>
 
 #include <linux/platform_device.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/kthread.h>
@@ -2382,9 +2381,7 @@ static int mt6358_platform_driver_probe(struct platform_device *pdev)
 	struct mt6358_priv *priv;
 	struct mt6397_chip *mt6397 = dev_get_drvdata(pdev->dev.parent);
 
-	priv = devm_kzalloc(&pdev->dev,
-			    sizeof(struct mt6358_priv),
-			    GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, struct mt6358_priv);
 	if (!priv)
 		return -ENOMEM;
 

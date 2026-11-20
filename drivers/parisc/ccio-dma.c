@@ -415,7 +415,7 @@ resource_found:
  * @pages_mapped: The requested number of pages to be freed from the
  * I/O Pdir.
  *
- * This function frees the resouces allocated for the iova.
+ * This function frees the resources allocated for the iova.
  */
 static void
 ccio_free_range(struct ioc *ioc, dma_addr_t iova, unsigned long pages_mapped)
@@ -503,8 +503,8 @@ typedef unsigned long space_t;
 
 
 /*
-** Use direction (ie PCI_DMA_TODEVICE) to pick hint.
-** ccio_alloc_consistent() depends on this to get SAFE_DMA
+** Use direction (ie DMA_TO_DEVICE) to pick hint.
+** ccio_alloc() depends on this to get SAFE_DMA
 ** when it passes in BIDIRECTIONAL flag.
 */
 static u32 hint_lookup[] = {
@@ -865,8 +865,8 @@ ccio_alloc(struct device *dev, size_t size, dma_addr_t *dma_handle, gfp_t flag,
  * ccio_free - Free a consistent DMA mapping.
  * @dev: The PCI device.
  * @size: The length of the DMA region.
- * @cpu_addr: The cpu address returned from the ccio_alloc_consistent.
- * @dma_handle: The device address returned from the ccio_alloc_consistent.
+ * @cpu_addr: The cpu address returned from ccio_alloc().
+ * @dma_handle: The device address returned from ccio_alloc().
  * @attrs: attributes
  *
  * This function implements the pci_free_consistent function.

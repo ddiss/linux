@@ -123,8 +123,7 @@ static int rt5682_i2c_probe(struct i2c_client *i2c)
 	int i, ret;
 	unsigned int val;
 
-	rt5682 = devm_kzalloc(&i2c->dev, sizeof(struct rt5682_priv),
-		GFP_KERNEL);
+	rt5682 = devm_kzalloc_obj(&i2c->dev, struct rt5682_priv);
 	if (!rt5682)
 		return -ENOMEM;
 
@@ -324,8 +323,8 @@ static const struct acpi_device_id rt5682_acpi_match[] = {
 MODULE_DEVICE_TABLE(acpi, rt5682_acpi_match);
 
 static const struct i2c_device_id rt5682_i2c_id[] = {
-	{"rt5682"},
-	{}
+	{ .name = "rt5682" },
+	{ }
 };
 MODULE_DEVICE_TABLE(i2c, rt5682_i2c_id);
 

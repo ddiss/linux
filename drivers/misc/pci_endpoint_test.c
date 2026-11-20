@@ -61,6 +61,7 @@
 #define STATUS_BAR_SUBRANGE_SETUP_FAIL		BIT(15)
 #define STATUS_BAR_SUBRANGE_CLEAR_SUCCESS	BIT(16)
 #define STATUS_BAR_SUBRANGE_CLEAR_FAIL		BIT(17)
+#define STATUS_NO_RESOURCE			BIT(18)
 
 #define PCI_ENDPOINT_TEST_LOWER_SRC_ADDR	0x0c
 #define PCI_ENDPOINT_TEST_UPPER_SRC_ADDR	0x10
@@ -84,6 +85,13 @@
 #define CAP_MSIX				BIT(2)
 #define CAP_INTX				BIT(3)
 #define CAP_SUBRANGE_MAPPING			BIT(4)
+#define CAP_DYNAMIC_INBOUND_MAPPING		BIT(5)
+#define CAP_BAR0_RESERVED			BIT(6)
+#define CAP_BAR1_RESERVED			BIT(7)
+#define CAP_BAR2_RESERVED			BIT(8)
+#define CAP_BAR3_RESERVED			BIT(9)
+#define CAP_BAR4_RESERVED			BIT(10)
+#define CAP_BAR5_RESERVED			BIT(11)
 
 #define PCI_ENDPOINT_TEST_DB_BAR		0x34
 #define PCI_ENDPOINT_TEST_DB_OFFSET		0x38
@@ -106,6 +114,9 @@
 #define PCI_DEVICE_ID_RENESAS_R8A779F0		0x0031
 
 #define PCI_DEVICE_ID_ROCKCHIP_RK3588		0x3588
+
+#define PCI_DEVICE_ID_NVIDIA_TEGRA194_EP	0x1ad4
+#define PCI_DEVICE_ID_NVIDIA_TEGRA234_EP	0x229b
 
 #define PCI_ENDPOINT_TEST_BAR_SUBRANGE_NSUB	2
 
@@ -275,6 +286,11 @@ fail:
 	return ret;
 }
 
+static bool bar_is_reserved(struct pci_endpoint_test *test, enum pci_barno bar)
+{
+	return test->ep_caps & BIT(bar + __fls(CAP_BAR0_RESERVED));
+}
+
 static const u32 bar_test_pattern[] = {
 	0xA0A0A0A0,
 	0xA1A1A1A1,
@@ -403,7 +419,7 @@ static int pci_endpoint_test_bars(struct pci_endpoint_test *test)
 
 	/* Write all BARs in order (without reading). */
 	for (bar = 0; bar < PCI_STD_NUM_BARS; bar++)
-		if (test->bar[bar])
+		if (test->bar[bar] && !bar_is_reserved(test, bar))
 			pci_endpoint_test_bars_write_bar(test, bar);
 
 	/*
@@ -413,7 +429,7 @@ static int pci_endpoint_test_bars(struct pci_endpoint_test *test)
 	 * (Reading back the BAR directly after writing can not detect this.)
 	 */
 	for (bar = 0; bar < PCI_STD_NUM_BARS; bar++) {
-		if (test->bar[bar]) {
+		if (test->bar[bar] && !bar_is_reserved(test, bar)) {
 			ret = pci_endpoint_test_bars_read_bar(test, bar);
 			if (ret)
 				return ret;
@@ -465,7 +481,7 @@ static int pci_endpoint_test_bar_subrange_cmd(struct pci_endpoint_test *test,
 
 	status = pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_STATUS);
 	if (status & fail_bit)
-		return -EIO;
+		return (status & STATUS_NO_RESOURCE) ? -ENOSPC : -EIO;
 
 	if (!(status & ok_bit))
 		return -EIO;
@@ -535,7 +551,7 @@ static int pci_endpoint_test_bar_subrange(struct pci_endpoint_test *test,
 
 	sub_size = bar_size / nsub;
 	if (sub_size < sizeof(u32)) {
-		ret = -ENOSPC;
+		ret = -EINVAL;
 		goto out_clear;
 	}
 
@@ -1055,10 +1071,14 @@ static int pci_endpoint_test_doorbell(struct pci_endpoint_test *test)
 	struct pci_dev *pdev = test->pdev;
 	struct device *dev = &pdev->dev;
 	int irq_type = test->irq_type;
+	int ret = 0;
 	enum pci_barno bar;
 	u32 data, status;
 	u32 addr;
 	int left;
+
+	if (!(test->ep_caps & CAP_DYNAMIC_INBOUND_MAPPING))
+		return -EOPNOTSUPP;
 
 	if (irq_type < PCITEST_IRQ_TYPE_INTX ||
 	    irq_type > PCITEST_IRQ_TYPE_MSIX) {
@@ -1074,14 +1094,13 @@ static int pci_endpoint_test_doorbell(struct pci_endpoint_test *test)
 	left = wait_for_completion_timeout(&test->irq_raised, msecs_to_jiffies(1000));
 
 	status = pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_STATUS);
-	if (!left || (status & STATUS_DOORBELL_ENABLE_FAIL)) {
+	if (!left || !(status & STATUS_DOORBELL_ENABLE_SUCCESS)) {
 		dev_err(dev, "Failed to enable doorbell\n");
 		return -EINVAL;
 	}
 
 	data = pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_DB_DATA);
 	addr = pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_DB_OFFSET);
-	bar = pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_DB_BAR);
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_IRQ_TYPE, irq_type);
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_IRQ_NUMBER, 1);
@@ -1089,6 +1108,11 @@ static int pci_endpoint_test_doorbell(struct pci_endpoint_test *test)
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_STATUS, 0);
 
 	bar = pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_DB_BAR);
+	if (bar < BAR_0 || bar >= PCI_STD_NUM_BARS) {
+		dev_err(dev, "BAR %d reported by endpoint out of range [0, %u]\n",
+			bar, PCI_STD_NUM_BARS - 1);
+		return -ERANGE;
+	}
 
 	writel(data, test->bar[bar] + addr);
 
@@ -1096,8 +1120,11 @@ static int pci_endpoint_test_doorbell(struct pci_endpoint_test *test)
 
 	status = pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_STATUS);
 
-	if (!left || !(status & STATUS_DOORBELL_SUCCESS))
+	if (!left || !(status & STATUS_DOORBELL_SUCCESS)) {
 		dev_err(dev, "Failed to trigger doorbell in endpoint\n");
+		/* Store error code, but continue to disable doorbell. */
+		ret = -EINVAL;
+	}
 
 	pci_endpoint_test_writel(test, PCI_ENDPOINT_TEST_COMMAND,
 				 COMMAND_DISABLE_DOORBELL);
@@ -1106,15 +1133,12 @@ static int pci_endpoint_test_doorbell(struct pci_endpoint_test *test)
 
 	status |= pci_endpoint_test_readl(test, PCI_ENDPOINT_TEST_STATUS);
 
-	if (status & STATUS_DOORBELL_DISABLE_FAIL) {
+	if (!(status & STATUS_DOORBELL_DISABLE_SUCCESS)) {
 		dev_err(dev, "Failed to disable doorbell\n");
 		return -EINVAL;
 	}
 
-	if (!(status & STATUS_DOORBELL_SUCCESS))
-		return -EINVAL;
-
-	return 0;
+	return ret;
 }
 
 static long pci_endpoint_test_ioctl(struct file *file, unsigned int cmd,
@@ -1138,6 +1162,11 @@ static long pci_endpoint_test_ioctl(struct file *file, unsigned int cmd,
 			goto ret;
 		if (is_am654_pci_dev(pdev) && bar == BAR_0)
 			goto ret;
+
+		if (bar_is_reserved(test, bar)) {
+			ret = -ENOBUFS;
+			goto ret;
+		}
 
 		if (cmd == PCITEST_BAR)
 			ret = pci_endpoint_test_bar(test, bar);
@@ -1217,7 +1246,7 @@ static int pci_endpoint_test_probe(struct pci_dev *pdev,
 	if (pci_is_bridge(pdev))
 		return -ENODEV;
 
-	test = devm_kzalloc(dev, sizeof(*test), GFP_KERNEL);
+	test = devm_kzalloc_obj(dev, *test);
 	if (!test)
 		return -ENOMEM;
 
@@ -1296,6 +1325,8 @@ static int pci_endpoint_test_probe(struct pci_dev *pdev,
 	}
 	misc_device->parent = &pdev->dev;
 	misc_device->fops = &pci_endpoint_test_fops;
+
+	pci_save_state(pdev);
 
 	ret = misc_register(misc_device);
 	if (ret) {
@@ -1388,18 +1419,18 @@ static const struct pci_device_id pci_endpoint_test_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_FREESCALE, 0x81c0),
 	  .driver_data = (kernel_ulong_t)&default_data,
 	},
-	{ PCI_DEVICE(PCI_VENDOR_ID_FREESCALE, PCI_DEVICE_ID_IMX8),},
+	{ PCI_DEVICE(PCI_VENDOR_ID_FREESCALE, PCI_DEVICE_ID_IMX8) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_FREESCALE, PCI_DEVICE_ID_LS1088A),
 	  .driver_data = (kernel_ulong_t)&default_data,
 	},
 	{ PCI_DEVICE_DATA(SYNOPSYS, EDDA, NULL) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_TI, PCI_DEVICE_ID_TI_AM654),
-	  .driver_data = (kernel_ulong_t)&am654_data
+	  .driver_data = (kernel_ulong_t)&am654_data,
 	},
-	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A774A1),},
-	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A774B1),},
-	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A774C0),},
-	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A774E1),},
+	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A774A1) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A774B1) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A774C0) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A774E1) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_RENESAS, PCI_DEVICE_ID_RENESAS_R8A779F0),
 	  .driver_data = (kernel_ulong_t)&default_data,
 	},
@@ -1418,9 +1449,31 @@ static const struct pci_device_id pci_endpoint_test_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_ROCKCHIP, PCI_DEVICE_ID_ROCKCHIP_RK3588),
 	  .driver_data = (kernel_ulong_t)&rk3588_data,
 	},
+	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_TEGRA194_EP) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_NVIDIA, PCI_DEVICE_ID_NVIDIA_TEGRA234_EP) },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, pci_endpoint_test_tbl);
+
+static pci_ers_result_t pci_endpoint_test_error_detected(struct pci_dev *pdev,
+					      pci_channel_state_t state)
+{
+	if (state == pci_channel_io_perm_failure)
+		return PCI_ERS_RESULT_DISCONNECT;
+
+	return PCI_ERS_RESULT_NEED_RESET;
+}
+
+static pci_ers_result_t pci_endpoint_test_slot_reset(struct pci_dev *pdev)
+{
+	pci_restore_state(pdev);
+	return PCI_ERS_RESULT_RECOVERED;
+}
+
+static const struct pci_error_handlers pci_endpoint_test_err_handler = {
+	.error_detected = pci_endpoint_test_error_detected,
+	.slot_reset = pci_endpoint_test_slot_reset,
+};
 
 static struct pci_driver pci_endpoint_test_driver = {
 	.name		= DRV_MODULE_NAME,
@@ -1428,6 +1481,7 @@ static struct pci_driver pci_endpoint_test_driver = {
 	.probe		= pci_endpoint_test_probe,
 	.remove		= pci_endpoint_test_remove,
 	.sriov_configure = pci_sriov_configure_simple,
+	.err_handler    = &pci_endpoint_test_err_handler,
 };
 module_pci_driver(pci_endpoint_test_driver);
 

@@ -40,9 +40,7 @@ static int dwc_eth_dwmac_config_dt(struct platform_device *pdev,
 	u32 burst_map = 0;
 
 	if (!plat_dat->axi) {
-		plat_dat->axi = devm_kzalloc(&pdev->dev,
-					     sizeof(struct stmmac_axi),
-					     GFP_KERNEL);
+		plat_dat->axi = devm_kzalloc_obj(&pdev->dev, struct stmmac_axi);
 
 		if (!plat_dat->axi)
 			return -ENOMEM;
@@ -88,7 +86,7 @@ static int dwc_eth_dwmac_config_dt(struct platform_device *pdev,
 	plat_dat->core_type = DWMAC_CORE_GMAC4;
 	plat_dat->dma_cfg->aal = 1;
 	plat_dat->flags |= STMMAC_FLAG_TSO_EN;
-	plat_dat->pmt = 1;
+	plat_dat->pmt = true;
 
 	return 0;
 }
@@ -112,7 +110,8 @@ static int dwc_qos_probe(struct platform_device *pdev,
 #define AUTO_CAL_STATUS 0x880c
 #define  AUTO_CAL_STATUS_ACTIVE BIT(31)
 
-static void tegra_eqos_fix_speed(void *bsp_priv, int speed, unsigned int mode)
+static void tegra_eqos_fix_speed(void *bsp_priv, phy_interface_t interface,
+				 int speed, unsigned int mode)
 {
 	struct tegra_eqos *eqos = bsp_priv;
 	bool needs_calibration = false;
@@ -190,7 +189,7 @@ static int tegra_eqos_probe(struct platform_device *pdev,
 	struct tegra_eqos *eqos;
 	int err;
 
-	eqos = devm_kzalloc(&pdev->dev, sizeof(*eqos), GFP_KERNEL);
+	eqos = devm_kzalloc_obj(&pdev->dev, *eqos);
 	if (!eqos)
 		return -ENOMEM;
 

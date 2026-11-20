@@ -445,6 +445,9 @@ static int regmap_sunxi_rsb_reg_write(void *context, unsigned int reg,
 	struct sunxi_rsb_ctx *ctx = context;
 	struct sunxi_rsb_device *rdev = ctx->rdev;
 
+	if (reg > 0xff)
+		return -EINVAL;
+
 	return sunxi_rsb_write(rdev->rsb, rdev->rtaddr, reg, &val, ctx->size);
 }
 
@@ -754,7 +757,7 @@ static int sunxi_rsb_probe(struct platform_device *pdev)
 				     "clock-frequency (%u Hz) is too high (max = 20MHz)\n",
 				     clk_freq);
 
-	rsb = devm_kzalloc(dev, sizeof(*rsb), GFP_KERNEL);
+	rsb = devm_kzalloc_obj(dev, *rsb);
 	if (!rsb)
 		return -ENOMEM;
 

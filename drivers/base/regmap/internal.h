@@ -10,6 +10,7 @@
 #ifndef _REGMAP_INTERNAL_H
 #define _REGMAP_INTERNAL_H
 
+#include <linux/cleanup.h>
 #include <linux/device.h>
 #include <linux/regmap.h>
 #include <linux/fs.h>
@@ -84,6 +85,7 @@ struct regmap {
 	bool debugfs_disable;
 	struct dentry *debugfs;
 	const char *debugfs_name;
+	int debugfs_dummy_id;
 
 	unsigned int debugfs_reg_len;
 	unsigned int debugfs_val_len;
@@ -162,7 +164,7 @@ struct regmap {
 	bool no_sync_defaults;
 
 	struct reg_sequence *patch;
-	int patch_regs;
+	unsigned int patch_regs;
 
 	/* if set, the regmap core can sleep */
 	bool can_sleep;
@@ -184,11 +186,21 @@ struct regmap {
 	struct hwspinlock *hwlock;
 };
 
+/*
+ * Scoped guard for the regmap lock. The lock/unlock callbacks are selected
+ * at init time (mutex, spinlock, raw spinlock, hwspinlock or none) and never
+ * fail, so an unconditional guard is sufficient. Use with guard(regmap)(map)
+ * or scoped_guard(regmap, map) { ... }.
+ */
+DEFINE_GUARD(regmap, struct regmap *,
+	     _T->lock(_T->lock_arg),
+	     _T->unlock(_T->lock_arg))
+
 struct regcache_ops {
 	const char *name;
 	enum regcache_type type;
 	int (*init)(struct regmap *map);
-	int (*exit)(struct regmap *map);
+	void (*exit)(struct regmap *map);
 	int (*populate)(struct regmap *map);
 #ifdef CONFIG_DEBUG_FS
 	void (*debugfs_init)(struct regmap *map);
@@ -321,6 +333,7 @@ static inline unsigned int regcache_get_index_by_order(const struct regmap *map,
 }
 
 struct regmap_ram_data {
+	unsigned int base_reg;
 	unsigned int *vals;  /* Allocatd by caller */
 	bool *read;
 	bool *written;

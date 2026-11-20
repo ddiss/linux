@@ -8,7 +8,6 @@
 
 #include <linux/devm-helpers.h>
 #include <linux/extcon.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
@@ -667,7 +666,7 @@ static int rt5033_charger_probe(struct platform_device *pdev)
 	struct device_node *np_conn, *np_edev;
 	int ret;
 
-	charger = devm_kzalloc(&pdev->dev, sizeof(*charger), GFP_KERNEL);
+	charger = devm_kzalloc_obj(&pdev->dev, *charger);
 	if (!charger)
 		return -ENOMEM;
 
@@ -727,7 +726,7 @@ out:
 }
 
 static const struct platform_device_id rt5033_charger_id[] = {
-	{ "rt5033-charger", },
+	{ .name = "rt5033-charger" },
 	{ }
 };
 MODULE_DEVICE_TABLE(platform, rt5033_charger_id);

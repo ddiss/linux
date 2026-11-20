@@ -880,6 +880,7 @@
 	MACRO__(0xB08F, ## __VA_ARGS__), \
 	MACRO__(0xB090, ## __VA_ARGS__), \
 	MACRO__(0xB0A0, ## __VA_ARGS__), \
+	MACRO__(0xB0A1, ## __VA_ARGS__), \
 	MACRO__(0xB0B0, ## __VA_ARGS__)
 
 /* WCL */
@@ -893,11 +894,28 @@
 	MACRO__(0xD741, ## __VA_ARGS__), \
 	MACRO__(0xD742, ## __VA_ARGS__), \
 	MACRO__(0xD743, ## __VA_ARGS__), \
-	MACRO__(0xD744, ## __VA_ARGS__), \
-	MACRO__(0xD745, ## __VA_ARGS__)
+	MACRO__(0xD745, ## __VA_ARGS__), \
+	MACRO__(0xD74A, ## __VA_ARGS__), \
+	MACRO__(0xD74B, ## __VA_ARGS__)
 
 /* CRI */
 #define INTEL_CRI_IDS(MACRO__, ...) \
-	MACRO__(0x674C, ## __VA_ARGS__)
+	MACRO__(0x674C, ## __VA_ARGS__), \
+	MACRO__(0x674D, ## __VA_ARGS__), \
+	MACRO__(0x674E, ## __VA_ARGS__), \
+	MACRO__(0x674F, ## __VA_ARGS__), \
+	MACRO__(0x6750, ## __VA_ARGS__)
+
+/* NVL-P */
+#define INTEL_NVLP_IDS(MACRO__, ...) \
+	MACRO__(0xD750, ## __VA_ARGS__), \
+	MACRO__(0xD751, ## __VA_ARGS__), \
+	MACRO__(0xD752, ## __VA_ARGS__), \
+	MACRO__(0xD753, ## __VA_ARGS__), \
+	MACRO__(0XD754, ## __VA_ARGS__), \
+	MACRO__(0XD755, ## __VA_ARGS__), \
+	MACRO__(0XD756, ## __VA_ARGS__), \
+	MACRO__(0XD757, ## __VA_ARGS__), \
+	MACRO__(0xD75F, ## __VA_ARGS__)
 
 #endif /* __PCIIDS_H__ */

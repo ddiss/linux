@@ -671,6 +671,7 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	set_dev_node(&dev->dev, dev_to_node(bus->sysdev));
 	dev->state = USB_STATE_ATTACHED;
 	dev->lpm_disable_count = 1;
+	spin_lock_init(&dev->offload_lock);
 	dev->offload_usage = 0;
 	atomic_set(&dev->urbnum, 0);
 
@@ -1240,7 +1241,7 @@ static int __init usb_init(void)
 	retval = usb_hub_init();
 	if (retval)
 		goto hub_init_failed;
-	retval = usb_register_device_driver(&usb_generic_driver, THIS_MODULE);
+	retval = usb_register_device_driver(&usb_generic_driver);
 	if (!retval)
 		goto out;
 

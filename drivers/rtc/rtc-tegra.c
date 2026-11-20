@@ -12,7 +12,6 @@
 #include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/rtc.h>
@@ -285,7 +284,7 @@ static int tegra_rtc_probe(struct platform_device *pdev)
 	struct tegra_rtc_info *info;
 	int ret;
 
-	info = devm_kzalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
+	info = devm_kzalloc_obj(&pdev->dev, *info);
 	if (!info)
 		return -ENOMEM;
 

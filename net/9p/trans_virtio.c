@@ -532,6 +532,11 @@ req_retry_pinned:
 	p9_debug(P9_DEBUG_TRANS, "virtio request kicked\n");
 	err = io_wait_event_killable(req->wq,
 				     READ_ONCE(req->status) >= REQ_STATUS_RCVD);
+	/*
+	 * Make sure our req is coherent with regard to updates in other
+	 * threads - echoes to wmb() in the callback
+	 */
+	smp_rmb();
 	// RERROR needs reply (== error string) in static data
 	if (READ_ONCE(req->status) == REQ_STATUS_RCVD &&
 	    unlikely(req->rc.sdata[4] == P9_RERROR))
@@ -625,6 +630,11 @@ static int p9_virtio_probe(struct virtio_device *vdev)
 	if (virtio_has_feature(vdev, VIRTIO_9P_MOUNT_TAG)) {
 		virtio_cread(vdev, struct virtio_9p_config, tag_len, &tag_len);
 	} else {
+		err = -EINVAL;
+		goto out_free_vq;
+	}
+	if (tag_len > NAME_MAX) {
+		dev_err(&vdev->dev, "mount tag too long (%u bytes)\n", tag_len);
 		err = -EINVAL;
 		goto out_free_vq;
 	}

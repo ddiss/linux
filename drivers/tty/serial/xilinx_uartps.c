@@ -22,7 +22,6 @@
 #include <linux/of.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
-#include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/delay.h>
 #include <linux/reset.h>
@@ -1647,11 +1646,10 @@ static int cdns_uart_probe(struct platform_device *pdev)
 	struct cdns_uart *cdns_uart_data;
 	const struct of_device_id *match;
 
-	cdns_uart_data = devm_kzalloc(&pdev->dev, sizeof(*cdns_uart_data),
-			GFP_KERNEL);
+	cdns_uart_data = devm_kzalloc_obj(&pdev->dev, *cdns_uart_data);
 	if (!cdns_uart_data)
 		return -ENOMEM;
-	port = devm_kzalloc(&pdev->dev, sizeof(*port), GFP_KERNEL);
+	port = devm_kzalloc_obj(&pdev->dev, *port);
 	if (!port)
 		return -ENOMEM;
 

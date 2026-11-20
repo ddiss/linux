@@ -28,6 +28,10 @@ OPTIONS
 =======
 .. include:: common_osnoise_options.txt
 
+**--ipi**
+
+	Track sources of IPIs.
+
 .. include:: common_top_options.txt
 
 .. include:: common_options.txt
@@ -54,7 +58,7 @@ SEE ALSO
 
 **rtla-osnoise**\(1), **rtla-osnoise-hist**\(1)
 
-Osnoise tracer documentation: <https://www.kernel.org/doc/html/latest/trace/osnoise-tracer.html>
+`Osnoise tracer <https://docs.kernel.org/trace/osnoise-tracer.html>`__
 
 AUTHOR
 ======

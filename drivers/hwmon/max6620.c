@@ -455,7 +455,7 @@ static int max6620_probe(struct i2c_client *client)
 	struct device *hwmon_dev;
 	int err;
 
-	data = devm_kzalloc(dev, sizeof(struct max6620_data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, struct max6620_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -474,7 +474,7 @@ static int max6620_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max6620_id[] = {
-	{ "max6620" },
+	{ .name = "max6620" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max6620_id);

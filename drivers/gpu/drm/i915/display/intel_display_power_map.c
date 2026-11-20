@@ -4,13 +4,13 @@
  */
 
 #include <drm/drm_print.h>
+#include <drm/intel/vlv_iosf_sb_regs.h>
 
 #include "intel_display_core.h"
 #include "intel_display_power_map.h"
 #include "intel_display_power_well.h"
 #include "intel_display_regs.h"
 #include "intel_display_types.h"
-#include "vlv_iosf_sb_reg.h"
 
 #define __LIST_INLINE_ELEMS(__elem_type, ...) \
 	((__elem_type[]) { __VA_ARGS__ })
@@ -112,7 +112,6 @@ static const struct i915_power_well_desc hsw_power_wells_main[] = {
 				.id = HSW_DISP_PW_GLOBAL),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 	},
 };
 
@@ -146,7 +145,6 @@ static const struct i915_power_well_desc bdw_power_wells_main[] = {
 				.id = HSW_DISP_PW_GLOBAL),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.irq_pipe_mask = BIT(PIPE_B) | BIT(PIPE_C),
 	},
 };
@@ -390,7 +388,6 @@ static const struct i915_power_well_desc skl_power_wells_main[] = {
 				.id = SKL_DISP_PW_2),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.irq_pipe_mask = BIT(PIPE_B) | BIT(PIPE_C),
 		.has_fuses = true,
 	}, {
@@ -469,7 +466,6 @@ static const struct i915_power_well_desc bxt_power_wells_main[] = {
 				.id = SKL_DISP_PW_2),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.irq_pipe_mask = BIT(PIPE_B) | BIT(PIPE_C),
 		.has_fuses = true,
 	}, {
@@ -572,7 +568,6 @@ static const struct i915_power_well_desc glk_power_wells_main[] = {
 				.id = SKL_DISP_PW_2),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.irq_pipe_mask = BIT(PIPE_B) | BIT(PIPE_C),
 		.has_fuses = true,
 	}, {
@@ -748,7 +743,6 @@ static const struct i915_power_well_desc icl_power_wells_main[] = {
 				.id = ICL_DISP_PW_3),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.irq_pipe_mask = BIT(PIPE_B),
 		.has_fuses = true,
 	}, {
@@ -914,7 +908,6 @@ static const struct i915_power_well_desc tgl_power_wells_main[] = {
 				.id = ICL_DISP_PW_3),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.irq_pipe_mask = BIT(PIPE_B),
 		.has_fuses = true,
 	}, {
@@ -1071,7 +1064,6 @@ static const struct i915_power_well_desc rkl_power_wells_main[] = {
 		),
 		.ops = &hsw_power_well_ops,
 		.irq_pipe_mask = BIT(PIPE_B),
-		.has_vga = true,
 		.has_fuses = true,
 	}, {
 		.instances = &I915_PW_INSTANCES(
@@ -1166,7 +1158,6 @@ static const struct i915_power_well_desc dg1_power_wells_main[] = {
 		),
 		.ops = &hsw_power_well_ops,
 		.irq_pipe_mask = BIT(PIPE_B),
-		.has_vga = true,
 		.has_fuses = true,
 	}, {
 		.instances = &I915_PW_INSTANCES(
@@ -1325,7 +1316,6 @@ static const struct i915_power_well_desc xelpd_power_wells_main[] = {
 				.id = SKL_DISP_PW_2),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.has_fuses = true,
 	}, {
 		.instances = &I915_PW_INSTANCES(
@@ -1482,7 +1472,6 @@ static const struct i915_power_well_desc xelpdp_power_wells_main[] = {
 				.id = SKL_DISP_PW_2),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.has_fuses = true,
 	}, {
 		.instances = &I915_PW_INSTANCES(
@@ -1649,7 +1638,6 @@ static const struct i915_power_well_desc xe3lpd_power_wells_main[] = {
 				.id = SKL_DISP_PW_2),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.has_fuses = true,
 	}, {
 		.instances = &I915_PW_INSTANCES(
@@ -1722,7 +1710,6 @@ static const struct i915_power_well_desc wcl_power_wells_main[] = {
 				.id = SKL_DISP_PW_2),
 		),
 		.ops = &hsw_power_well_ops,
-		.has_vga = true,
 		.has_fuses = true,
 	}, {
 		.instances = &I915_PW_INSTANCES(
@@ -1770,6 +1757,44 @@ static const struct i915_power_well_desc_list wcl_power_wells[] = {
 	I915_PW_DESCRIPTORS(wcl_power_wells_main),
 	I915_PW_DESCRIPTORS(xe2lpd_power_wells_pica),
 	I915_PW_DESCRIPTORS(wcl_power_wells_aux),
+};
+
+I915_DECL_PW_DOMAINS(xe3plpd_pwdoms_dc_off,
+	POWER_DOMAIN_DC_OFF,
+	XE3LPD_PW_2_POWER_DOMAINS,
+	XE3LPD_PW_C_POWER_DOMAINS,
+	XE3LPD_PW_D_POWER_DOMAINS,
+	POWER_DOMAIN_AUDIO_MMIO,
+	POWER_DOMAIN_AUDIO_PLAYBACK,
+	POWER_DOMAIN_AUX_A,
+	POWER_DOMAIN_AUX_B,
+	POWER_DOMAIN_AUX_USBC1,
+	POWER_DOMAIN_AUX_USBC2,
+	POWER_DOMAIN_AUX_USBC3,
+	POWER_DOMAIN_AUX_USBC4,
+	POWER_DOMAIN_AUX_TBT1,
+	POWER_DOMAIN_AUX_TBT2,
+	POWER_DOMAIN_AUX_TBT3,
+	POWER_DOMAIN_AUX_TBT4,
+	POWER_DOMAIN_INIT);
+
+static const struct i915_power_well_desc xe3plpd_power_wells_dcoff[] = {
+	{
+		.instances = &I915_PW_INSTANCES(
+			I915_PW("DC_off", &xe3plpd_pwdoms_dc_off,
+				.id = SKL_DISP_DC_OFF),
+		),
+		.ops = &gen9_dc_off_power_well_ops,
+	},
+};
+
+static const struct i915_power_well_desc_list xe3plpd_power_wells[] = {
+	I915_PW_DESCRIPTORS(i9xx_power_wells_always_on),
+	I915_PW_DESCRIPTORS(icl_power_wells_pw_1),
+	I915_PW_DESCRIPTORS(xe3plpd_power_wells_dcoff),
+	I915_PW_DESCRIPTORS(xe3lpd_power_wells_main),
+	I915_PW_DESCRIPTORS(xe2lpd_power_wells_pica),
+	I915_PW_DESCRIPTORS(xelpdp_power_wells_aux),
 };
 
 static void init_power_well_domains(const struct i915_power_well_instance *inst,
@@ -1878,7 +1903,9 @@ int intel_display_power_map_init(struct i915_power_domains *power_domains)
 		return 0;
 	}
 
-	if (DISPLAY_VERx100(display) == 3002)
+	if (DISPLAY_VER(display) >= 35)
+		return set_power_wells(power_domains, xe3plpd_power_wells);
+	else if (DISPLAY_VERx100(display) == 3002)
 		return set_power_wells(power_domains, wcl_power_wells);
 	else if (DISPLAY_VER(display) >= 30)
 		return set_power_wells(power_domains, xe3lpd_power_wells);

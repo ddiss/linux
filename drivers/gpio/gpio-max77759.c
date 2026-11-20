@@ -14,7 +14,6 @@
 #include <linux/irqreturn.h>
 #include <linux/lockdep.h>
 #include <linux/mfd/max77759.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/overflow.h>
 #include <linux/platform_device.h>
@@ -436,7 +435,7 @@ static int max77759_gpio_probe(struct platform_device *pdev)
 	struct gpio_irq_chip *girq;
 	int ret;
 
-	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
+	chip = devm_kzalloc_obj(&pdev->dev, *chip);
 	if (!chip)
 		return -ENOMEM;
 
@@ -502,7 +501,7 @@ static const struct of_device_id max77759_gpio_of_id[] = {
 MODULE_DEVICE_TABLE(of, max77759_gpio_of_id);
 
 static const struct platform_device_id max77759_gpio_platform_id[] = {
-	{ "max77759-gpio", },
+	{ .name = "max77759-gpio" },
 	{ }
 };
 MODULE_DEVICE_TABLE(platform, max77759_gpio_platform_id);

@@ -16,8 +16,9 @@ menuconfig KUNIT
 if KUNIT
 
 config KUNIT_DEBUGFS
-	bool "KUnit - Enable /sys/kernel/debug/kunit debugfs representation" if !KUNIT_ALL_TESTS
-	default KUNIT_ALL_TESTS
+	bool "KUnit - Enable /sys/kernel/debug/kunit debugfs representation"
+	depends on DEBUG_FS
+	default y
 	help
 	  Enable debugfs representation for kunit.  Currently this consists
 	  of /sys/kernel/debug/kunit/<test_suite>/results files for each
@@ -132,7 +133,7 @@ config KUNIT_DEFAULT_TIMEOUT
 
 config KUNIT_UML_PCI
 	bool "KUnit UML PCI Support"
-	depends on UML
+	depends on UML && MMU
 	select UML_PCI
 	help
 	  Enables the PCI subsystem on UML for use by KUnit tests.

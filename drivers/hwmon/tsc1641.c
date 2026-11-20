@@ -696,7 +696,7 @@ static int tsc1641_probe(struct i2c_client *client)
 	struct device *hwmon_dev;
 	int ret;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -721,7 +721,7 @@ static int tsc1641_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id tsc1641_id[] = {
-	{ "tsc1641", 0 },
+	{ .name = "tsc1641" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, tsc1641_id);

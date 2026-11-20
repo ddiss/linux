@@ -730,8 +730,8 @@ static int mipi_csis_clk_get(struct mipi_csis_device *csis)
 	unsigned int i;
 	int ret;
 
-	csis->clks = devm_kcalloc(csis->dev, csis->info->num_clocks,
-				  sizeof(*csis->clks), GFP_KERNEL);
+	csis->clks = devm_kzalloc_objs(csis->dev, *csis->clks,
+				       csis->info->num_clocks);
 
 	if (!csis->clks)
 		return -ENOMEM;
@@ -1104,6 +1104,7 @@ static int mipi_csis_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int mipi_csis_set_fmt(struct v4l2_subdev *sd,
+			     const struct v4l2_subdev_client_info *ci,
 			     struct v4l2_subdev_state *state,
 			     struct v4l2_subdev_format *sdformat)
 {
@@ -1225,7 +1226,7 @@ static int mipi_csis_init_state(struct v4l2_subdev *sd,
 		V4L2_MAP_QUANTIZATION_DEFAULT(false, fmt.format.colorspace,
 					      fmt.format.ycbcr_enc);
 
-	return mipi_csis_set_fmt(sd, state, &fmt);
+	return mipi_csis_set_fmt(sd, NULL, state, &fmt);
 }
 
 static int mipi_csis_log_status(struct v4l2_subdev *sd)
@@ -1359,18 +1360,18 @@ static int mipi_csis_async_register(struct mipi_csis_device *csis)
 		fwnode_graph_get_endpoint_by_id(dev_fwnode(csis->dev), 0, 0,
 						FWNODE_GRAPH_ENDPOINT_NEXT);
 	if (!ep)
-		return -ENOTCONN;
+		return dev_err_probe(csis->dev, -ENOTCONN,
+				     "failed to get local endpoint\n");
 
 	ret = v4l2_fwnode_endpoint_parse(ep, &vep);
 	if (ret)
-		return ret;
+		return dev_err_probe(csis->dev, ret,
+				     "failed to parse endpoint\n");
 
 	for (i = 0; i < vep.bus.mipi_csi2.num_data_lanes; ++i) {
-		if (vep.bus.mipi_csi2.data_lanes[i] != i + 1) {
-			dev_err(csis->dev,
-				"data lanes reordering is not supported");
-			return -EINVAL;
-		}
+		if (vep.bus.mipi_csi2.data_lanes[i] != i + 1)
+			return dev_err_probe(csis->dev, -EINVAL,
+					     "data lanes reordering is not supported\n");
 	}
 
 	csis->bus = vep.bus.mipi_csi2;
@@ -1382,15 +1383,22 @@ static int mipi_csis_async_register(struct mipi_csis_device *csis)
 	asd = v4l2_async_nf_add_fwnode_remote(&csis->notifier, ep,
 					      struct v4l2_async_connection);
 	if (IS_ERR(asd))
-		return PTR_ERR(asd);
+		return dev_err_probe(csis->dev, PTR_ERR(asd),
+				     "failed to add remote fwnode to notifier\n");
 
 	csis->notifier.ops = &mipi_csis_notify_ops;
 
 	ret = v4l2_async_nf_register(&csis->notifier);
 	if (ret)
-		return ret;
+		return dev_err_probe(csis->dev, ret,
+				     "failed to register notifier\n");
 
-	return v4l2_async_register_subdev(&csis->sd);
+	ret = v4l2_async_register_subdev(&csis->sd);
+	if (ret)
+		return dev_err_probe(csis->dev, ret,
+				     "failed to register subdev\n");
+
+	return 0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -1499,7 +1507,7 @@ static int mipi_csis_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	csis = devm_kzalloc(dev, sizeof(*csis), GFP_KERNEL);
+	csis = devm_kzalloc_obj(dev, *csis);
 	if (!csis)
 		return -ENOMEM;
 
@@ -1549,10 +1557,8 @@ static int mipi_csis_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, &csis->sd);
 
 	ret = mipi_csis_async_register(csis);
-	if (ret < 0) {
-		dev_err(dev, "async register failed: %d\n", ret);
+	if (ret < 0)
 		goto err_cleanup;
-	}
 
 	/* Initialize debugfs. */
 	mipi_csis_debugfs_init(csis);

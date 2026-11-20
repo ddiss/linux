@@ -15,6 +15,7 @@
 #include <linux/syscalls.h>
 #include <linux/prctl.h>
 #include <asm/csr.h>
+#include <asm/switch_to.h>
 #include <asm/usercfi.h>
 
 unsigned long riscv_nousercfi __read_mostly;
@@ -66,17 +67,12 @@ void set_shstk_status(struct task_struct *task, bool enable)
 
 	task->thread_info.user_cfi_state.ubcfi_en = enable ? 1 : 0;
 
-	if (enable)
-		task->thread.envcfg |= ENVCFG_SSE;
-	else
-		task->thread.envcfg &= ~ENVCFG_SSE;
-
-	csr_write(CSR_ENVCFG, task->thread.envcfg);
+	envcfg_update_bits(task, ENVCFG_SSE, enable ? ENVCFG_SSE : 0);
 }
 
-void set_shstk_lock(struct task_struct *task)
+void set_shstk_lock(struct task_struct *task, bool lock)
 {
-	task->thread_info.user_cfi_state.ubcfi_locked = 1;
+	task->thread_info.user_cfi_state.ubcfi_locked = lock;
 }
 
 bool is_indir_lp_enabled(struct task_struct *task)
@@ -96,28 +92,24 @@ void set_indir_lp_status(struct task_struct *task, bool enable)
 
 	task->thread_info.user_cfi_state.ufcfi_en = enable ? 1 : 0;
 
-	if (enable)
-		task->thread.envcfg |= ENVCFG_LPE;
-	else
-		task->thread.envcfg &= ~ENVCFG_LPE;
-
-	csr_write(CSR_ENVCFG, task->thread.envcfg);
+	envcfg_update_bits(task, ENVCFG_LPE, enable ? ENVCFG_LPE : 0);
 }
 
-void set_indir_lp_lock(struct task_struct *task)
+void set_indir_lp_lock(struct task_struct *task, bool lock)
 {
-	task->thread_info.user_cfi_state.ufcfi_locked = 1;
+	task->thread_info.user_cfi_state.ufcfi_locked = lock;
 }
 /*
- * If size is 0, then to be compatible with regular stack we want it to be as big as
- * regular stack. Else PAGE_ALIGN it and return back
+ * The shadow stack only stores the return address and not any variables
+ * 512M should be more than sufficient for most applications.
+ * Else PAGE_ALIGN it and return back
  */
 static unsigned long calc_shstk_size(unsigned long size)
 {
 	if (size)
 		return PAGE_ALIGN(size);
 
-	return PAGE_ALIGN(min_t(unsigned long long, rlimit(RLIMIT_STACK), SZ_4G));
+	return PAGE_ALIGN(min(rlimit(RLIMIT_STACK) / 8, SZ_512M));
 }
 
 /*
@@ -205,10 +197,13 @@ int save_user_shstk(struct task_struct *tsk, unsigned long *saved_shstk_ptr)
  */
 int restore_user_shstk(struct task_struct *tsk, unsigned long shstk_ptr)
 {
+	unsigned long __user *token_ptr = (unsigned long __user *)shstk_ptr;
 	unsigned long token = 0;
 
-	token = amo_user_shstk((unsigned long __user *)shstk_ptr, 0);
+	if (!access_ok(token_ptr, sizeof(token)))
+		return -EFAULT;
 
+	token = amo_user_shstk(token_ptr, 0);
 	if (token == -1)
 		return -EFAULT;
 
@@ -230,17 +225,7 @@ int restore_user_shstk(struct task_struct *tsk, unsigned long shstk_ptr)
 static unsigned long allocate_shadow_stack(unsigned long addr, unsigned long size,
 					   unsigned long token_offset, bool set_tok)
 {
-	int flags = MAP_ANONYMOUS | MAP_PRIVATE;
-	struct mm_struct *mm = current->mm;
-	unsigned long populate;
-
-	if (addr)
-		flags |= MAP_FIXED_NOREPLACE;
-
-	mmap_write_lock(mm);
-	addr = do_mmap(NULL, addr, size, PROT_READ, flags,
-		       VM_SHADOW_STACK | VM_WRITE, 0, &populate, NULL);
-	mmap_write_unlock(mm);
+	addr = vm_mmap_shadow_stack(addr, size, 0);
 
 	if (!set_tok || IS_ERR_VALUE(addr))
 		goto out;
@@ -452,57 +437,59 @@ int arch_lock_shadow_stack_status(struct task_struct *task,
 	    !is_shstk_enabled(task) || arg != 0)
 		return -EINVAL;
 
-	set_shstk_lock(task);
+	set_shstk_lock(task, true);
 
 	return 0;
 }
 
-int arch_get_indir_br_lp_status(struct task_struct *t, unsigned long __user *status)
+int arch_prctl_get_branch_landing_pad_state(struct task_struct *t,
+					    unsigned long __user *state)
 {
 	unsigned long fcfi_status = 0;
 
 	if (!is_user_lpad_enabled())
 		return -EINVAL;
 
-	/* indirect branch tracking is enabled on the task or not */
-	fcfi_status |= (is_indir_lp_enabled(t) ? PR_INDIR_BR_LP_ENABLE : 0);
+	fcfi_status = (is_indir_lp_enabled(t) ? PR_CFI_ENABLE : PR_CFI_DISABLE);
+	fcfi_status |= (is_indir_lp_locked(t) ? PR_CFI_LOCK : 0);
 
-	return copy_to_user(status, &fcfi_status, sizeof(fcfi_status)) ? -EFAULT : 0;
+	return copy_to_user(state, &fcfi_status, sizeof(fcfi_status)) ? -EFAULT : 0;
 }
 
-int arch_set_indir_br_lp_status(struct task_struct *t, unsigned long status)
+int arch_prctl_set_branch_landing_pad_state(struct task_struct *t, unsigned long state)
 {
-	bool enable_indir_lp = false;
-
 	if (!is_user_lpad_enabled())
+		return -EINVAL;
+
+	if (state & ~PR_CFI_SUPPORTED_STATUS_MASK)
 		return -EINVAL;
 
 	/* indirect branch tracking is locked and further can't be modified by user */
 	if (is_indir_lp_locked(t))
 		return -EINVAL;
 
-	/* Reject unknown flags */
-	if (status & ~PR_INDIR_BR_LP_ENABLE)
+	if (!(state & (PR_CFI_ENABLE | PR_CFI_DISABLE)))
 		return -EINVAL;
 
-	enable_indir_lp = (status & PR_INDIR_BR_LP_ENABLE);
-	set_indir_lp_status(t, enable_indir_lp);
+	if (state & PR_CFI_ENABLE && state & PR_CFI_DISABLE)
+		return -EINVAL;
+
+	set_indir_lp_status(t, !!(state & PR_CFI_ENABLE));
 
 	return 0;
 }
 
-int arch_lock_indir_br_lp_status(struct task_struct *task,
-				 unsigned long arg)
+int arch_prctl_lock_branch_landing_pad_state(struct task_struct *task)
 {
 	/*
 	 * If indirect branch tracking is not supported or not enabled on task,
 	 * nothing to lock here
 	 */
 	if (!is_user_lpad_enabled() ||
-	    !is_indir_lp_enabled(task) || arg != 0)
+	    !is_indir_lp_enabled(task))
 		return -EINVAL;
 
-	set_indir_lp_lock(task);
+	set_indir_lp_lock(task, true);
 
 	return 0;
 }
@@ -532,9 +519,8 @@ static int __init setup_global_riscv_enable(char *str)
 
 	if (riscv_nousercfi)
 		pr_info("RISC-V user CFI disabled via cmdline - shadow stack status : %s, landing pad status : %s\n",
-			(riscv_nousercfi & CMDLINE_DISABLE_RISCV_USERCFI_BCFI) ? "disabled" :
-			"enabled", (riscv_nousercfi & CMDLINE_DISABLE_RISCV_USERCFI_FCFI) ?
-			"disabled" : "enabled");
+			str_disabled_enabled(riscv_nousercfi & CMDLINE_DISABLE_RISCV_USERCFI_BCFI),
+			str_disabled_enabled(riscv_nousercfi & CMDLINE_DISABLE_RISCV_USERCFI_FCFI));
 
 	return 1;
 }

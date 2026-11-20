@@ -40,6 +40,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/raid/pq.h>
+#include <linux/raid/pq_tables.h>
 
 #include "dmaengine.h"
 
@@ -1488,9 +1489,8 @@ static int sba_prealloc_channel_resources(struct sba_device *sba)
 	INIT_LIST_HEAD(&sba->reqs_free_list);
 
 	for (i = 0; i < sba->max_req; i++) {
-		req = devm_kzalloc(sba->dev,
-				   struct_size(req, cmds, sba->max_cmd_per_req),
-				   GFP_KERNEL);
+		req = devm_kzalloc_flex(sba->dev, *req, cmds,
+					sba->max_cmd_per_req);
 		if (!req) {
 			ret = -ENOMEM;
 			goto fail_free_cmds_pool;
@@ -1618,7 +1618,7 @@ static int sba_probe(struct platform_device *pdev)
 	struct of_phandle_args args;
 
 	/* Allocate main SBA struct */
-	sba = devm_kzalloc(&pdev->dev, sizeof(*sba), GFP_KERNEL);
+	sba = devm_kzalloc_obj(&pdev->dev, *sba);
 	if (!sba)
 		return -ENOMEM;
 

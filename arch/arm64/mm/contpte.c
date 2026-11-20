@@ -89,7 +89,7 @@ static void contpte_convert(struct mm_struct *mm, unsigned long addr,
 	}
 
 	/*
-	 * On eliding the __tlb_flush_range() under BBML2+noabort:
+	 * On eliding the __tlb_flush_range() under BBML3:
 	 *
 	 * NOTE: Instead of using N=16 as the contiguous block length, we use
 	 *       N=4 for clarity.
@@ -135,7 +135,7 @@ static void contpte_convert(struct mm_struct *mm, unsigned long addr,
 	 * contiguous TLB entry, which is a micro-optimisation opportunity,
 	 * but does not affect correctness.
 	 *
-	 * In the BBML2 case, the change is avoiding the intermediate tlbi+dsb.
+	 * In the BBML3 case, the change is avoiding the intermediate tlbi+dsb.
 	 * This means a few things, but notably other PEs will still "see" any
 	 * stale cached TLB entries. This could lead to a "contiguous bit
 	 * misprogramming" issue until the final tlbi+dsb of the changed page,
@@ -158,21 +158,16 @@ static void contpte_convert(struct mm_struct *mm, unsigned long addr,
 	 *  are present, and a write is made to this address, do we fault or
 	 *  is the write permitted (via amalgamation)?
 	 *
-	 * The relevant Arm ARM DDI 0487L.a requirements are RNGLXZ and RJQQTC,
-	 * and together state that when BBML1 or BBML2 are implemented, either
-	 * a TLB conflict abort is raised (which we expressly forbid), or will
-	 * "produce an OA, access permissions, and memory attributes that are
-	 * consistent with any of the programmed translation table values".
-	 *
-	 * That is to say, will either raise a TLB conflict, or produce one of
-	 * the cached TLB entries, but never amalgamate.
+	 * With BBML3 implemented, no TLB conflict abort is raised and the OA,
+	 * access permissions and memory attributes produced is one of the cached
+	 * TLB entries, but never amalgamate.
 	 *
 	 * Thus, as the page tables are only considered "consistent" after
 	 * the final tlbi+dsb (which evicts both the single stale (RW,n) TLB
 	 * entry as well as the new contiguous (RO,c) TLB entry), omitting the
 	 * initial tlbi+dsb is correct.
 	 *
-	 * It is also important to note that at the end of the BBML2 folding
+	 * It is also important to note that at the end of the BBML3 folding
 	 * case, we are still left with potentially all N TLB entries still
 	 * cached (the N-1 non-contiguous ptes, and the single contiguous
 	 * block). However, over time, natural TLB pressure will cause the
@@ -214,7 +209,7 @@ static void contpte_convert(struct mm_struct *mm, unsigned long addr,
 	 *
 	 *                  |____| <--- tlbi + dsb
 	 *
-	 * For BBML2, we again remove the intermediate tlbi+dsb. Here, there
+	 * For BBML3, we again remove the intermediate tlbi+dsb. Here, there
 	 * are no issues, as the final tlbi+dsb covering the changed page is
 	 * guaranteed to remove the original large contiguous (RW,c) TLB entry,
 	 * as well as the intermediate (RW,n) TLB entry; the next access will
@@ -224,8 +219,9 @@ static void contpte_convert(struct mm_struct *mm, unsigned long addr,
 	 * regardless.
 	 */
 
-	if (!system_supports_bbml2_noabort())
-		__flush_tlb_range(&vma, start_addr, addr, PAGE_SIZE, true, 3);
+	if (!system_supports_bbml3())
+		__flush_tlb_range(&vma, start_addr, addr, PAGE_SIZE, 3,
+				  TLBF_NOWALKCACHE);
 
 	__set_ptes(mm, start_addr, start_ptep, pte, CONT_PTES);
 }
@@ -464,8 +460,10 @@ void contpte_set_ptes(struct mm_struct *mm, unsigned long addr,
 	 */
 	VM_WARN_ON(nr == 1);
 
-	if (!mm_is_user(mm))
+	if (!mm_is_user(mm) || !pte_valid(pte)) {
+		VM_WARN_ON_ONCE(!pte_valid(pte) && pte_cont(pte));
 		return __set_ptes(mm, addr, ptep, pte, nr);
+	}
 
 	end = addr + (nr << PAGE_SHIFT);
 	pfn = pte_pfn(pte);
@@ -508,9 +506,8 @@ pte_t contpte_get_and_clear_full_ptes(struct mm_struct *mm,
 }
 EXPORT_SYMBOL_GPL(contpte_get_and_clear_full_ptes);
 
-int contpte_test_and_clear_young_ptes(struct vm_area_struct *vma,
-					unsigned long addr, pte_t *ptep,
-					unsigned int nr)
+bool contpte_test_and_clear_young_ptes(struct vm_area_struct *vma,
+		unsigned long addr, pte_t *ptep, unsigned int nr)
 {
 	/*
 	 * ptep_clear_flush_young() technically requires us to clear the access
@@ -525,7 +522,7 @@ int contpte_test_and_clear_young_ptes(struct vm_area_struct *vma,
 	 */
 
 	unsigned long end = addr + nr * PAGE_SIZE;
-	int young = 0;
+	bool young = false;
 
 	ptep = contpte_align_addr_ptep(&addr, &end, ptep, nr);
 	for (; addr != end; ptep++, addr += PAGE_SIZE)
@@ -535,11 +532,10 @@ int contpte_test_and_clear_young_ptes(struct vm_area_struct *vma,
 }
 EXPORT_SYMBOL_GPL(contpte_test_and_clear_young_ptes);
 
-int contpte_clear_flush_young_ptes(struct vm_area_struct *vma,
-				unsigned long addr, pte_t *ptep,
-				unsigned int nr)
+bool contpte_clear_flush_young_ptes(struct vm_area_struct *vma,
+		unsigned long addr, pte_t *ptep, unsigned int nr)
 {
-	int young;
+	bool young;
 
 	young = contpte_test_and_clear_young_ptes(vma, addr, ptep, nr);
 
@@ -551,8 +547,8 @@ int contpte_clear_flush_young_ptes(struct vm_area_struct *vma,
 		 * See comment in __ptep_clear_flush_young(); same rationale for
 		 * eliding the trailing DSB applies here.
 		 */
-		__flush_tlb_range_nosync(vma->vm_mm, addr, end,
-					 PAGE_SIZE, true, 3);
+		__flush_tlb_range(vma, addr, end, PAGE_SIZE, 3,
+				  TLBF_NOWALKCACHE | TLBF_NOSYNC);
 	}
 
 	return young;
@@ -599,6 +595,27 @@ void contpte_clear_young_dirty_ptes(struct vm_area_struct *vma,
 }
 EXPORT_SYMBOL_GPL(contpte_clear_young_dirty_ptes);
 
+static bool contpte_all_subptes_match_access_flags(pte_t *ptep, pte_t entry)
+{
+	pte_t *cont_ptep = contpte_align_down(ptep);
+	/*
+	 * PFNs differ per sub-PTE. Match only bits consumed by
+	 * __ptep_set_access_flags(): AF, DIRTY and write permission.
+	 */
+	const pteval_t cmp_mask = PTE_RDONLY | PTE_AF | PTE_WRITE | PTE_DIRTY;
+	pteval_t entry_cmp = pte_val(entry) & cmp_mask;
+	int i;
+
+	for (i = 0; i < CONT_PTES; i++) {
+		pteval_t pte_cmp = pte_val(__ptep_get(cont_ptep + i)) & cmp_mask;
+
+		if (pte_cmp != entry_cmp)
+			return false;
+	}
+
+	return true;
+}
+
 int contpte_ptep_set_access_flags(struct vm_area_struct *vma,
 					unsigned long addr, pte_t *ptep,
 					pte_t entry, int dirty)
@@ -608,12 +625,36 @@ int contpte_ptep_set_access_flags(struct vm_area_struct *vma,
 	int i;
 
 	/*
-	 * Gather the access/dirty bits for the contiguous range. If nothing has
-	 * changed, its a noop.
+	 * Check whether all sub-PTEs in the CONT block already match the
+	 * requested access flags/write permission, using raw per-PTE values
+	 * rather than the gathered ptep_get() view.
+	 *
+	 * __ptep_set_access_flags() can update AF, dirty and write
+	 * permission, but only to make the mapping more permissive.
+	 *
+	 * ptep_get() gathers AF/dirty state across the whole CONT block,
+	 * which is correct for a CPU with FEAT_HAFDBS. But page-table
+	 * walkers that evaluate each descriptor individually (e.g. a CPU
+	 * without DBM support, or an SMMU without HTTU, or with HA/HD
+	 * disabled in CD.TCR) can keep faulting on the target sub-PTE if
+	 * only a sibling has been updated. Gathering can therefore cause
+	 * false no-ops when only a sibling has been updated:
+	 *  - write faults: target still has PTE_RDONLY (needs PTE_RDONLY cleared)
+	 *  - read faults:  target still lacks PTE_AF
+	 *
+	 * Per Arm ARM (DDI 0487) D8.7.1, any sub-PTE in a CONT range may
+	 * become the effective cached translation, so all entries must have
+	 * consistent attributes. Check the full CONT block before returning
+	 * no-op, and when any sub-PTE mismatches, proceed to update the whole
+	 * range.
 	 */
-	orig_pte = pte_mknoncont(ptep_get(ptep));
-	if (pte_val(orig_pte) == pte_val(entry))
+	if (contpte_all_subptes_match_access_flags(ptep, entry))
 		return 0;
+
+	/*
+	 * Use raw target pte (not gathered) for write-bit unfold decision.
+	 */
+	orig_pte = pte_mknoncont(__ptep_get(ptep));
 
 	/*
 	 * We can fix up access/dirty bits without having to unfold the contig
@@ -640,7 +681,10 @@ int contpte_ptep_set_access_flags(struct vm_area_struct *vma,
 			__ptep_set_access_flags(vma, addr, ptep, entry, 0);
 
 		if (dirty)
-			local_flush_tlb_contpte(vma, start_addr);
+			__flush_tlb_range(vma, start_addr,
+					  start_addr + CONT_PTE_SIZE,
+					  PAGE_SIZE, 3,
+					  TLBF_NOWALKCACHE | TLBF_NOBROADCAST);
 	} else {
 		__contpte_try_unfold(vma->vm_mm, addr, ptep, orig_pte);
 		__ptep_set_access_flags(vma, addr, ptep, entry, dirty);

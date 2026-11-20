@@ -169,9 +169,31 @@ enum intel_dpll_id {
 	 * @DPLL_ID_DG1_DPLL3: DG1 combo PHY DPLL3
 	 */
 	DPLL_ID_DG1_DPLL3 = 3,
+
+	/**
+	 * @DPLL_ID_DG2_DPLL_A: DG2 port PLL for PHY A (PORT_A)
+	 */
+	DPLL_ID_DG2_DPLL_A = 0,
+	/**
+	 * @DPLL_ID_DG2_DPLL_B: DG2 port PLL for PHY B (PORT_B)
+	 */
+	DPLL_ID_DG2_DPLL_B = 1,
+	/**
+	 * @DPLL_ID_DG2_DPLL_C: DG2 port PLL for PHY C (PORT_C)
+	 */
+	DPLL_ID_DG2_DPLL_C = 2,
+	/**
+	 * @DPLL_ID_DG2_DPLL_D: DG2 port PLL for PHY D (PORT_D_XELPD)
+	 */
+	DPLL_ID_DG2_DPLL_D = 3,
+	/**
+	 * @DPLL_ID_DG2_DPLL_E: DG2 port PLL for PHY F (PORT_TC1)
+	 */
+	DPLL_ID_DG2_DPLL_E = 4,
 };
 
 #define I915_NUM_PLLS 9
+enum intel_dpll_id dg2_port_to_pll_id(enum port port);
 
 enum icl_port_dpll_id {
 	ICL_PORT_DPLL_DEFAULT,
@@ -241,14 +263,12 @@ struct intel_mpllb_state {
 };
 
 struct intel_c10pll_state {
-	u32 clock; /* in KHz */
 	u8 tx;
 	u8 cmn;
 	u8 pll[20];
 };
 
 struct intel_c20pll_state {
-	u32 clock; /* in kHz */
 	u16 tx[3];
 	u16 cmn[4];
 	union {
@@ -274,13 +294,13 @@ struct intel_cx0pll_state {
 };
 
 struct intel_lt_phy_pll_state {
-	u32 clock; /* in kHz */
 	u8 addr_msb[13];
 	u8 addr_lsb[13];
 	u8 data[13][4];
 	u8 config[3];
 	bool ssc_enabled;
 	bool tbt_mode;
+	int lane_count;
 };
 
 struct intel_dpll_hw_state {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include <linux/export.h>
 #include <linux/bitops.h>
+#include <linux/dmi.h>
 #include <linux/elf.h>
 #include <linux/mm.h>
 #include <linux/kvm_types.h>
@@ -15,6 +16,7 @@
 #include <asm/cacheinfo.h>
 #include <asm/cpu.h>
 #include <asm/cpu_device_id.h>
+#include <asm/cpuid/api.h>
 #include <asm/spec-ctrl.h>
 #include <asm/smp.h>
 #include <asm/numa.h>
@@ -111,7 +113,7 @@ static void init_amd_k5(struct cpuinfo_x86 *c)
 static void init_amd_k6(struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_X86_32
-	u32 l, h;
+	struct msr val;
 	int mbytes = get_num_physpages() >> (20-PAGE_SHIFT);
 
 	if (c->x86_model < 6) {
@@ -158,13 +160,13 @@ static void init_amd_k6(struct cpuinfo_x86 *c)
 		if (mbytes > 508)
 			mbytes = 508;
 
-		rdmsr(MSR_K6_WHCR, l, h);
-		if ((l&0x0000FFFF) == 0) {
+		rdmsrq(MSR_K6_WHCR, val.q);
+		if ((val.l & 0x0000FFFF) == 0) {
 			unsigned long flags;
-			l = (1<<0)|((mbytes/4)<<1);
+			val.l = (1 << 0) | ((mbytes / 4) << 1);
 			local_irq_save(flags);
 			wbinvd();
-			wrmsr(MSR_K6_WHCR, l, h);
+			wrmsrq(MSR_K6_WHCR, val.q);
 			local_irq_restore(flags);
 			pr_info("Enabling old style K6 write allocation for %d Mb\n",
 				mbytes);
@@ -179,13 +181,13 @@ static void init_amd_k6(struct cpuinfo_x86 *c)
 		if (mbytes > 4092)
 			mbytes = 4092;
 
-		rdmsr(MSR_K6_WHCR, l, h);
-		if ((l&0xFFFF0000) == 0) {
+		rdmsrq(MSR_K6_WHCR, val.q);
+		if ((val.l & 0xFFFF0000) == 0) {
 			unsigned long flags;
-			l = ((mbytes>>2)<<22)|(1<<16);
+			val.l = ((mbytes >> 2) << 22) | (1 << 16);
 			local_irq_save(flags);
 			wbinvd();
-			wrmsr(MSR_K6_WHCR, l, h);
+			wrmsrq(MSR_K6_WHCR, val.q);
 			local_irq_restore(flags);
 			pr_info("Enabling new style K6 write allocation for %d Mb\n",
 				mbytes);
@@ -205,7 +207,7 @@ static void init_amd_k6(struct cpuinfo_x86 *c)
 static void init_amd_k7(struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_X86_32
-	u32 l, h;
+	struct msr val;
 
 	/*
 	 * Bit 15 of Athlon specific MSR 15, needs to be 0
@@ -226,11 +228,12 @@ static void init_amd_k7(struct cpuinfo_x86 *c)
 	 * As per AMD technical note 27212 0.2
 	 */
 	if ((c->x86_model == 8 && c->x86_stepping >= 1) || (c->x86_model > 8)) {
-		rdmsr(MSR_K7_CLK_CTL, l, h);
-		if ((l & 0xfff00000) != 0x20000000) {
+		rdmsrq(MSR_K7_CLK_CTL, val.q);
+		if ((val.l & 0xfff00000) != 0x20000000) {
 			pr_info("CPU: CLK_CTL MSR was %x. Reprogramming to %x\n",
-				l, ((l & 0x000fffff)|0x20000000));
-			wrmsr(MSR_K7_CLK_CTL, (l & 0x000fffff)|0x20000000, h);
+				val.l, ((val.l & 0x000fffff) | 0x20000000));
+			val.l = (val.l & 0x000fffff) | 0x20000000;
+			wrmsrq(MSR_K7_CLK_CTL, val.q);
 		}
 	}
 
@@ -413,9 +416,14 @@ static void tsa_init(struct cpuinfo_x86 *c)
 		else
 			pr_debug("%s: current revision: 0x%x\n", __func__, c->microcode);
 	} else {
-		setup_force_cpu_cap(X86_FEATURE_TSA_SQ_NO);
-		setup_force_cpu_cap(X86_FEATURE_TSA_L1_NO);
+		if (!cpu_has(c, X86_FEATURE_ZEN5)) {
+			setup_force_cpu_cap(X86_FEATURE_TSA_SQ_NO);
+			setup_force_cpu_cap(X86_FEATURE_TSA_L1_NO);
+		}
 	}
+
+	if (!cpu_has(c, X86_FEATURE_ZEN5))
+		setup_force_cpu_cap(X86_FEATURE_TSA_FILL_NO);
 }
 
 static void bsp_init_amd(struct cpuinfo_x86 *c)
@@ -513,11 +521,13 @@ static void bsp_init_amd(struct cpuinfo_x86 *c)
 		case 0x00 ... 0x2f:
 		case 0x40 ... 0x4f:
 		case 0x60 ... 0x7f:
+		case 0xd0 ... 0xd7:
 			setup_force_cpu_cap(X86_FEATURE_ZEN5);
 			break;
 		case 0x50 ... 0x5f:
 		case 0x80 ... 0xaf:
 		case 0xc0 ... 0xcf:
+		case 0xd8 ... 0xef:
 			setup_force_cpu_cap(X86_FEATURE_ZEN6);
 			break;
 		default:
@@ -612,12 +622,13 @@ clear_sev:
 
 static void early_init_amd(struct cpuinfo_x86 *c)
 {
-	u32 dummy;
+	u64 val;
 
 	if (c->x86 >= 0xf)
 		set_cpu_cap(c, X86_FEATURE_K8);
 
-	rdmsr_safe(MSR_AMD64_PATCH_LEVEL, &c->microcode, &dummy);
+	rdmsrq_safe(MSR_AMD64_PATCH_LEVEL, &val);
+	c->microcode = (u32)val;
 
 	/*
 	 * c->x86_power is 8000_0007 edx. Bit 8 is TSC runs at constant rate
@@ -943,6 +954,9 @@ static void init_amd_zen1(struct cpuinfo_x86 *c)
 		msr_clear_bit(MSR_K7_HWCR, MSR_K7_HWCR_IRPERF_EN_BIT);
 		clear_cpu_cap(c, X86_FEATURE_IRPERF);
 	}
+
+	pr_notice_once("AMD Zen1 FPDSS bug detected, enabling mitigation.\n");
+	msr_set_bit(MSR_AMD64_FP_CFG, MSR_AMD64_FP_CFG_ZEN1_DENORM_FIX_BIT);
 }
 
 static const struct x86_cpu_id amd_zenbleed_microcode[] = {
@@ -985,6 +999,9 @@ static void init_amd_zen2(struct cpuinfo_x86 *c)
 
 	/* Correct misconfigured CPUID on some clients. */
 	clear_cpu_cap(c, X86_FEATURE_INVLPGB);
+
+	if (!cpu_has(c, X86_FEATURE_HYPERVISOR))
+		msr_set_bit(MSR_ZEN4_BP_CFG, MSR_ZEN2_BP_CFG_BUG_FIX_BIT);
 }
 
 static void init_amd_zen3(struct cpuinfo_x86 *c)
@@ -1037,6 +1054,10 @@ static void init_amd_zen5(struct cpuinfo_x86 *c)
 		msr_clear_bit(MSR_AMD64_CPUID_FN_7, 18);
 		pr_emerg_once("RDSEED32 is broken. Disabling the corresponding CPUID bit.\n");
 	}
+
+	if (cpu_has(c, X86_FEATURE_INVLPGB) &&
+	    !cpu_has(c, X86_FEATURE_TLBSYNC_SFW_NO))
+		set_cpu_bug(c, X86_BUG_TLBI);
 }
 
 static void init_amd(struct cpuinfo_x86 *c)
@@ -1180,7 +1201,7 @@ static unsigned int amd_size_cache(struct cpuinfo_x86 *c, unsigned int size)
 
 static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 {
-	u32 ebx, eax, ecx, edx;
+	u32 ebx, eax, ecx, edx, shift, tmp;
 	u16 mask = 0xfff;
 
 	if (c->x86 < 0xf)
@@ -1189,10 +1210,12 @@ static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 	if (c->extended_cpuid_level < 0x80000006)
 		return;
 
+	shift = !!cpu_has(c, X86_FEATURE_L2_TLB_SIZE_X32) * 5;
+
 	cpuid(0x80000006, &eax, &ebx, &ecx, &edx);
 
-	tlb_lld_4k = (ebx >> 16) & mask;
-	tlb_lli_4k = ebx & mask;
+	tlb_lld_4k = ((ebx >> 16) & mask) << shift;
+	tlb_lli_4k = (ebx & mask) << shift;
 
 	/*
 	 * K8 doesn't have 2M/4M entries in the L2 TLB so read out the L1 TLB
@@ -1204,16 +1227,18 @@ static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 	}
 
 	/* Handle DTLB 2M and 4M sizes, fall back to L1 if L2 is disabled */
-	if (!((eax >> 16) & mask))
+	tmp = ((eax >> 16) & mask) << shift;
+	if (!tmp)
 		tlb_lld_2m = (cpuid_eax(0x80000005) >> 16) & 0xff;
 	else
-		tlb_lld_2m = (eax >> 16) & mask;
+		tlb_lld_2m = tmp;
 
 	/* a 4M entry uses two 2M entries */
 	tlb_lld_4m = tlb_lld_2m >> 1;
 
 	/* Handle ITLB 2M and 4M sizes, fall back to L1 if L2 is disabled */
-	if (!(eax & mask)) {
+	tmp = (eax & mask) << shift;
+	if (!tmp) {
 		/* Erratum 658 */
 		if (c->x86 == 0x15 && c->x86_model <= 0x1f) {
 			tlb_lli_2m = 1024;
@@ -1221,8 +1246,9 @@ static void cpu_detect_tlb_amd(struct cpuinfo_x86 *c)
 			cpuid(0x80000005, &eax, &ebx, &ecx, &edx);
 			tlb_lli_2m = eax & 0xff;
 		}
-	} else
-		tlb_lli_2m = eax & mask;
+	} else {
+		tlb_lli_2m = tmp;
+	}
 
 	tlb_lli_4m = tlb_lli_2m >> 1;
 
@@ -1341,7 +1367,8 @@ static __init int print_s5_reset_status_mmio(void)
 	u32 value;
 	int i;
 
-	if (!cpu_feature_enabled(X86_FEATURE_ZEN))
+	if (!cpu_feature_enabled(X86_FEATURE_ZEN) ||
+	    cpu_feature_enabled(X86_FEATURE_HYPERVISOR))
 		return 0;
 
 	addr = ioremap(FCH_PM_BASE + FCH_PM_S5_RESET_STATUS, sizeof(value));
@@ -1380,3 +1407,51 @@ static __init int print_s5_reset_status_mmio(void)
 	return 0;
 }
 late_initcall(print_s5_reset_status_mmio);
+
+static void __init dmi_scan_additional(const struct dmi_header *d, void *p)
+{
+	struct dmi_a_info *info = (struct dmi_a_info *)d;
+	void *next, *end;
+
+	if (!IS_ENABLED(CONFIG_DMI))
+		return;
+
+	if (info->header.type != DMI_ENTRY_ADDITIONAL ||
+	    info->header.length < DMI_A_INFO_MIN_SIZE ||
+	    info->count < 1)
+		return;
+
+	next = (void *)(info + 1);
+	end  = (void *)info + info->header.length;
+
+	do {
+		struct dmi_a_info_entry *entry;
+		const char *string_ptr;
+
+		entry = (struct dmi_a_info_entry *)next;
+
+		/*
+		 * Not much can be done to validate data. At least the entry
+		 * length shouldn't be 0.
+		 */
+		if (!entry->length)
+			return;
+
+		string_ptr = dmi_string_nosave(&info->header, entry->str_num);
+
+		/* Sample string: AGESA!V9 StrixKrackanPI-FP8 1.1.0.0c */
+		if (!strncmp(string_ptr, "AGESA", 5)) {
+			pr_info("AGESA: %s\n", string_ptr);
+			break;
+		}
+
+		next += entry->length;
+	} while (end - next >= DMI_A_INFO_ENT_MIN_SIZE);
+}
+
+static __init int print_dmi_agesa(void)
+{
+	dmi_walk(dmi_scan_additional, NULL);
+	return 0;
+}
+late_initcall(print_dmi_agesa);

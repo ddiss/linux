@@ -101,6 +101,11 @@ handler.
 If the entry callback function returns !0, the corresponding exit callback
 will be cancelled.
 
+Since the callbacks run with preemption disabled under ftrace recursion
+protection, calling printk() or pr_*() from these callbacks is not safe
+and can cause deadlocks on console driver or scheduler locks. Use
+trace_printk() instead to log debugging output.
+
 @fp
         This is the address of `fprobe` data structure related to this handler.
         You can embed the `fprobe` to your data structure and get it by
@@ -118,7 +123,7 @@ will be cancelled.
 @fregs
         This is the `ftrace_regs` data structure at the entry and exit. This
         includes the function parameters, or the return values. So user can
-        access thos values via appropriate `ftrace_regs_*` APIs.
+        access those values via appropriate `ftrace_regs_*` APIs.
 
 @entry_data
         This is a local storage to share the data between entry and exit handlers.

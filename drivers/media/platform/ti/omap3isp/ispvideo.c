@@ -839,7 +839,7 @@ isp_video_get_selection(struct file *file, void *fh, struct v4l2_selection *sel)
 	 * implemented.
 	 */
 	sdsel.pad = pad;
-	ret = v4l2_subdev_call(subdev, pad, get_selection, NULL, &sdsel);
+	ret = v4l2_subdev_call(subdev, pad, get_selection, NULL, NULL, &sdsel);
 	if (!ret)
 		sel->r = sdsel.r;
 	if (ret != -ENOIOCTLCMD)
@@ -890,7 +890,7 @@ isp_video_set_selection(struct file *file, void *fh, struct v4l2_selection *sel)
 
 	sdsel.pad = pad;
 	mutex_lock(&video->mutex);
-	ret = v4l2_subdev_call(subdev, pad, set_selection, NULL, &sdsel);
+	ret = v4l2_subdev_call(subdev, pad, set_selection, NULL, NULL, &sdsel);
 	mutex_unlock(&video->mutex);
 	if (!ret)
 		sel->r = sdsel.r;
@@ -1403,6 +1403,7 @@ static int isp_video_open(struct file *file)
 
 	ret = vb2_queue_init(&handle->queue);
 	if (ret < 0) {
+		v4l2_pipeline_pm_put(&video->video.entity);
 		omap3isp_put(video->isp);
 		goto done;
 	}

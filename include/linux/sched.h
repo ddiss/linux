@@ -16,6 +16,7 @@
 #include <linux/cpumask_types.h>
 
 #include <linux/cache.h>
+#include <linux/futex_types.h>
 #include <linux/irqflags_types.h>
 #include <linux/smp_types.h>
 #include <linux/pid_types.h>
@@ -64,7 +65,6 @@ struct bpf_net_context;
 struct capture_control;
 struct cfs_rq;
 struct fs_struct;
-struct futex_pi_state;
 struct io_context;
 struct io_uring_task;
 struct mempolicy;
@@ -76,7 +76,6 @@ struct pid_namespace;
 struct pipe_inode_info;
 struct rcu_node;
 struct reclaim_state;
-struct robust_list_head;
 struct root_domain;
 struct rq;
 struct sched_attr;
@@ -85,6 +84,7 @@ struct seq_file;
 struct sighand_struct;
 struct signal_struct;
 struct task_delay_info;
+struct task_exec_state;
 struct task_group;
 struct task_struct;
 struct timespec64;
@@ -161,7 +161,7 @@ struct user_event_mm;
  */
 #define is_special_task_state(state)					\
 	((state) & (__TASK_STOPPED | __TASK_TRACED | TASK_PARKED |	\
-		    TASK_DEAD | TASK_FROZEN))
+		    TASK_DEAD | TASK_WAKING | TASK_FROZEN))
 
 #ifdef CONFIG_DEBUG_ATOMIC_SLEEP
 # define debug_normal_state_change(state_value)				\
@@ -550,11 +550,11 @@ struct sched_statistics {
 	s64				exec_max;
 	u64				slice_max;
 
-	u64				nr_migrations_cold;
 	u64				nr_failed_migrations_affine;
 	u64				nr_failed_migrations_running;
 	u64				nr_failed_migrations_hot;
 	u64				nr_forced_migrations;
+	u64				nr_migrations_cpu_non_preferred;
 
 	u64				nr_wakeups;
 	u64				nr_wakeups_sync;
@@ -563,8 +563,6 @@ struct sched_statistics {
 	u64				nr_wakeups_remote;
 	u64				nr_wakeups_affine;
 	u64				nr_wakeups_affine_attempts;
-	u64				nr_wakeups_passive;
-	u64				nr_wakeups_idle;
 
 #ifdef CONFIG_SCHED_CORE
 	u64				core_forceidle_sum;
@@ -575,10 +573,12 @@ struct sched_statistics {
 struct sched_entity {
 	/* For load-balancing: */
 	struct load_weight		load;
+	struct load_weight		h_load;
 	struct rb_node			run_node;
 	u64				deadline;
 	u64				min_vruntime;
 	u64				min_slice;
+	u64				max_slice;
 
 	struct list_head		group_node;
 	unsigned char			on_rq;
@@ -701,6 +701,11 @@ struct sched_dl_entity {
 	 * running, skipping the defer phase.
 	 *
 	 * @dl_defer_idle tracks idle state
+	 *
+	 * @dl_bw_attached tells if this server's bandwidth currently
+	 * contributes to the root domain's total_bw. Only meaningful for server
+	 * entities (@dl_server == 1). Allows toggling the reservation on/off
+	 * without losing the configured @dl_runtime/@dl_period.
 	 */
 	unsigned int			dl_throttled      : 1;
 	unsigned int			dl_yielded        : 1;
@@ -712,6 +717,7 @@ struct sched_dl_entity {
 	unsigned int			dl_defer_armed	  : 1;
 	unsigned int			dl_defer_running  : 1;
 	unsigned int			dl_defer_idle     : 1;
+	unsigned int			dl_bw_attached    : 1;
 
 	/*
 	 * Bandwidth enforcement timer. Each -deadline task has its
@@ -816,6 +822,17 @@ struct kmap_ctrl {
 #endif
 };
 
+#if defined(CONFIG_SMP) && defined(CONFIG_PREEMPTION)
+struct task_ipi_mask {
+	union {
+		cpumask_t		*ipi_mask_ptr;
+		unsigned long		ipi_mask_val;
+	};
+};
+#else
+struct task_ipi_mask { };
+#endif
+
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -845,7 +862,11 @@ struct task_struct {
 	struct alloc_tag		*alloc_tag;
 #endif
 
-	int				on_cpu;
+	u8				on_cpu;
+	u8				on_rq;
+	u8				is_blocked;
+	u8				__pad;
+
 	struct __call_single_node	wake_entry;
 	unsigned int			wakee_flips;
 	unsigned long			wakee_flip_decay_ts;
@@ -860,7 +881,8 @@ struct task_struct {
 	 */
 	int				recent_used_cpu;
 	int				wake_cpu;
-	int				on_rq;
+	/* CPU charged while is_blocked && in_iowait. */
+	int				iowait_cpu;
 
 	int				prio;
 	int				static_prio;
@@ -948,6 +970,10 @@ struct task_struct {
 	struct srcu_ctr __percpu	*trc_reader_scp;
 #endif /* #ifdef CONFIG_TASKS_TRACE_RCU */
 
+#ifdef CONFIG_TRIVIAL_PREEMPT_RCU
+	int				rcu_trivial_preempt_nesting;
+#endif /* #ifdef CONFIG_TRIVIAL_PREEMPT_RCU */
+
 	struct sched_info		sched_info;
 
 	struct list_head		tasks;
@@ -956,6 +982,8 @@ struct task_struct {
 
 	struct mm_struct		*mm;
 	struct mm_struct		*active_mm;
+
+	struct task_exec_state __rcu	*exec_state;
 
 	int				exit_state;
 	int				exit_code;
@@ -1147,8 +1175,12 @@ struct task_struct {
 	/* Objective and real subjective task credentials (COW): */
 	const struct cred __rcu		*real_cred;
 
-	/* Effective (overridable) subjective task credentials (COW): */
-	const struct cred __rcu		*cred;
+	/*
+	 * Effective (overridable) subjective task credentials (COW).
+	 * Only accessible for the current task and during task creation/freeing.
+	 * This pointer is not managed by RCU!
+	 */
+	const struct cred		*cred;
 
 #ifdef CONFIG_KEYS
 	/* Cached requested key. */
@@ -1158,12 +1190,9 @@ struct task_struct {
 	/*
 	 * executable name, excluding path.
 	 *
-	 * - normally initialized begin_new_exec()
-	 * - set it with set_task_comm()
-	 *   - strscpy_pad() to ensure it is always NUL-terminated and
-	 *     zero-padded
-	 *   - task_lock() to ensure the operation is atomic and the name is
-	 *     fully updated.
+	 * - normally initialized by begin_new_exec()
+	 * - set it with set_task_comm() to ensure it is always
+	 *   NUL-terminated and zero-padded
 	 */
 	char				comm[TASK_COMM_LEN];
 
@@ -1178,6 +1207,7 @@ struct task_struct {
 	unsigned long			last_switch_time;
 #endif
 	/* Filesystem information: */
+	struct fs_struct		*real_fs;
 	struct fs_struct		*fs;
 
 	/* Open file information: */
@@ -1237,6 +1267,14 @@ struct task_struct {
 #endif
 
 	struct mutex			*blocked_on;	/* lock we're blocked on */
+	raw_spinlock_t			blocked_lock;
+
+	/*
+	 * The task that is boosting this task; a back link for the current
+	 * donor stack. Set in schedule() -> find_proxy_task() and only stable
+	 * under preempt_disable().
+	 */
+	struct task_struct		*blocked_donor;
 
 #ifdef CONFIG_DETECT_HUNG_TASK_BLOCKER
 	/*
@@ -1267,6 +1305,7 @@ struct task_struct {
 	u64				curr_chain_key;
 	int				lockdep_depth;
 	unsigned int			lockdep_recursion;
+	unsigned int			lockdep_seq;
 	struct held_lock		held_locks[MAX_LOCK_DEPTH];
 #endif
 
@@ -1328,16 +1367,9 @@ struct task_struct {
 	u32				closid;
 	u32				rmid;
 #endif
-#ifdef CONFIG_FUTEX
-	struct robust_list_head __user	*robust_list;
-#ifdef CONFIG_COMPAT
-	struct compat_robust_list_head __user *compat_robust_list;
-#endif
-	struct list_head		pi_state_list;
-	struct futex_pi_state		*pi_state_cache;
-	struct mutex			futex_exit_mutex;
-	unsigned int			futex_state;
-#endif
+
+	struct futex_sched_data		futex;
+
 #ifdef CONFIG_PERF_EVENTS
 	u8				perf_recursion[PERF_NR_CONTEXTS];
 	struct perf_event_context	*perf_event_ctxp;
@@ -1345,6 +1377,7 @@ struct task_struct {
 	struct list_head		perf_event_list;
 	struct perf_ctx_data __rcu	*perf_ctx_data;
 #endif
+	struct task_ipi_mask		__private ipi_mask;
 #ifdef CONFIG_DEBUG_PREEMPT
 	unsigned long			preempt_disable_ip;
 #endif
@@ -1404,6 +1437,14 @@ struct task_struct {
 
 	unsigned long			numa_pages_migrated;
 #endif /* CONFIG_NUMA_BALANCING */
+
+#ifdef CONFIG_SCHED_CACHE
+	struct callback_head		cache_work;
+	struct sched_cache_group __rcu	*sched_cache_grp;
+	int				preferred_llc;
+	/* 1: task was enqueued to its preferred LLC, 0 otherwise */
+	int				pref_llc_queued;
+#endif
 
 	struct rseq_data		rseq;
 	struct sched_mm_cid		mm_cid;
@@ -1511,6 +1552,9 @@ struct task_struct {
 	/* KCOV descriptor wired with this task or NULL: */
 	struct kcov			*kcov;
 
+	/* KCOV descriptor for remote coverage collection from other tasks: */
+	struct kcov			*kcov_remote;
+
 	/* KCOV common handle for remote coverage collection: */
 	u64				kcov_handle;
 
@@ -1519,6 +1563,14 @@ struct task_struct {
 
 	/* Collect coverage from softirq context: */
 	unsigned int			kcov_softirq;
+
+	/* Temporary storage for preempting remote coverage collection: */
+	unsigned int			kcov_saved_mode;
+	unsigned int			kcov_saved_size;
+	void				*kcov_saved_area;
+	struct kcov			*kcov_saved_kcov;
+	int				kcov_saved_sequence;
+
 #endif
 
 #ifdef CONFIG_MEMCG_V1
@@ -1532,7 +1584,7 @@ struct task_struct {
 	/* Used by memcontrol for targeted memcg charge: */
 	struct mem_cgroup		*active_memcg;
 
-	/* Cache for current->cgroups->memcg->objcg lookups: */
+	/* Cache for current->cgroups->memcg->nodeinfo[nid]->objcg lookups: */
 	struct obj_cgroup		*objcg;
 #endif
 
@@ -1743,7 +1795,7 @@ static inline bool is_lazy_mmu_mode_active(void)
 }
 #endif
 
-extern struct pid *cad_pid;
+extern struct pid __rcu *cad_pid;
 
 /*
  * Per process flags
@@ -1764,15 +1816,15 @@ extern struct pid *cad_pid;
 #define PF_USED_MATH		0x00002000	/* If unset the fpu must be initialized before use */
 #define PF_USER_WORKER		0x00004000	/* Kernel thread cloned from userspace thread */
 #define PF_NOFREEZE		0x00008000	/* This thread should not be frozen */
-#define PF_KCOMPACTD		0x00010000	/* I am kcompactd */
-#define PF_KSWAPD		0x00020000	/* I am kswapd */
+#define PF__HOLE__00010000	0x00010000
+#define PF__HOLE__00020000	0x00020000
 #define PF_MEMALLOC_NOFS	0x00040000	/* All allocations inherit GFP_NOFS. See memalloc_nfs_save() */
 #define PF_MEMALLOC_NOIO	0x00080000	/* All allocations inherit GFP_NOIO. See memalloc_noio_save() */
 #define PF_LOCAL_THROTTLE	0x00100000	/* Throttle writes only against the bdi I write to,
 						 * I am cleaning dirty pages from some other bdi. */
 #define PF_KTHREAD		0x00200000	/* I am a kernel thread */
 #define PF_RANDOMIZE		0x00400000	/* Randomize virtual address space */
-#define PF__HOLE__00800000	0x00800000
+#define PF_NO_NOTIFY_SIGNAL	0x00800000	/* see no_notify_signal_save() */
 #define PF__HOLE__01000000	0x01000000
 #define PF__HOLE__02000000	0x02000000
 #define PF_NO_SETAFFINITY	0x04000000	/* Userland is not allowed to meddle with cpus_mask */
@@ -1825,7 +1877,6 @@ static __always_inline bool is_user_task(struct task_struct *task)
 /* Per-process atomic flags. */
 #define PFA_NO_NEW_PRIVS		0	/* May not gain new privileges. */
 #define PFA_SPREAD_PAGE			1	/* Spread page cache over cpuset */
-#define PFA_SPREAD_SLAB			2	/* Spread some slab caches over cpuset */
 #define PFA_SPEC_SSB_DISABLE		3	/* Speculative Store Bypass disabled */
 #define PFA_SPEC_SSB_FORCE_DISABLE	4	/* Speculative Store Bypass force disabled*/
 #define PFA_SPEC_IB_DISABLE		5	/* Indirect branch speculation restricted */
@@ -1850,10 +1901,6 @@ TASK_PFA_SET(NO_NEW_PRIVS, no_new_privs)
 TASK_PFA_TEST(SPREAD_PAGE, spread_page)
 TASK_PFA_SET(SPREAD_PAGE, spread_page)
 TASK_PFA_CLEAR(SPREAD_PAGE, spread_page)
-
-TASK_PFA_TEST(SPREAD_SLAB, spread_slab)
-TASK_PFA_SET(SPREAD_SLAB, spread_slab)
-TASK_PFA_CLEAR(SPREAD_SLAB, spread_slab)
 
 TASK_PFA_TEST(SPEC_SSB_DISABLE, spec_ssb_disable)
 TASK_PFA_SET(SPEC_SSB_DISABLE, spec_ssb_disable)
@@ -2065,10 +2112,9 @@ static inline int test_tsk_thread_flag(struct task_struct *tsk, int flag)
 
 static inline void set_tsk_need_resched(struct task_struct *tsk)
 {
-	if (tracepoint_enabled(sched_set_need_resched_tp) &&
-	    !test_tsk_thread_flag(tsk, TIF_NEED_RESCHED))
+	if (!test_and_set_tsk_thread_flag(tsk, TIF_NEED_RESCHED) &&
+	    tracepoint_enabled(sched_set_need_resched_tp))
 		__trace_set_need_resched(tsk, TIF_NEED_RESCHED);
-	set_tsk_thread_flag(tsk,TIF_NEED_RESCHED);
 }
 
 static inline void clear_tsk_need_resched(struct task_struct *tsk)
@@ -2095,44 +2141,19 @@ static inline void set_need_resched_current(void)
  * value indicates whether a reschedule was done in fact.
  * cond_resched_lock() will drop the spinlock before scheduling,
  */
-#if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
+#if !defined(CONFIG_PREEMPTION)
 extern int __cond_resched(void);
-
-#if defined(CONFIG_PREEMPT_DYNAMIC) && defined(CONFIG_HAVE_PREEMPT_DYNAMIC_CALL)
-
-DECLARE_STATIC_CALL(cond_resched, __cond_resched);
-
-static __always_inline int _cond_resched(void)
-{
-	return static_call_mod(cond_resched)();
-}
-
-#elif defined(CONFIG_PREEMPT_DYNAMIC) && defined(CONFIG_HAVE_PREEMPT_DYNAMIC_KEY)
-
-extern int dynamic_cond_resched(void);
-
-static __always_inline int _cond_resched(void)
-{
-	return dynamic_cond_resched();
-}
-
-#else /* !CONFIG_PREEMPTION */
 
 static inline int _cond_resched(void)
 {
 	return __cond_resched();
 }
-
-#endif /* PREEMPT_DYNAMIC && CONFIG_HAVE_PREEMPT_DYNAMIC_CALL */
-
-#else /* CONFIG_PREEMPTION && !CONFIG_PREEMPT_DYNAMIC */
-
+#else
 static inline int _cond_resched(void)
 {
 	return 0;
 }
-
-#endif /* !CONFIG_PREEMPTION || CONFIG_PREEMPT_DYNAMIC */
+#endif
 
 #define cond_resched() ({			\
 	__might_resched(__FILE__, __LINE__, 0);	\
@@ -2178,59 +2199,45 @@ extern int __cond_resched_rwlock_write(rwlock_t *lock) __must_hold(lock);
 })
 
 #ifndef CONFIG_PREEMPT_RT
+
 static inline struct mutex *__get_task_blocked_on(struct task_struct *p)
 {
-	struct mutex *m = p->blocked_on;
-
-	if (m)
-		lockdep_assert_held_once(&m->wait_lock);
-	return m;
+	lockdep_assert_held_once(&p->blocked_lock);
+	return p->blocked_on;
 }
 
 static inline void __set_task_blocked_on(struct task_struct *p, struct mutex *m)
 {
-	struct mutex *blocked_on = READ_ONCE(p->blocked_on);
-
 	WARN_ON_ONCE(!m);
 	/* The task should only be setting itself as blocked */
 	WARN_ON_ONCE(p != current);
-	/* Currently we serialize blocked_on under the mutex::wait_lock */
-	lockdep_assert_held_once(&m->wait_lock);
+	/* Currently we serialize blocked_on under the task::blocked_lock */
+	lockdep_assert_held_once(&p->blocked_lock);
 	/*
 	 * Check ensure we don't overwrite existing mutex value
 	 * with a different mutex. Note, setting it to the same
 	 * lock repeatedly is ok.
 	 */
-	WARN_ON_ONCE(blocked_on && blocked_on != m);
-	WRITE_ONCE(p->blocked_on, m);
-}
-
-static inline void set_task_blocked_on(struct task_struct *p, struct mutex *m)
-{
-	guard(raw_spinlock_irqsave)(&m->wait_lock);
-	__set_task_blocked_on(p, m);
+	WARN_ON_ONCE(p->blocked_on && p->blocked_on != m);
+	p->blocked_on = m;
 }
 
 static inline void __clear_task_blocked_on(struct task_struct *p, struct mutex *m)
 {
-	if (m) {
-		struct mutex *blocked_on = READ_ONCE(p->blocked_on);
-
-		/* Currently we serialize blocked_on under the mutex::wait_lock */
-		lockdep_assert_held_once(&m->wait_lock);
-		/*
-		 * There may be cases where we re-clear already cleared
-		 * blocked_on relationships, but make sure we are not
-		 * clearing the relationship with a different lock.
-		 */
-		WARN_ON_ONCE(blocked_on && blocked_on != m);
-	}
-	WRITE_ONCE(p->blocked_on, NULL);
+	/* Currently we serialize blocked_on under the task::blocked_lock */
+	lockdep_assert_held_once(&p->blocked_lock);
+	/*
+	 * There may be cases where we re-clear already cleared
+	 * blocked_on relationships, but make sure we are not
+	 * clearing the relationship with a different lock.
+	 */
+	WARN_ON_ONCE(m && p->blocked_on && p->blocked_on != m);
+	p->blocked_on = NULL;
 }
 
 static inline void clear_task_blocked_on(struct task_struct *p, struct mutex *m)
 {
-	guard(raw_spinlock_irqsave)(&m->wait_lock);
+	guard(raw_spinlock_irqsave)(&p->blocked_lock);
 	__clear_task_blocked_on(p, m);
 }
 #else
@@ -2353,7 +2360,6 @@ static __always_inline void alloc_tag_restore(struct alloc_tag *tag, struct allo
 #ifdef CONFIG_SCHED_MM_CID
 void sched_mm_cid_before_execve(struct task_struct *t);
 void sched_mm_cid_after_execve(struct task_struct *t);
-void sched_mm_cid_fork(struct task_struct *t);
 void sched_mm_cid_exit(struct task_struct *t);
 static __always_inline int task_mm_cid(struct task_struct *t)
 {
@@ -2362,7 +2368,6 @@ static __always_inline int task_mm_cid(struct task_struct *t)
 #else
 static inline void sched_mm_cid_before_execve(struct task_struct *t) { }
 static inline void sched_mm_cid_after_execve(struct task_struct *t) { }
-static inline void sched_mm_cid_fork(struct task_struct *t) { }
 static inline void sched_mm_cid_exit(struct task_struct *t) { }
 static __always_inline int task_mm_cid(struct task_struct *t)
 {
@@ -2373,6 +2378,44 @@ static __always_inline int task_mm_cid(struct task_struct *t)
 	 */
 	return task_cpu(t);
 }
+#endif
+
+#ifdef CONFIG_SCHED_CACHE
+
+struct sched_cache_time {
+	u64 runtime;
+	unsigned long epoch;
+};
+
+struct sched_cache_group {
+	struct sched_cache_time __percpu *pcpu_sched;
+	raw_spinlock_t lock;
+	unsigned long epoch;
+	u64 nr_running_avg;
+	unsigned long next_scan;
+	unsigned long footprint;
+	int cpu;
+	refcount_t refcnt;
+	struct rcu_head rcu;
+} ____cacheline_aligned_in_smp;
+
+struct sched_cache_group *sched_cache_group_get(struct sched_cache_group *grp);
+struct sched_cache_group *task_cache_group_get(struct task_struct *p);
+
+void sched_cache_fork(struct task_struct *p);
+void sched_cache_fork_cleanup(struct task_struct *p);
+void sched_cache_exec_mmap(struct task_struct *p, struct mm_struct *mm);
+void sched_cache_exit_mm(struct task_struct *p);
+
+#else
+
+struct sched_cache_group { };
+
+static inline void sched_cache_fork(struct task_struct *p) { }
+static inline void sched_cache_fork_cleanup(struct task_struct *p) { }
+static inline void sched_cache_exec_mmap(struct task_struct *p, struct mm_struct *mm) { }
+static inline void sched_cache_exit_mm(struct task_struct *p) { }
+
 #endif
 
 #ifndef MODULE

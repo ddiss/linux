@@ -10,7 +10,6 @@
 #include <linux/completion.h>
 #include <linux/debugfs.h>
 #include <linux/ktime.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
@@ -291,7 +290,7 @@ static int sof_ipc_flood_probe(struct auxiliary_device *auxdev,
 	struct sof_ipc_flood_priv *priv;
 
 	/* allocate memory for client data */
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 

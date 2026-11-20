@@ -483,10 +483,17 @@ lock:
 		goto out_unlock;
 	}
 
-	if (tm_list)
+	if (tm_list) {
 		ret = tree_mod_log_free_eb(fs_info, tm_list, nritems);
-	if (!ret)
-		ret = tree_mod_log_insert(fs_info, tm);
+		if (ret)
+			goto out_unlock;
+	}
+
+	ret = tree_mod_log_insert(fs_info, tm);
+	if (ret && tm_list) {
+		for (i = 0; i < nritems; i++)
+			rb_erase(&tm_list[i]->node, &fs_info->tree_mod_log);
+	}
 
 out_unlock:
 	write_unlock(&fs_info->tree_mod_log_lock);
@@ -1042,12 +1049,10 @@ struct extent_buffer *btrfs_get_old_root(struct btrfs_root *root, u64 time_seq)
 		check.owner_root = btrfs_root_id(root);
 
 		old = read_tree_block(fs_info, logical, &check);
-		if (WARN_ON(IS_ERR(old) || !extent_buffer_uptodate(old))) {
-			if (!IS_ERR(old))
-				free_extent_buffer(old);
+		if (WARN_ON(IS_ERR(old))) {
 			btrfs_warn(fs_info,
-				   "failed to read tree block %llu from get_old_root",
-				   logical);
+				   "failed to read tree block %llu from get_old_root: %ld",
+				   logical, PTR_ERR(old));
 		} else {
 			struct tree_mod_elem *tm2;
 

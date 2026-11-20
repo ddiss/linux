@@ -379,7 +379,6 @@ static int abp2_read_raw(struct iio_dev *indio_dev,
 		default:
 			return -EINVAL;
 		}
-		return IIO_VAL_INT;
 
 	case IIO_CHAN_INFO_SCALE:
 		switch (channel->type) {
@@ -520,7 +519,7 @@ int abp2_common_probe(struct device *dev, const struct abp2_ops *ops, int irq)
 	data->p_offset = div_s64(odelta * data->pmin, pdelta) - data->outmin;
 
 	if (data->irq > 0) {
-		ret = devm_request_irq(dev, irq, abp2_eoc_handler, IRQF_ONESHOT,
+		ret = devm_request_irq(dev, irq, abp2_eoc_handler, 0,
 				       dev_name(dev), data);
 		if (ret)
 			return ret;

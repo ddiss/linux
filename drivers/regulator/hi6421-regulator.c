@@ -544,7 +544,7 @@ static int hi6421_regulator_probe(struct platform_device *pdev)
 	struct regulator_dev *rdev;
 	int i;
 
-	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+	pdata = devm_kzalloc_obj(&pdev->dev, *pdata);
 	if (!pdata)
 		return -ENOMEM;
 	mutex_init(&pdata->lock);
@@ -571,7 +571,7 @@ static int hi6421_regulator_probe(struct platform_device *pdev)
 
 static const struct platform_device_id hi6421_regulator_table[] = {
 	{ .name = "hi6421-regulator" },
-	{},
+	{ }
 };
 MODULE_DEVICE_TABLE(platform, hi6421_regulator_table);
 

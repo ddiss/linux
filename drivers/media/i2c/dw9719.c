@@ -355,7 +355,7 @@ static int dw9719_probe(struct i2c_client *client)
 	struct dw9719_device *dw9719;
 	int ret;
 
-	dw9719 = devm_kzalloc(&client->dev, sizeof(*dw9719), GFP_KERNEL);
+	dw9719 = devm_kzalloc_obj(&client->dev, *dw9719);
 	if (!dw9719)
 		return -ENOMEM;
 
@@ -439,6 +439,15 @@ static void dw9719_remove(struct i2c_client *client)
 	pm_runtime_set_suspended(&client->dev);
 }
 
+static const struct i2c_device_id dw9719_id_table[] = {
+	{ .name = "dw9718s", .driver_data = (kernel_ulong_t)DW9718S },
+	{ .name = "dw9719", .driver_data = (kernel_ulong_t)DW9719 },
+	{ .name = "dw9761", .driver_data = (kernel_ulong_t)DW9761 },
+	{ .name = "dw9800k", .driver_data = (kernel_ulong_t)DW9800K },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, dw9719_id_table);
+
 static const struct of_device_id dw9719_of_table[] = {
 	{ .compatible = "dongwoon,dw9718s", .data = (const void *)DW9718S },
 	{ .compatible = "dongwoon,dw9719", .data = (const void *)DW9719 },
@@ -459,6 +468,7 @@ static struct i2c_driver dw9719_i2c_driver = {
 	},
 	.probe = dw9719_probe,
 	.remove = dw9719_remove,
+	.id_table = dw9719_id_table,
 };
 module_i2c_driver(dw9719_i2c_driver);
 

@@ -139,8 +139,9 @@ static int ieee802154_dev_ioctl(struct sock *sk, struct ifreq __user *arg,
 	if (!dev)
 		return -ENODEV;
 
-	if (dev->type == ARPHRD_IEEE802154 && dev->netdev_ops->ndo_do_ioctl)
-		ret = dev->netdev_ops->ndo_do_ioctl(dev, &ifr, cmd);
+	if (dev->type == ARPHRD_IEEE802154 && dev->ieee802154_ptr &&
+	    dev->ieee802154_ptr->ops)
+		ret = dev->ieee802154_ptr->ops->ioctl(dev, &ifr, cmd);
 
 	if (!ret && put_user_ifreq(&ifr, arg))
 		ret = -EFAULT;
@@ -313,7 +314,7 @@ out:
 }
 
 static int raw_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-		       int flags, int *addr_len)
+		       int flags)
 {
 	size_t copied = 0;
 	int err = -EOPNOTSUPP;
@@ -703,7 +704,7 @@ out:
 }
 
 static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
-			 int flags, int *addr_len)
+			 int flags)
 {
 	size_t copied = 0;
 	int err = -EOPNOTSUPP;
@@ -737,7 +738,7 @@ static int dgram_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 
 		saddr->family = AF_IEEE802154;
 		ieee802154_addr_to_sa(&saddr->addr, &mac_cb(skb)->source);
-		*addr_len = sizeof(*saddr);
+		msg->msg_namelen = sizeof(*saddr);
 	}
 
 	if (ro->want_lqi) {
@@ -831,20 +832,12 @@ static int ieee802154_dgram_deliver(struct net_device *dev, struct sk_buff *skb)
 	return ret;
 }
 
-static int dgram_getsockopt(struct sock *sk, int level, int optname,
-			    char __user *optval, int __user *optlen)
+static int do_dgram_getsockopt(struct sock *sk, int optname, sockopt_t *opt)
 {
 	struct dgram_sock *ro = dgram_sk(sk);
-
 	int val, len;
 
-	if (level != SOL_IEEE802154)
-		return -EOPNOTSUPP;
-
-	if (get_user(len, optlen))
-		return -EFAULT;
-
-	len = min_t(unsigned int, len, sizeof(int));
+	len = umin(sizeof(int), opt->optlen);
 
 	switch (optname) {
 	case WPAN_WANTACK:
@@ -871,10 +864,32 @@ static int dgram_getsockopt(struct sock *sk, int level, int optname,
 		return -ENOPROTOOPT;
 	}
 
-	if (put_user(len, optlen))
+	opt->optlen = len;
+	if (copy_to_iter(&val, len, &opt->iter_out) != len)
 		return -EFAULT;
-	if (copy_to_user(optval, &val, len))
+	return 0;
+}
+
+static int dgram_getsockopt(struct sock *sk, int level, int optname,
+			    char __user *optval, int __user *optlen)
+{
+	sockopt_t opt;
+	int err;
+
+	if (level != SOL_IEEE802154)
+		return -EOPNOTSUPP;
+
+	err = sockopt_init_user(&opt, optval, optlen);
+	if (err)
+		return err;
+
+	err = do_dgram_getsockopt(sk, optname, &opt);
+	if (err)
+		return err;
+
+	if (put_user(opt.optlen, optlen))
 		return -EFAULT;
+
 	return 0;
 }
 

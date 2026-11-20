@@ -26,7 +26,7 @@
 
 #define DM_MSG_PREFIX			"verity"
 
-#define DM_VERITY_ENV_LENGTH		42
+#define DM_VERITY_ENV_LENGTH		46
 #define DM_VERITY_ENV_VAR_NAME		"DM_VERITY_ERR_BLOCK_NR"
 
 #define DM_VERITY_DEFAULT_PREFETCH_SIZE	262144
@@ -171,6 +171,15 @@ static void verity_hash_at_level(struct dm_verity *v, sector_t block, int level,
 }
 
 /*
+ * Skip verity work in response to I/O error when system is shutting down.
+ */
+static inline bool verity_is_system_shutting_down(void)
+{
+	return system_state == SYSTEM_HALT || system_state == SYSTEM_POWER_OFF
+		|| system_state == SYSTEM_RESTART;
+}
+
+/*
  * Handle verification errors.
  */
 static int verity_handle_err(struct dm_verity *v, enum verity_block_type type,
@@ -180,14 +189,16 @@ static int verity_handle_err(struct dm_verity *v, enum verity_block_type type,
 	char *envp[] = { verity_env, NULL };
 	const char *type_str = "";
 	struct mapped_device *md = dm_table_get_md(v->ti->table);
+	int ce;
 
 	/* Corruption should be visible in device status in all modes */
 	v->hash_failed = true;
 
-	if (v->corrupted_errs >= DM_VERITY_MAX_CORRUPTED_ERRS)
-		goto out;
-
-	v->corrupted_errs++;
+	ce = atomic_read(&v->corrupted_errs);
+	do {
+		if (ce >= DM_VERITY_MAX_CORRUPTED_ERRS)
+			goto out;
+	} while (!atomic_try_cmpxchg(&v->corrupted_errs, &ce, ce + 1));
 
 	switch (type) {
 	case DM_VERITY_BLOCK_TYPE_DATA:
@@ -203,7 +214,7 @@ static int verity_handle_err(struct dm_verity *v, enum verity_block_type type,
 	DMERR_LIMIT("%s: %s block %llu is corrupted", v->data_dev->name,
 		    type_str, block);
 
-	if (v->corrupted_errs == DM_VERITY_MAX_CORRUPTED_ERRS) {
+	if (ce + 1 == DM_VERITY_MAX_CORRUPTED_ERRS) {
 		DMERR("%s: reached maximum errors", v->data_dev->name);
 		dm_audit_log_target(DM_MSG_PREFIX, "max-corrupted-errors", v->ti, 0);
 	}
@@ -216,6 +227,15 @@ static int verity_handle_err(struct dm_verity *v, enum verity_block_type type,
 out:
 	if (v->mode == DM_VERITY_MODE_LOGGING)
 		return 0;
+
+	/*
+	 * Devices may already be quiesced (e.g. UFS set offline by its
+	 * shutdown hook), so a failure here does not imply corruption.  Fail
+	 * the I/O but do not restart or panic, which would also override the
+	 * reboot reason of the shutdown already in progress.
+	 */
+	if (verity_is_system_shutting_down())
+		return 1;
 
 	if (v->mode == DM_VERITY_MODE_RESTART)
 		kernel_restart("dm-verity device corrupted");
@@ -314,9 +334,7 @@ static int verity_verify_level(struct dm_verity *v, struct dm_verity_io *io,
 		else if (verity_handle_err(v,
 					   DM_VERITY_BLOCK_TYPE_METADATA,
 					   hash_block)) {
-			struct bio *bio;
 			io->had_mismatch = true;
-			bio = dm_bio_from_per_bio_data(io, v->ti->per_io_data_size);
 			dm_audit_log_bio(DM_MSG_PREFIX, "verify-metadata", bio,
 					 block, 0);
 			r = -EIO;
@@ -393,7 +411,7 @@ static noinline int verity_recheck(struct dm_verity *v, struct dm_verity_io *io,
 	io_loc.bdev = v->data_dev->bdev;
 	io_loc.sector = cur_block << (v->data_dev_block_bits - SECTOR_SHIFT);
 	io_loc.count = 1 << (v->data_dev_block_bits - SECTOR_SHIFT);
-	r = dm_io(&io_req, 1, &io_loc, NULL, IOPRIO_DEFAULT);
+	r = dm_io(&io_req, 1, &io_loc, NULL, NULL, IOPRIO_DEFAULT);
 	if (unlikely(r))
 		goto free_ret;
 
@@ -593,15 +611,6 @@ error:
 	return r;
 }
 
-/*
- * Skip verity work in response to I/O error when system is shutting down.
- */
-static inline bool verity_is_system_shutting_down(void)
-{
-	return system_state == SYSTEM_HALT || system_state == SYSTEM_POWER_OFF
-		|| system_state == SYSTEM_RESTART;
-}
-
 static void restart_io_error(struct work_struct *w)
 {
 	kernel_restart("dm-verity device has I/O error");
@@ -733,8 +742,8 @@ static void verity_prefetch_io(struct work_struct *work)
 
 			hash_block_start &= ~(sector_t)(cluster - 1);
 			hash_block_end |= cluster - 1;
-			if (unlikely(hash_block_end >= v->hash_blocks))
-				hash_block_end = v->hash_blocks - 1;
+			if (unlikely(hash_block_end >= v->hash_end))
+				hash_block_end = v->hash_end - 1;
 		}
 no_prefetch_cluster:
 		dm_bufio_prefetch_with_ioprio(v->bufio, hash_block_start,
@@ -823,13 +832,6 @@ static int verity_map(struct dm_target *ti, struct bio *bio)
 	submit_bio_noacct(bio);
 
 	return DM_MAPIO_SUBMITTED;
-}
-
-static void verity_postsuspend(struct dm_target *ti)
-{
-	struct dm_verity *v = ti->private;
-	flush_workqueue(v->verify_wq);
-	dm_bufio_client_reset(v->bufio);
 }
 
 /*
@@ -1011,13 +1013,7 @@ static void verity_io_hints(struct dm_target *ti, struct queue_limits *limits)
 {
 	struct dm_verity *v = ti->private;
 
-	if (limits->logical_block_size < 1 << v->data_dev_block_bits)
-		limits->logical_block_size = 1 << v->data_dev_block_bits;
-
-	if (limits->physical_block_size < 1 << v->data_dev_block_bits)
-		limits->physical_block_size = 1 << v->data_dev_block_bits;
-
-	limits->io_min = limits->logical_block_size;
+	dm_stack_bs_limits(limits, 1 << v->data_dev_block_bits);
 
 	/*
 	 * Similar to what dm-crypt does, opt dm-verity out of support for
@@ -1119,9 +1115,8 @@ static int verity_alloc_most_once(struct dm_verity *v)
 		return -E2BIG;
 	}
 
-	v->validated_blocks = kvcalloc(BITS_TO_LONGS(v->data_blocks),
-				       sizeof(unsigned long),
-				       GFP_KERNEL);
+	v->validated_blocks = kvzalloc_objs(unsigned long,
+					    BITS_TO_LONGS(v->data_blocks));
 	if (!v->validated_blocks) {
 		ti->error = "failed to allocate bitset for check_at_most_once";
 		return -ENOMEM;
@@ -1268,6 +1263,8 @@ static int verity_parse_opt_args(struct dm_arg_set *as, struct dm_verity *v,
 			continue;
 
 		} else if (!strcasecmp(arg_name, DM_VERITY_OPT_TASKLET_VERIFY)) {
+			if (v->use_bh_wq)
+				continue;
 			v->use_bh_wq = true;
 			static_branch_inc(&use_bh_wq_enabled);
 			continue;
@@ -1607,7 +1604,7 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		}
 		hash_position += s;
 	}
-	v->hash_blocks = hash_position;
+	v->hash_end = hash_position;
 
 	r = mempool_init_page_pool(&v->recheck_pool, 1, 0);
 	if (unlikely(r)) {
@@ -1634,7 +1631,7 @@ static int verity_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad;
 	}
 
-	if (dm_bufio_get_device_size(v->bufio) < v->hash_blocks) {
+	if (dm_bufio_get_device_size(v->bufio) < v->hash_end) {
 		ti->error = "Hash device is too small";
 		r = -E2BIG;
 		goto bad;
@@ -1737,12 +1734,21 @@ static int verity_security_set_signature(struct block_device *bdev,
 					  v->sig_size);
 }
 
+static void verity_security_clear_signature(struct block_device *bdev)
+{
+	security_bdev_setintegrity(bdev, LSM_INT_DMVERITY_SIG_VALID, NULL, 0);
+}
+
 #else
 
 static inline int verity_security_set_signature(struct block_device *bdev,
 						struct dm_verity *v)
 {
 	return 0;
+}
+
+static inline void verity_security_clear_signature(struct block_device *bdev)
+{
 }
 
 #endif /* CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG */
@@ -1783,7 +1789,30 @@ bad:
 	return r;
 }
 
+static void verity_security_clear_integrity(struct dm_target *ti)
+{
+	struct block_device *bdev = dm_disk(dm_table_get_md(ti->table))->part0;
+
+	security_bdev_setintegrity(bdev, LSM_INT_DMVERITY_ROOTHASH, NULL, 0);
+	verity_security_clear_signature(bdev);
+}
+
+#else
+
+static inline void verity_security_clear_integrity(struct dm_target *ti)
+{
+}
+
 #endif /* CONFIG_SECURITY */
+
+static void verity_postsuspend(struct dm_target *ti)
+{
+	struct dm_verity *v = ti->private;
+
+	flush_workqueue(v->verify_wq);
+	dm_bufio_client_reset(v->bufio);
+	verity_security_clear_integrity(ti);
+}
 
 static struct target_type verity_target = {
 	.name		= "verity",

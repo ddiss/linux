@@ -123,19 +123,6 @@ static int blk_validate_zoned_limits(struct queue_limits *lim)
 	return 0;
 }
 
-/*
- * Maximum size of I/O that needs a block layer integrity buffer.  Limited
- * by the number of intervals for which we can fit the integrity buffer into
- * the buffer size.  Because the buffer is a single segment it is also limited
- * by the maximum segment size.
- */
-static inline unsigned int max_integrity_io_size(struct queue_limits *lim)
-{
-	return min_t(unsigned int, lim->max_segment_size,
-		(BLK_INTEGRITY_MAX_SIZE / lim->integrity.metadata_size) <<
-			lim->integrity.interval_exp);
-}
-
 static int blk_validate_integrity_limits(struct queue_limits *lim)
 {
 	struct blk_integrity *bi = &lim->integrity;
@@ -202,11 +189,11 @@ static int blk_validate_integrity_limits(struct queue_limits *lim)
 	}
 
 	/*
-	 * The PI generation / validation helpers do not expect intervals to
-	 * straddle multiple bio_vecs.  Enforce alignment so that those are
+	 * Some IO controllers can not handle data intervals straddling
+	 * multiple bio_vecs.  For those, enforce alignment so that those are
 	 * never generated, and that each buffer is aligned as expected.
 	 */
-	if (bi->csum_type) {
+	if (!(bi->flags & BLK_SPLIT_INTERVAL_CAPABLE) && bi->csum_type) {
 		lim->dma_alignment = max(lim->dma_alignment,
 					(1U << bi->interval_exp) - 1);
 	}
@@ -243,14 +230,20 @@ static unsigned int blk_queue_max_guaranteed_bio(struct queue_limits *lim)
 
 static void blk_atomic_writes_update_limits(struct queue_limits *lim)
 {
+	unsigned int integrity_max = lim->integrity.metadata_size ?
+					max_integrity_io_size(lim) : 0;
 	unsigned int unit_limit = min(lim->max_hw_sectors << SECTOR_SHIFT,
 					blk_queue_max_guaranteed_bio(lim));
 
+	unit_limit = min_not_zero(unit_limit, integrity_max);
 	unit_limit = rounddown_pow_of_two(unit_limit);
 
 	lim->atomic_write_max_sectors =
 		min(lim->atomic_write_hw_max >> SECTOR_SHIFT,
 			lim->max_hw_sectors);
+	lim->atomic_write_max_sectors =
+		min_not_zero(lim->atomic_write_max_sectors,
+				integrity_max >> SECTOR_SHIFT);
 	lim->atomic_write_unit_min =
 		min(lim->atomic_write_hw_unit_min, unit_limit);
 	lim->atomic_write_unit_max =
@@ -518,11 +511,13 @@ int blk_validate_limits(struct queue_limits *lim)
 	if (!(lim->features & BLK_FEAT_WRITE_CACHE))
 		lim->features &= ~BLK_FEAT_FUA;
 
-	blk_validate_atomic_write_limits(lim);
-
 	err = blk_validate_integrity_limits(lim);
 	if (err)
 		return err;
+
+	/* atomics limits depend on integrity limits */
+	blk_validate_atomic_write_limits(lim);
+
 	return blk_validate_zoned_limits(lim);
 }
 EXPORT_SYMBOL_GPL(blk_validate_limits);
@@ -808,6 +803,8 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 		t->features &= ~BLK_FEAT_NOWAIT;
 	if (!(b->features & BLK_FEAT_POLL))
 		t->features &= ~BLK_FEAT_POLL;
+	if (!(b->features & BLK_FEAT_PCI_P2PDMA))
+		t->features &= ~BLK_FEAT_PCI_P2PDMA;
 
 	t->flags |= (b->flags & BLK_FLAG_MISALIGNED);
 
@@ -1005,10 +1002,14 @@ bool queue_limits_stack_integrity(struct queue_limits *t,
 		if ((ti->flags & BLK_INTEGRITY_REF_TAG) !=
 		    (bi->flags & BLK_INTEGRITY_REF_TAG))
 			goto incompatible;
+		if ((ti->flags & BLK_SPLIT_INTERVAL_CAPABLE) &&
+		    !(bi->flags & BLK_SPLIT_INTERVAL_CAPABLE))
+			ti->flags &= ~BLK_SPLIT_INTERVAL_CAPABLE;
 	} else {
 		ti->flags = BLK_INTEGRITY_STACKED;
 		ti->flags |= (bi->flags & BLK_INTEGRITY_DEVICE_CAPABLE) |
-			     (bi->flags & BLK_INTEGRITY_REF_TAG);
+			     (bi->flags & BLK_INTEGRITY_REF_TAG) |
+			     (bi->flags & BLK_SPLIT_INTERVAL_CAPABLE);
 		ti->csum_type = bi->csum_type;
 		ti->pi_tuple_size = bi->pi_tuple_size;
 		ti->metadata_size = bi->metadata_size;

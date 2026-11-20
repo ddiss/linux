@@ -12,7 +12,6 @@
 #include <linux/err.h>
 #include <linux/gpio/consumer.h>
 #include <linux/iio/iio.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -158,8 +157,7 @@ static int adl8113_init_gain_configs(struct device *dev, struct adl8113_state *s
 	 * - Internal amp and bypass (always present)
 	 * - External bypass A and B (optional if configured)
 	 */
-	st->gain_configs = devm_kcalloc(dev, 4, sizeof(*st->gain_configs),
-					GFP_KERNEL);
+	st->gain_configs = devm_kzalloc_objs(dev, *st->gain_configs, 4);
 	if (!st->gain_configs)
 		return -ENOMEM;
 

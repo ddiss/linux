@@ -66,6 +66,7 @@ struct dml2_core_ip_params core_dcn4_ip_caps_base = {
 	.cursor_64bpp_support = true,
 	.dynamic_metadata_vm_enabled = false,
 
+	.max_num_hdmi_frl_outputs = 1,
 	.max_num_dp2p0_outputs = 4,
 	.max_num_dp2p0_streams = 4,
 	.imall_supported = 1,
@@ -76,6 +77,86 @@ struct dml2_core_ip_params core_dcn4_ip_caps_base = {
 	.subvp_fw_processing_delay_us = 15,
 	.subvp_pstate_allow_width_us = 20,
 	.subvp_swath_height_margin_lines = 16,
+};
+
+struct dml2_core_ip_params core_dcn42_ip_caps_base = {
+	.vblank_nom_default_us = 668,
+	.remote_iommu_outstanding_translations = 256,
+	.rob_buffer_size_kbytes = 64,
+	.config_return_buffer_size_in_kbytes = 1792,
+	.config_return_buffer_segment_size_in_kbytes = 64,
+	.compressed_buffer_segment_size_in_kbytes = 64,
+	.dpte_buffer_size_in_pte_reqs_luma = 68,
+	.dpte_buffer_size_in_pte_reqs_chroma = 36,
+	.pixel_chunk_size_kbytes = 8,
+	.alpha_pixel_chunk_size_kbytes = 4,
+	.min_pixel_chunk_size_bytes = 1024,
+	.writeback_chunk_size_kbytes = 8,
+	.line_buffer_size_bits = 1171920,
+	.max_line_buffer_lines = 32,
+	.writeback_interface_buffer_size_kbytes = 90,
+
+	//Number of pipes after DCN Pipe harvesting
+	.max_num_dpp = 4,
+	.max_num_otg = 4,
+	.max_num_opp = 4,
+	.max_num_wb = 1,
+	.max_dchub_pscl_bw_pix_per_clk = 4,
+	.max_pscl_lb_bw_pix_per_clk = 2,
+	.max_lb_vscl_bw_pix_per_clk = 4,
+	.max_vscl_hscl_bw_pix_per_clk = 4,
+	.max_hscl_ratio = 6,
+	.max_vscl_ratio = 6,
+	.max_hscl_taps = 8,
+	.max_vscl_taps = 8,
+	.dispclk_ramp_margin_percent = 1,
+	.dppclk_delay_subtotal = 47,
+	.dppclk_delay_scl = 50,
+	.dppclk_delay_scl_lb_only = 16,
+	.dppclk_delay_cnvc_formatter = 28,
+	.dppclk_delay_cnvc_cursor = 6,
+	.cursor_buffer_size = 42,
+	.cursor_chunk_size = 2,
+	.dispclk_delay_subtotal = 125,
+	.max_inter_dcn_tile_repeaters = 8,
+	.writeback_max_hscl_ratio = 1,
+	.writeback_max_vscl_ratio = 1,
+	.writeback_min_hscl_ratio = 1,
+	.writeback_min_vscl_ratio = 1,
+	.writeback_max_hscl_taps = 1,
+	.writeback_max_vscl_taps = 1,
+	.writeback_line_buffer_buffer_size = 0,
+	.num_dsc = 4,
+	.maximum_dsc_bits_per_component = 12,
+	.maximum_pixels_per_line_per_dsc_unit = 5760,
+	.dsc422_native_support = true,
+	.dcc_supported = true,
+	.ptoi_supported = false,
+
+	.cursor_64bpp_support = true,
+	.dynamic_metadata_vm_enabled = false,
+
+	.max_num_hdmi_frl_outputs = 1,
+	.max_num_dp2p0_outputs = 2,
+	.max_num_dp2p0_streams = 4,
+	.imall_supported = 1,
+	.max_flip_time_us = 110,
+	.max_flip_time_lines = 50,
+	.words_per_channel = 16,
+
+	.subvp_fw_processing_delay_us = 15,
+	.subvp_pstate_allow_width_us = 20,
+	.subvp_swath_height_margin_lines = 16,
+
+	.dcn_mrq_present = 1,
+	.zero_size_buffer_entries = 512,
+	.compbuf_reserved_space_zs = 64,
+	.dcc_meta_buffer_size_bytes = 6272,
+	.meta_chunk_size_kbytes = 2,
+	.min_meta_chunk_size_bytes = 256,
+
+	.dchub_arb_to_ret_delay = 102,
+	.hostvm_mode = 0,
 };
 
 static void patch_ip_caps_with_explicit_ip_params(struct dml2_ip_capabilities *ip_caps, const struct dml2_core_ip_params *ip_params)
@@ -107,6 +188,7 @@ static void patch_ip_params_with_ip_caps(struct dml2_core_ip_params *ip_params, 
 {
 	ip_params->max_num_dpp = ip_caps->pipe_count;
 	ip_params->max_num_otg = ip_caps->otg_count;
+	ip_params->max_num_opp = ip_caps->otg_count;
 	ip_params->num_dsc = ip_caps->num_dsc;
 	ip_params->max_num_dp2p0_streams = ip_caps->max_num_dp2p0_streams;
 	ip_params->max_num_dp2p0_outputs = ip_caps->max_num_dp2p0_outputs;
@@ -153,6 +235,37 @@ bool core_dcn4_initialize(struct dml2_core_initialize_in_out *in_out)
 	return true;
 }
 
+bool core_dcn42_initialize(struct dml2_core_initialize_in_out *in_out)
+{
+	struct dml2_core_instance *core = in_out->instance;
+
+	if (!in_out->minimum_clock_table)
+		return false;
+	else
+		core->minimum_clock_table = in_out->minimum_clock_table;
+
+	if (in_out->explicit_ip_bb && in_out->explicit_ip_bb_size > 0) {
+		memcpy(&core->clean_me_up.mode_lib.ip, in_out->explicit_ip_bb, in_out->explicit_ip_bb_size);
+
+		// FIXME_STAGE2:
+		// DV still uses stage1 ip_param_st for each variant, need to patch the ip_caps with ip_param info
+		// Should move DV to use ip_caps but need move more overrides to ip_caps
+		patch_ip_caps_with_explicit_ip_params(in_out->ip_caps, in_out->explicit_ip_bb);
+		core->clean_me_up.mode_lib.ip.subvp_pstate_allow_width_us = core_dcn4_ip_caps_base.subvp_pstate_allow_width_us;
+		core->clean_me_up.mode_lib.ip.subvp_fw_processing_delay_us = core_dcn4_ip_caps_base.subvp_pstate_allow_width_us;
+		core->clean_me_up.mode_lib.ip.subvp_swath_height_margin_lines = core_dcn4_ip_caps_base.subvp_swath_height_margin_lines;
+	} else {
+		memcpy(&core->clean_me_up.mode_lib.ip, &core_dcn42_ip_caps_base, sizeof(struct dml2_core_ip_params));
+		patch_ip_params_with_ip_caps(&core->clean_me_up.mode_lib.ip, in_out->ip_caps);
+		core->clean_me_up.mode_lib.ip.imall_supported = false;
+	}
+
+	memcpy(&core->clean_me_up.mode_lib.soc, in_out->soc_bb, sizeof(struct dml2_soc_bb));
+	memcpy(&core->clean_me_up.mode_lib.ip_caps, in_out->ip_caps, sizeof(struct dml2_ip_capabilities));
+
+	return true;
+}
+
 static void create_phantom_stream_from_main_stream(struct dml2_stream_parameters *phantom, const struct dml2_stream_parameters *main,
 	const struct dml2_implicit_svp_meta *meta)
 {
@@ -169,6 +282,7 @@ static void create_phantom_stream_from_main_stream(struct dml2_stream_parameters
 static void create_phantom_plane_from_main_plane(struct dml2_plane_parameters *phantom, const struct dml2_plane_parameters *main,
 	const struct dml2_stream_parameters *phantom_stream, int phantom_stream_index, const struct dml2_stream_parameters *main_stream)
 {
+	(void)main_stream;
 	memcpy(phantom, main, sizeof(struct dml2_plane_parameters));
 
 	phantom->stream_index = phantom_stream_index;
@@ -254,9 +368,10 @@ static void expand_implict_subvp(const struct display_configuation_with_meta *di
 static void pack_mode_programming_params_with_implicit_subvp(struct dml2_core_instance *core, const struct display_configuation_with_meta *display_cfg,
 	const struct dml2_display_cfg *svp_expanded_display_cfg, struct dml2_display_cfg_programming *programming, struct dml2_core_scratch *scratch)
 {
-	unsigned int stream_index, plane_index, pipe_offset, stream_already_populated_mask, main_plane_index, mcache_index;
+	unsigned int stream_index, plane_index, pipe_offset, stream_already_populated_mask, main_plane_index, mcache_index, dwb_index;
 	unsigned int total_main_mcaches_required = 0;
 	int total_pipe_regs_copied = 0;
+	int total_dwb_regs_copied = 0;
 	int dml_internal_pipe_index = 0;
 	const struct dml2_plane_parameters *main_plane;
 	const struct dml2_plane_parameters *phantom_plane;
@@ -271,6 +386,8 @@ static void pack_mode_programming_params_with_implicit_subvp(struct dml2_core_in
 	// Get watermarks uses display config for ref clock override, so it doesn't matter whether we pass the pre or post expansion
 	// display config
 	dml2_core_calcs_get_watermarks(&display_cfg->display_config, &core->clean_me_up.mode_lib, &programming->global_regs.wm_regs[0]);
+
+	dml2_core_calcs_get_mcif_arb_params(&core->clean_me_up.mode_lib, &programming->mcif_global_regs);
 
 	// Check if FAMS2 is required
 	if (display_cfg->stage3.performed && display_cfg->stage3.success) {
@@ -356,6 +473,19 @@ static void pack_mode_programming_params_with_implicit_subvp(struct dml2_core_in
 					programming->stream_programming[main_plane->stream_index].uclk_pstate_method,
 					plane_index);
 
+				/* populate DWB */
+				for (dwb_index = 0; dwb_index < svp_expanded_display_cfg->stream_descriptors[main_plane->stream_index].writeback.active_writebacks_per_stream; dwb_index++) {
+					programming->stream_programming[main_plane->stream_index].mcif_regs[dwb_index] = &programming->mcif_regs[total_dwb_regs_copied];
+					memset(programming->stream_programming[main_plane->stream_index].mcif_regs[dwb_index], 0, sizeof(struct dml2_mcif_per_pipe_register_set));
+					total_dwb_regs_copied++;
+
+					dml2_core_calcs_get_per_dwb_params(svp_expanded_display_cfg,
+							&core->clean_me_up.mode_lib,
+							programming->stream_programming[main_plane->stream_index].mcif_regs[dwb_index],
+							main_plane->stream_index,
+							dwb_index);
+				}
+
 				stream_already_populated_mask |= (0x1 << main_plane->stream_index);
 			}
 			dml_internal_pipe_index++;
@@ -423,6 +553,10 @@ bool core_dcn4_mode_support(struct dml2_core_mode_support_in_out *in_out)
 	l->mode_support_ex_params.min_clk_table = in_out->min_clk_table;
 	l->mode_support_ex_params.min_clk_index = in_out->min_clk_index;
 	l->mode_support_ex_params.out_evaluation_info = &in_out->mode_support_result.cfg_support_info.clean_me_up.support_info;
+
+	l->mode_support_ex_params.uclk_pstate_switch_modes =
+		in_out->display_cfg->stage3.performed ?
+			in_out->display_cfg->stage3.pstate_switch_modes : NULL;
 
 	result = dml2_core_calcs_mode_support_ex(&l->mode_support_ex_params);
 
@@ -547,10 +681,12 @@ bool core_dcn4_mode_programming(struct dml2_core_mode_programming_in_out *in_out
 	unsigned int pipe_offset;
 	int dml_internal_pipe_index;
 	int total_pipe_regs_copied = 0;
+	int total_dwb_regs_copied = 0;
 	int stream_already_populated_mask = 0;
 
 	int main_stream_index;
 	unsigned int plane_index;
+	unsigned int dwb_index;
 
 	expand_implict_subvp(in_out->display_cfg, &l->svp_expanded_display_cfg, &core->scratch);
 
@@ -565,6 +701,10 @@ bool core_dcn4_mode_programming(struct dml2_core_mode_programming_in_out *in_out
 	result = dml2_core_calcs_mode_programming_ex(&l->mode_programming_ex_params);
 
 	if (result) {
+		// Populate the global Z8 stutter support (common to all packing paths)
+		dml2_core_calcs_get_z8_stutter_support(&core->clean_me_up.mode_lib,
+			&in_out->programming->z8_stutter.global_support);
+
 		// If the input display configuration contains implict SVP, we need to use a special packer
 		if (in_out->display_cfg->display_config.overrides.enable_subvp_implicit_pmo) {
 			pack_mode_programming_params_with_implicit_subvp(core, in_out->display_cfg, &l->svp_expanded_display_cfg, in_out->programming, &core->scratch);
@@ -573,6 +713,8 @@ bool core_dcn4_mode_programming(struct dml2_core_mode_programming_in_out *in_out
 
 			dml2_core_calcs_get_arb_params(&l->svp_expanded_display_cfg, &core->clean_me_up.mode_lib, &in_out->programming->global_regs.arb_regs);
 			dml2_core_calcs_get_watermarks(&l->svp_expanded_display_cfg, &core->clean_me_up.mode_lib, &in_out->programming->global_regs.wm_regs[0]);
+
+			dml2_core_calcs_get_mcif_arb_params(&core->clean_me_up.mode_lib, &in_out->programming->mcif_global_regs);
 
 			dml_internal_pipe_index = 0;
 
@@ -618,6 +760,18 @@ bool core_dcn4_mode_programming(struct dml2_core_mode_programming_in_out *in_out
 						in_out->programming->stream_programming[main_stream_index].stream_descriptor = &in_out->programming->display_config.stream_descriptors[main_stream_index];
 						in_out->programming->stream_programming[main_stream_index].num_odms_required = in_out->cfg_support_info->stream_support_info[main_stream_index].odms_used;
 						dml2_core_calcs_get_stream_programming(&core->clean_me_up.mode_lib, &in_out->programming->stream_programming[main_stream_index], dml_internal_pipe_index);
+
+						for (dwb_index = 0; dwb_index < l->svp_expanded_display_cfg.stream_descriptors[main_stream_index].writeback.active_writebacks_per_stream; dwb_index++) {
+							in_out->programming->stream_programming[main_stream_index].mcif_regs[dwb_index] = &in_out->programming->mcif_regs[total_dwb_regs_copied];
+							memset(in_out->programming->stream_programming[main_stream_index].mcif_regs[dwb_index], 0, sizeof(struct dml2_mcif_per_pipe_register_set));
+							total_dwb_regs_copied++;
+
+							dml2_core_calcs_get_per_dwb_params(&l->svp_expanded_display_cfg,
+									&core->clean_me_up.mode_lib,
+									in_out->programming->stream_programming[main_stream_index].mcif_regs[dwb_index],
+									main_stream_index,
+									dwb_index);
+						}
 
 						stream_already_populated_mask |= (0x1 << main_stream_index);
 					}

@@ -29,8 +29,6 @@
 
 #include "internal.h"
 
-#define ACPI_PCI_LINK_CLASS		"pci_irq_routing"
-#define ACPI_PCI_LINK_DEVICE_NAME	"PCI Interrupt Link"
 #define ACPI_PCI_LINK_MAX_POSSIBLE	16
 
 static int acpi_pci_link_add(struct acpi_device *device,
@@ -725,8 +723,6 @@ static int acpi_pci_link_add(struct acpi_device *device,
 		return -ENOMEM;
 
 	link->device = device;
-	strscpy(acpi_device_name(device), ACPI_PCI_LINK_DEVICE_NAME);
-	strscpy(acpi_device_class(device), ACPI_PCI_LINK_CLASS);
 	device->driver_data = link;
 
 	mutex_lock(&acpi_link_lock);
@@ -791,6 +787,7 @@ static void acpi_pci_link_remove(struct acpi_device *device)
 	list_del(&link->list);
 	mutex_unlock(&acpi_link_lock);
 
+	device->driver_data = NULL;
 	kfree(link);
 }
 

@@ -29,6 +29,10 @@ struct xe_gt_sriov_vf_runtime {
 	u32 gmdid;
 	/** @uses_sched_groups: whether PF enabled sched groups or not. */
 	bool uses_sched_groups;
+	/**
+	 * @num_paging_engine_instances: number of configured paging engines.
+	 */
+	u32 num_paging_engine_instances;
 	/** @regs_size: size of runtime register array. */
 	u32 regs_size;
 	/** @num_regs: number of runtime registers in the array. */
@@ -54,6 +58,8 @@ struct xe_gt_sriov_vf_migration {
 	wait_queue_head_t wq;
 	/** @scratch: Scratch memory for VF recovery */
 	void *scratch;
+	/** @fixups_complete_count: Counts completed fixups stages */
+	atomic_t fixups_complete_count;
 	/** @debug: Debug hooks for delaying migration */
 	struct {
 		/**
@@ -73,7 +79,7 @@ struct xe_gt_sriov_vf_migration {
 	bool recovery_queued;
 	/** @recovery_inprogress: VF post migration recovery in progress */
 	bool recovery_inprogress;
-	/** @ggtt_need_fixes: VF GGTT needs fixes */
+	/** @ggtt_need_fixes: VF GGTT and references to it need fixes */
 	bool ggtt_need_fixes;
 };
 

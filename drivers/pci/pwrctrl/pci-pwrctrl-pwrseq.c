@@ -4,7 +4,6 @@
  */
 
 #include <linux/device.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pci-pwrctrl.h>
 #include <linux/platform_device.h>
@@ -57,7 +56,7 @@ static int pwrseq_pwrctrl_power_on(struct pci_pwrctrl *pwrctrl)
 	struct pwrseq_pwrctrl *pwrseq = container_of(pwrctrl,
 					   struct pwrseq_pwrctrl, pwrctrl);
 
-	return pwrseq_power_on(pwrseq->pwrseq);
+	return pwrseq_enable(pwrseq->pwrseq);
 }
 
 static int pwrseq_pwrctrl_power_off(struct pci_pwrctrl *pwrctrl)
@@ -65,14 +64,7 @@ static int pwrseq_pwrctrl_power_off(struct pci_pwrctrl *pwrctrl)
 	struct pwrseq_pwrctrl *pwrseq = container_of(pwrctrl,
 					   struct pwrseq_pwrctrl, pwrctrl);
 
-	return pwrseq_power_off(pwrseq->pwrseq);
-}
-
-static void devm_pwrseq_pwrctrl_power_off(void *data)
-{
-	struct pwrseq_pwrctrl *pwrseq = data;
-
-	pwrseq_pwrctrl_power_off(&pwrseq->pwrctrl);
+	return pwrseq_disable(pwrseq->pwrseq);
 }
 
 static int pwrseq_pwrctrl_probe(struct platform_device *pdev)
@@ -92,7 +84,7 @@ static int pwrseq_pwrctrl_probe(struct platform_device *pdev)
 			return ret;
 	}
 
-	pwrseq = devm_kzalloc(dev, sizeof(*pwrseq), GFP_KERNEL);
+	pwrseq = devm_kzalloc_obj(dev, *pwrseq);
 	if (!pwrseq)
 		return -ENOMEM;
 
@@ -100,11 +92,6 @@ static int pwrseq_pwrctrl_probe(struct platform_device *pdev)
 	if (IS_ERR(pwrseq->pwrseq))
 		return dev_err_probe(dev, PTR_ERR(pwrseq->pwrseq),
 				     "Failed to get the power sequencer\n");
-
-	ret = devm_add_action_or_reset(dev, devm_pwrseq_pwrctrl_power_off,
-				       pwrseq);
-	if (ret)
-		return ret;
 
 	pwrseq->pwrctrl.power_on = pwrseq_pwrctrl_power_on;
 	pwrseq->pwrctrl.power_off = pwrseq_pwrctrl_power_off;

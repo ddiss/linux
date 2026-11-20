@@ -450,6 +450,10 @@ __init static int append_e820_table(struct boot_e820_entry *entries, u32 nr_entr
 {
 	struct boot_e820_entry *entry = entries;
 
+	/* If there aren't any entries, we'll want to fall back to another source: */
+	if (!nr_entries)
+		return -ENOENT;
+
 	while (nr_entries) {
 		u64 start = entry->addr;
 		u64 size  = entry->size;
@@ -458,7 +462,7 @@ __init static int append_e820_table(struct boot_e820_entry *entries, u32 nr_entr
 
 		/* Ignore the remaining entries on 64-bit overflow: */
 		if (start > end && likely(size))
-			return -1;
+			return -EINVAL;
 
 		e820__range_add(start, size, type);
 
@@ -1348,18 +1352,17 @@ __init void e820__memblock_setup(void)
 	 * below 1M (aka ISA_END_ADDRESS) up until direct map is completely set
 	 * up in init_mem_mapping().
 	 *
-	 * KHO kernels are special and use only scratch memory for memblock
+	 * KHO kernels are special and use only NOPRSRV memory for memblock
 	 * allocations, but memory below 1M is ignored by kernel after early
-	 * boot and cannot be naturally marked as scratch.
+	 * boot and cannot be naturally marked as NOPRSRV.
 	 *
 	 * To allow allocation of the real-mode trampoline and a few (if any)
 	 * other very early allocations from below 1M forcibly mark the memory
-	 * below 1M as scratch.
+	 * below 1M as NOPRSRV.
 	 *
-	 * After real mode trampoline is allocated, we clear that scratch
-	 * marking.
+	 * After real mode trampoline is allocated, we clear that marking.
 	 */
-	memblock_mark_kho_scratch(0, SZ_1M);
+	memblock_mark_kho_noprsrv(0, SZ_1M);
 
 	/*
 	 * 32-bit systems are limited to 4BG of memory even with HIGHMEM and

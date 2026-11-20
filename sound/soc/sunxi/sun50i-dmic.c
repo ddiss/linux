@@ -6,7 +6,6 @@
 
 #include <linux/clk.h>
 #include <linux/device.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -346,7 +345,7 @@ static int sun50i_dmic_probe(struct platform_device *pdev)
 	int ret;
 	void __iomem *base;
 
-	host = devm_kzalloc(&pdev->dev, sizeof(*host), GFP_KERNEL);
+	host = devm_kzalloc_obj(&pdev->dev, *host);
 	if (!host)
 		return -ENOMEM;
 

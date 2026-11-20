@@ -75,8 +75,8 @@
 #define VA_BITS_SV48 48
 #define VA_BITS_SV57 57
 
-#define VA_BITS		(pgtable_l5_enabled ? \
-				VA_BITS_SV57 : (pgtable_l4_enabled ? VA_BITS_SV48 : VA_BITS_SV39))
+#define VA_BITS		(pgtable_l5_enabled() ? \
+				VA_BITS_SV57 : (pgtable_l4_enabled() ? VA_BITS_SV48 : VA_BITS_SV39))
 #else
 #define VA_BITS		VA_BITS_SV32
 #endif
@@ -92,6 +92,16 @@
  * is configured with CONFIG_SPARSEMEM_VMEMMAP enabled.
  */
 #define vmemmap		((struct page *)VMEMMAP_START - vmemmap_start_pfn)
+
+/* Needed to limit get_free_mem_region() */
+#if defined(CONFIG_FLATMEM)
+#define DIRECT_MAP_PHYSMEM_END (phys_ram_base + KERN_VIRT_SIZE - 1)
+#elif defined(CONFIG_SPARSEMEM_VMEMMAP)
+#define DIRECT_MAP_PHYSMEM_END \
+	((vmemmap_start_pfn + VMEMMAP_SIZE / sizeof(struct page)) * PAGE_SIZE - 1)
+#elif defined(CONFIG_SPARSEMEM)
+/* DIRECT_MAP_PHYSMEM_END is not limited by VA space assignment in this case */
+#endif
 
 #define PCI_IO_SIZE      SZ_16M
 #define PCI_IO_END       VMEMMAP_START
@@ -133,21 +143,6 @@
 #endif /* CONFIG_64BIT */
 
 #include <linux/page_table_check.h>
-
-#ifdef CONFIG_XIP_KERNEL
-#define XIP_FIXUP(addr) ({							\
-	extern char _sdata[], _start[], _end[];					\
-	uintptr_t __rom_start_data = CONFIG_XIP_PHYS_ADDR			\
-				+ (uintptr_t)&_sdata - (uintptr_t)&_start;	\
-	uintptr_t __rom_end_data = CONFIG_XIP_PHYS_ADDR				\
-				+ (uintptr_t)&_end - (uintptr_t)&_start;	\
-	uintptr_t __a = (uintptr_t)(addr);					\
-	(__a >= __rom_start_data && __a < __rom_end_data) ?			\
-		__a - __rom_start_data + CONFIG_PHYS_RAM_BASE :	__a;		\
-	})
-#else
-#define XIP_FIXUP(addr)		(addr)
-#endif /* CONFIG_XIP_KERNEL */
 
 struct pt_alloc_ops {
 	pte_t *(*get_pte_virt)(phys_addr_t pa);
@@ -415,37 +410,37 @@ static inline pte_t pte_wrprotect(pte_t pte)
 }
 
 #ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
-#define pgtable_supports_uffd_wp()	\
+#define pgtable_supports_uffd()	\
 	riscv_has_extension_unlikely(RISCV_ISA_EXT_SVRSW60T59B)
 
-static inline bool pte_uffd_wp(pte_t pte)
+static inline bool pte_uffd(pte_t pte)
 {
-	return !!(pte_val(pte) & _PAGE_UFFD_WP);
+	return !!(pte_val(pte) & _PAGE_UFFD);
 }
 
-static inline pte_t pte_mkuffd_wp(pte_t pte)
+static inline pte_t pte_mkuffd(pte_t pte)
 {
-	return pte_wrprotect(__pte(pte_val(pte) | _PAGE_UFFD_WP));
+	return pte_wrprotect(__pte(pte_val(pte) | _PAGE_UFFD));
 }
 
-static inline pte_t pte_clear_uffd_wp(pte_t pte)
+static inline pte_t pte_clear_uffd(pte_t pte)
 {
-	return __pte(pte_val(pte) & ~(_PAGE_UFFD_WP));
+	return __pte(pte_val(pte) & ~(_PAGE_UFFD));
 }
 
-static inline bool pte_swp_uffd_wp(pte_t pte)
+static inline bool pte_swp_uffd(pte_t pte)
 {
-	return !!(pte_val(pte) & _PAGE_SWP_UFFD_WP);
+	return !!(pte_val(pte) & _PAGE_SWP_UFFD);
 }
 
-static inline pte_t pte_swp_mkuffd_wp(pte_t pte)
+static inline pte_t pte_swp_mkuffd(pte_t pte)
 {
-	return __pte(pte_val(pte) | _PAGE_SWP_UFFD_WP);
+	return __pte(pte_val(pte) | _PAGE_SWP_UFFD);
 }
 
-static inline pte_t pte_swp_clear_uffd_wp(pte_t pte)
+static inline pte_t pte_swp_clear_uffd(pte_t pte)
 {
-	return __pte(pte_val(pte) & ~(_PAGE_SWP_UFFD_WP));
+	return __pte(pte_val(pte) & ~(_PAGE_SWP_UFFD));
 }
 #endif /* CONFIG_HAVE_ARCH_USERFAULTFD_WP */
 
@@ -539,10 +534,7 @@ static inline pte_t pte_swp_clear_soft_dirty(pte_t pte)
 					PAGE_SIZE)
 #endif
 
-#ifdef CONFIG_NUMA_BALANCING
-/*
- * See the comment in include/asm-generic/pgtable.h
- */
+#ifdef CONFIG_ARCH_HAS_PTE_PROTNONE
 static inline int pte_protnone(pte_t pte)
 {
 	return (pte_val(pte) & (_PAGE_PRESENT | _PAGE_PROT_NONE)) == _PAGE_PROT_NONE;
@@ -552,7 +544,7 @@ static inline int pmd_protnone(pmd_t pmd)
 {
 	return pte_protnone(pmd_pte(pmd));
 }
-#endif
+#endif /* CONFIG_ARCH_HAS_PTE_PROTNONE */
 
 /* Modify page protection bits */
 static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
@@ -564,15 +556,13 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 	return __pte((pte_val(pte) & _PAGE_CHG_MASK) | newprot_val);
 }
 
-#define pgd_ERROR(e) \
-	pr_err("%s:%d: bad pgd " PTE_FMT ".\n", __FILE__, __LINE__, pgd_val(e))
-
-
 /* Commit new configuration to MMU hardware */
 static inline void update_mmu_cache_range(struct vm_fault *vmf,
 		struct vm_area_struct *vma, unsigned long address,
 		pte_t *ptep, unsigned int nr)
 {
+	unsigned long asid = get_mm_asid(vma->vm_mm);
+
 	/*
 	 * Svvptc guarantees that the new valid pte will be visible within
 	 * a bounded timeframe, so when the uarch does not cache invalid
@@ -580,6 +570,14 @@ static inline void update_mmu_cache_range(struct vm_fault *vmf,
 	 */
 	if (riscv_has_extension_unlikely(RISCV_ISA_EXT_SVVPTC))
 		return;
+
+	if (riscv_has_extension_unlikely(RISCV_ISA_EXT_SVINVAL)) {
+		local_sfence_w_inval();
+		while (nr--)
+			local_sinval_vma(address + nr * PAGE_SIZE, asid);
+		local_sfence_inval_ir();
+		return;
+	}
 
 	/*
 	 * The kernel assumes that TLBs don't cache invalid entries, but
@@ -589,7 +587,7 @@ static inline void update_mmu_cache_range(struct vm_fault *vmf,
 	 * the extra traps reduce performance.  So, eagerly SFENCE.VMA.
 	 */
 	while (nr--)
-		local_flush_tlb_page(address + nr * PAGE_SIZE);
+		local_flush_tlb_page_asid(address + nr * PAGE_SIZE, asid);
 
 }
 #define update_mmu_cache(vma, addr, ptep) \
@@ -659,8 +657,8 @@ static inline void pte_clear(struct mm_struct *mm,
 extern int ptep_set_access_flags(struct vm_area_struct *vma, unsigned long address,
 				 pte_t *ptep, pte_t entry, int dirty);
 #define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_YOUNG	/* defined in mm/pgtable.c */
-extern int ptep_test_and_clear_young(struct vm_area_struct *vma, unsigned long address,
-				     pte_t *ptep);
+bool ptep_test_and_clear_young(struct vm_area_struct *vma,
+		unsigned long address, pte_t *ptep);
 
 #define __HAVE_ARCH_PTEP_GET_AND_CLEAR
 static inline pte_t ptep_get_and_clear(struct mm_struct *mm,
@@ -695,8 +693,8 @@ static inline void ptep_set_wrprotect(struct mm_struct *mm,
 }
 
 #define __HAVE_ARCH_PTEP_CLEAR_YOUNG_FLUSH
-static inline int ptep_clear_flush_young(struct vm_area_struct *vma,
-					 unsigned long address, pte_t *ptep)
+static inline bool ptep_clear_flush_young(struct vm_area_struct *vma,
+		unsigned long address, pte_t *ptep)
 {
 	/*
 	 * This comment is borrowed from x86, but applies equally to RISC-V:
@@ -904,34 +902,34 @@ static inline pud_t pud_mkspecial(pud_t pud)
 #endif
 
 #ifdef CONFIG_HAVE_ARCH_USERFAULTFD_WP
-static inline bool pmd_uffd_wp(pmd_t pmd)
+static inline bool pmd_uffd(pmd_t pmd)
 {
-	return pte_uffd_wp(pmd_pte(pmd));
+	return pte_uffd(pmd_pte(pmd));
 }
 
-static inline pmd_t pmd_mkuffd_wp(pmd_t pmd)
+static inline pmd_t pmd_mkuffd(pmd_t pmd)
 {
-	return pte_pmd(pte_mkuffd_wp(pmd_pte(pmd)));
+	return pte_pmd(pte_mkuffd(pmd_pte(pmd)));
 }
 
-static inline pmd_t pmd_clear_uffd_wp(pmd_t pmd)
+static inline pmd_t pmd_clear_uffd(pmd_t pmd)
 {
-	return pte_pmd(pte_clear_uffd_wp(pmd_pte(pmd)));
+	return pte_pmd(pte_clear_uffd(pmd_pte(pmd)));
 }
 
-static inline bool pmd_swp_uffd_wp(pmd_t pmd)
+static inline bool pmd_swp_uffd(pmd_t pmd)
 {
-	return pte_swp_uffd_wp(pmd_pte(pmd));
+	return pte_swp_uffd(pmd_pte(pmd));
 }
 
-static inline pmd_t pmd_swp_mkuffd_wp(pmd_t pmd)
+static inline pmd_t pmd_swp_mkuffd(pmd_t pmd)
 {
-	return pte_pmd(pte_swp_mkuffd_wp(pmd_pte(pmd)));
+	return pte_pmd(pte_swp_mkuffd(pmd_pte(pmd)));
 }
 
-static inline pmd_t pmd_swp_clear_uffd_wp(pmd_t pmd)
+static inline pmd_t pmd_swp_clear_uffd(pmd_t pmd)
 {
-	return pte_pmd(pte_swp_clear_uffd_wp(pmd_pte(pmd)));
+	return pte_pmd(pte_swp_clear_uffd(pmd_pte(pmd)));
 }
 #endif /* CONFIG_HAVE_ARCH_USERFAULTFD_WP */
 
@@ -951,7 +949,7 @@ static inline pmd_t pmd_clear_soft_dirty(pmd_t pmd)
 	return pte_pmd(pte_clear_soft_dirty(pmd_pte(pmd)));
 }
 
-#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
+#ifdef CONFIG_ARCH_HAS_PMD_SOFTLEAVES
 static inline bool pmd_swp_soft_dirty(pmd_t pmd)
 {
 	return pte_swp_soft_dirty(pmd_pte(pmd));
@@ -966,7 +964,7 @@ static inline pmd_t pmd_swp_clear_soft_dirty(pmd_t pmd)
 {
 	return pte_pmd(pte_swp_clear_soft_dirty(pmd_pte(pmd)));
 }
-#endif /* CONFIG_ARCH_ENABLE_THP_MIGRATION */
+#endif /* CONFIG_ARCH_HAS_PMD_SOFTLEAVES */
 #endif /* CONFIG_HAVE_ARCH_SOFT_DIRTY */
 
 static inline void set_pmd_at(struct mm_struct *mm, unsigned long addr,
@@ -984,17 +982,24 @@ static inline void set_pud_at(struct mm_struct *mm, unsigned long addr,
 }
 
 #ifdef CONFIG_PAGE_TABLE_CHECK
-static inline bool pte_user_accessible_page(pte_t pte, unsigned long addr)
+static inline bool pte_user_accessible_page(struct mm_struct *mm, unsigned long addr, pte_t pte)
 {
 	return pte_present(pte) && pte_user(pte);
 }
 
-static inline bool pmd_user_accessible_page(pmd_t pmd, unsigned long addr)
+static inline bool pmd_user_accessible_page(struct mm_struct *mm, unsigned long addr, pmd_t pmd)
 {
-	return pmd_leaf(pmd) && pmd_user(pmd);
+	/*
+	 * page_table_check() must ignore THP split invalidation entries created by
+	 * pmd_mkinvalid(). These retain _PAGE_LEAF so pmd_present()/pmd_leaf() stay
+	 * true during the split, but they no longer describe a user-accessible
+	 * mapping once both _PAGE_PRESENT and _PAGE_PROT_NONE are cleared.
+	 */
+	return (pmd_val(pmd) & (_PAGE_PRESENT | _PAGE_PROT_NONE)) &&
+		(pmd_val(pmd) & _PAGE_LEAF) && pmd_user(pmd);
 }
 
-static inline bool pud_user_accessible_page(pud_t pud, unsigned long addr)
+static inline bool pud_user_accessible_page(struct mm_struct *mm, unsigned long addr, pud_t pud)
 {
 	return pud_leaf(pud) && pud_user(pud);
 }
@@ -1015,8 +1020,8 @@ static inline int pmdp_set_access_flags(struct vm_area_struct *vma,
 }
 
 #define __HAVE_ARCH_PMDP_TEST_AND_CLEAR_YOUNG
-static inline int pmdp_test_and_clear_young(struct vm_area_struct *vma,
-					unsigned long address, pmd_t *pmdp)
+static inline bool pmdp_test_and_clear_young(struct vm_area_struct *vma,
+		unsigned long address, pmd_t *pmdp)
 {
 	return ptep_test_and_clear_young(vma, address, (pte_t *)pmdp);
 }
@@ -1109,8 +1114,8 @@ static inline int pudp_set_access_flags(struct vm_area_struct *vma,
 	return ptep_set_access_flags(vma, address, (pte_t *)pudp, pud_pte(entry), dirty);
 }
 
-static inline int pudp_test_and_clear_young(struct vm_area_struct *vma,
-					    unsigned long address, pud_t *pudp)
+static inline bool pudp_test_and_clear_young(struct vm_area_struct *vma,
+		unsigned long address, pud_t *pudp)
 {
 	return ptep_test_and_clear_young(vma, address, (pte_t *)pudp);
 }
@@ -1175,7 +1180,7 @@ static inline pud_t pud_modify(pud_t pud, pgprot_t newprot)
  *	bit            0:	_PAGE_PRESENT (zero)
  *	bit       1 to 2:	(zero)
  *	bit            3:	_PAGE_SWP_SOFT_DIRTY
- *	bit            4:	_PAGE_SWP_UFFD_WP
+ *	bit            4:	_PAGE_SWP_UFFD
  *	bit            5:	_PAGE_PROT_NONE (zero)
  *	bit            6:	exclusive marker
  *	bits      7 to 11:	swap type
@@ -1213,10 +1218,10 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 	return __pte(pte_val(pte) & ~_PAGE_SWP_EXCLUSIVE);
 }
 
-#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
+#ifdef CONFIG_ARCH_HAS_PMD_SOFTLEAVES
 #define __pmd_to_swp_entry(pmd) ((swp_entry_t) { pmd_val(pmd) })
 #define __swp_entry_to_pmd(swp) __pmd((swp).val)
-#endif /* CONFIG_ARCH_ENABLE_THP_MIGRATION */
+#endif /* CONFIG_ARCH_HAS_PMD_SOFTLEAVES */
 
 /*
  * In the RV64 Linux scheme, we give the user half of the virtual-address space
@@ -1272,24 +1277,12 @@ static inline pte_t pte_swp_clear_exclusive(pte_t pte)
 extern char _start[];
 extern void *_dtb_early_va;
 extern uintptr_t _dtb_early_pa;
-#if defined(CONFIG_XIP_KERNEL) && defined(CONFIG_MMU)
-#define dtb_early_va	(*(void **)XIP_FIXUP(&_dtb_early_va))
-#define dtb_early_pa	(*(uintptr_t *)XIP_FIXUP(&_dtb_early_pa))
-#else
 #define dtb_early_va	_dtb_early_va
 #define dtb_early_pa	_dtb_early_pa
-#endif /* CONFIG_XIP_KERNEL */
 extern u64 satp_mode;
 
 void paging_init(void);
 void misc_mem_init(void);
-
-/*
- * ZERO_PAGE is a global shared page that is always zero,
- * used for zero-mapped memory areas, etc.
- */
-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
 
 /*
  * Use set_p*_safe(), and elide TLB flushing, when confident that *no*

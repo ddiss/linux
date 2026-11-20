@@ -1447,8 +1447,7 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 			}
 			sem_unlock(sma, -1);
 			rcu_read_unlock();
-			sem_io = kvmalloc_array(nsems, sizeof(ushort),
-						GFP_KERNEL);
+			sem_io = kvmalloc_objs(ushort, nsems);
 			if (sem_io == NULL) {
 				ipc_rcu_putref(&sma->sem_perm, sem_rcu_free);
 				return -ENOMEM;
@@ -1482,8 +1481,7 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
 		rcu_read_unlock();
 
 		if (nsems > SEMMSL_FAST) {
-			sem_io = kvmalloc_array(nsems, sizeof(ushort),
-						GFP_KERNEL);
+			sem_io = kvmalloc_objs(ushort, nsems);
 			if (sem_io == NULL) {
 				ipc_rcu_putref(&sma->sem_perm, sem_rcu_free);
 				return -ENOMEM;
@@ -1981,7 +1979,7 @@ out:
 }
 
 long __do_semtimedop(int semid, struct sembuf *sops,
-		unsigned nsops, const struct timespec64 *timeout,
+		unsigned int nsops, const struct timespec64 *timeout,
 		struct ipc_namespace *ns)
 {
 	int error = -EINVAL;
@@ -2220,7 +2218,7 @@ out:
 }
 
 static long do_semtimedop(int semid, struct sembuf __user *tsops,
-		unsigned nsops, const struct timespec64 *timeout)
+		unsigned int nsops, const struct timespec64 *timeout)
 {
 	struct sembuf fast_sops[SEMOPM_FAST];
 	struct sembuf *sops = fast_sops;
@@ -2294,7 +2292,7 @@ SYSCALL_DEFINE4(semtimedop_time32, int, semid, struct sembuf __user *, tsems,
 #endif
 
 SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,
-		unsigned, nsops)
+		unsigned int, nsops)
 {
 	return do_semtimedop(semid, tsops, nsops, NULL);
 }

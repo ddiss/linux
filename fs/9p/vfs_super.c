@@ -34,7 +34,7 @@ static const struct super_operations v9fs_super_ops, v9fs_super_ops_dotl;
 static int v9fs_fill_super(struct super_block *sb)
 {
 	int ret;
-	struct v9fs_session_info *v9ses = v9ses = sb->s_fs_info;
+	struct v9fs_session_info *v9ses = sb->s_fs_info;
 
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
 	sb->s_blocksize_bits = fls(v9ses->maxdata - 1);
@@ -173,8 +173,8 @@ static void v9fs_kill_super(struct super_block *s)
 
 	v9fs_session_cancel(v9ses);
 	v9fs_session_close(v9ses);
-	kfree(v9ses);
-	s->s_fs_info = NULL;
+	/* v9fs_vfs_get_link_dotl() may still read ->cache in rcu pathwalk */
+	kfree_rcu(v9ses, rcu);
 	p9_debug(P9_DEBUG_VFS, "exiting kill_super\n");
 }
 
@@ -312,6 +312,9 @@ static int v9fs_init_fs_context(struct fs_context *fc)
 	if (!ctx)
 		return -ENOMEM;
 
+	fc->ops = &v9fs_context_ops;
+	fc->fs_private = ctx;
+
 	/* initialize core options */
 	ctx->session_opts.afid = ~0;
 	ctx->session_opts.cache = CACHE_NONE;
@@ -327,6 +330,7 @@ static int v9fs_init_fs_context(struct fs_context *fc)
 	ctx->session_opts.uid = INVALID_UID;
 	ctx->session_opts.dfltuid = V9FS_DEFUID;
 	ctx->session_opts.dfltgid = V9FS_DEFGID;
+	ctx->session_opts.ndentry_timeout_ms = 0;
 
 	/* initialize client options */
 	ctx->client_opts.proto_version = p9_proto_2000L;
@@ -344,9 +348,6 @@ static int v9fs_init_fs_context(struct fs_context *fc)
 	ctx->rdma_opts.rq_depth = P9_RDMA_RQ_DEPTH;
 	ctx->rdma_opts.timeout = P9_RDMA_TIMEOUT;
 	ctx->rdma_opts.privport = false;
-
-	fc->ops = &v9fs_context_ops;
-	fc->fs_private = ctx;
 
 	return 0;
 error:

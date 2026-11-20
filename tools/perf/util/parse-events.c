@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <errno.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/err.h>
 #include <linux/list_sort.h>
 #include <linux/zalloc.h>
 #include <dirent.h>
-#include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/param.h>
 #include "cpumap.h"
@@ -269,6 +269,7 @@ __add_event(struct list_head *list, int *idx,
 	evsel->core.pmu_cpus = pmu_cpus;
 	evsel->core.requires_cpu = pmu ? pmu->is_uncore : false;
 	evsel->core.is_pmu_core = is_pmu_core;
+	evsel->core.is_pmu_uncore = pmu ? pmu->is_uncore : false;
 	evsel->core.reads_only_on_cpu_idx0 = perf_pmu__reads_only_on_cpu_idx0(attr);
 	evsel->pmu = pmu;
 	evsel->alternate_hw_config = alternate_hw_config;
@@ -429,7 +430,10 @@ bool parse_events__filter_pmu(const struct parse_events_state *parse_state,
 	if (parse_state->pmu_filter == NULL)
 		return false;
 
-	return strcmp(parse_state->pmu_filter, pmu->name) != 0;
+	if (parse_state->cputype_filter && !pmu->is_core)
+		return false;
+
+	return perf_pmu__wildcard_match(pmu, parse_state->pmu_filter) == 0;
 }
 
 static int parse_events_add_pmu(struct parse_events_state *parse_state,
@@ -1117,7 +1121,7 @@ static int config_attr(struct perf_event_attr *attr,
 
 static struct evsel_config_term *add_config_term(enum evsel_term_type type,
 						 struct list_head *head_terms,
-						 bool weak)
+						 bool weak, char *str, u64 val)
 {
 	struct evsel_config_term *t;
 
@@ -1128,8 +1132,62 @@ static struct evsel_config_term *add_config_term(enum evsel_term_type type,
 	INIT_LIST_HEAD(&t->list);
 	t->type = type;
 	t->weak	= weak;
-	list_add_tail(&t->list, head_terms);
 
+	switch (type) {
+	case EVSEL__CONFIG_TERM_PERIOD:
+	case EVSEL__CONFIG_TERM_FREQ:
+	case EVSEL__CONFIG_TERM_STACK_USER:
+	case EVSEL__CONFIG_TERM_USR_CHG_CONFIG:
+	case EVSEL__CONFIG_TERM_USR_CHG_CONFIG1:
+	case EVSEL__CONFIG_TERM_USR_CHG_CONFIG2:
+	case EVSEL__CONFIG_TERM_USR_CHG_CONFIG3:
+	case EVSEL__CONFIG_TERM_USR_CHG_CONFIG4:
+		t->val.val = val;
+		break;
+	case EVSEL__CONFIG_TERM_TIME:
+		t->val.time = val;
+		break;
+	case EVSEL__CONFIG_TERM_INHERIT:
+		t->val.inherit = val;
+		break;
+	case EVSEL__CONFIG_TERM_OVERWRITE:
+		t->val.overwrite = val;
+		break;
+	case EVSEL__CONFIG_TERM_MAX_STACK:
+		t->val.max_stack = val;
+		break;
+	case EVSEL__CONFIG_TERM_MAX_EVENTS:
+		t->val.max_events = val;
+		break;
+	case EVSEL__CONFIG_TERM_PERCORE:
+		t->val.percore = val;
+		break;
+	case EVSEL__CONFIG_TERM_AUX_OUTPUT:
+		t->val.aux_output = val;
+		break;
+	case EVSEL__CONFIG_TERM_AUX_SAMPLE_SIZE:
+		t->val.aux_sample_size = val;
+		break;
+	case EVSEL__CONFIG_TERM_CALLGRAPH:
+	case EVSEL__CONFIG_TERM_BRANCH:
+	case EVSEL__CONFIG_TERM_DRV_CFG:
+	case EVSEL__CONFIG_TERM_RATIO_TO_PREV:
+	case EVSEL__CONFIG_TERM_AUX_ACTION:
+		if (str) {
+			t->val.str = strdup(str);
+			if (!t->val.str) {
+				zfree(&t);
+				return NULL;
+			}
+			t->free_str = true;
+		}
+		break;
+	default:
+		t->val.val = val;
+		break;
+	}
+
+	list_add_tail(&t->list, head_terms);
 	return t;
 }
 
@@ -1142,7 +1200,7 @@ static int get_config_terms(const struct parse_events_terms *head_config,
 		struct evsel_config_term *new_term;
 		enum evsel_term_type new_type;
 		bool str_type = false;
-		u64 val;
+		u64 val = 0;
 
 		switch (term->type_term) {
 		case PARSE_EVENTS__TERM_TYPE_SAMPLE_PERIOD:
@@ -1234,20 +1292,15 @@ static int get_config_terms(const struct parse_events_terms *head_config,
 			continue;
 		}
 
-		new_term = add_config_term(new_type, head_terms, term->weak);
+		/*
+		 * Note: Members evsel_config_term::val and
+		 * parse_events_term::val are unions and endianness needs
+		 * to be taken into account when changing such union members.
+		 */
+		new_term = add_config_term(new_type, head_terms, term->weak,
+					   str_type ? term->val.str : NULL, val);
 		if (!new_term)
 			return -ENOMEM;
-
-		if (str_type) {
-			new_term->val.str = strdup(term->val.str);
-			if (!new_term->val.str) {
-				zfree(&new_term);
-				return -ENOMEM;
-			}
-			new_term->free_str = true;
-		} else {
-			new_term->val.val = val;
-		}
 	}
 	return 0;
 }
@@ -1277,10 +1330,9 @@ static int add_cfg_chg(const struct perf_pmu *pmu,
 	if (bits) {
 		struct evsel_config_term *new_term;
 
-		new_term = add_config_term(new_term_type, head_terms, false);
+		new_term = add_config_term(new_term_type, head_terms, false, NULL, bits);
 		if (!new_term)
 			return -ENOMEM;
-		new_term->val.cfg_chg = bits;
 	}
 
 	return 0;
@@ -1632,7 +1684,7 @@ int parse_events_multi_pmu_add(struct parse_events_state *parse_state,
 			strbuf_release(&sb);
 			ok++;
 		}
-		if (first_wildcard_match == NULL)
+		if (first_wildcard_match == NULL && !list_empty(list))
 			first_wildcard_match = container_of(list->prev, struct evsel, core.node);
 	}
 
@@ -1703,7 +1755,7 @@ int parse_events_multi_pmu_add_or_add_pmu(struct parse_events_state *parse_state
 			ok++;
 			parse_state->wild_card_pmus = true;
 		}
-		if (first_wildcard_match == NULL) {
+		if (first_wildcard_match == NULL && !list_empty(*listp)) {
 			first_wildcard_match =
 				container_of((*listp)->prev, struct evsel, core.node);
 		}
@@ -2203,6 +2255,33 @@ static int parse_events__sort_events_and_fix_groups(struct list_head *list)
 		}
 		last_event_was_forced_leader = (force_grouped_leader == pos);
 	}
+
+	/*
+	 * Make sure the first wildcard match is the earliest entry in the list.
+	 * Since list_sort might have reordered the aliases, the original leader
+	 * might not be at the head of the list anymore. We find the first
+	 * alias in the sorted list and make it the new leader, and redirect
+	 * all other aliases to it.
+	 */
+	list_for_each_entry(pos, list, core.node) {
+		struct evsel *orig_leader = pos->first_wildcard_match;
+
+		if (!orig_leader)
+			continue;
+
+		if (orig_leader->first_wildcard_match) {
+			/* Original leader was redirected to a new leader */
+			pos->first_wildcard_match = orig_leader->first_wildcard_match;
+		} else if (pos->core.idx < orig_leader->core.idx) {
+			/*
+			 * We are earlier than the original leader in sorted order,
+			 * and no earlier alias has claimed leadership yet.
+			 */
+			orig_leader->first_wildcard_match = pos;
+			pos->first_wildcard_match = NULL;
+		}
+	}
+
 	list_for_each_entry(pos, list, core.node) {
 		struct evsel *pos_leader = evsel__leader(pos);
 
@@ -2213,18 +2292,20 @@ static int parse_events__sort_events_and_fix_groups(struct list_head *list)
 	return (idx_changed || num_leaders != orig_num_leaders) ? 1 : 0;
 }
 
-int __parse_events(struct evlist *evlist, const char *str, const char *pmu_filter,
+int __parse_events(struct evlist *evlist, const char *str,
+		   const char *pmu_filter, bool cputype_filter,
 		   struct parse_events_error *err, bool fake_pmu,
 		   bool warn_if_reordered, bool fake_tp)
 {
 	struct parse_events_state parse_state = {
-		.list	  = LIST_HEAD_INIT(parse_state.list),
-		.idx	  = evlist->core.nr_entries,
-		.error	  = err,
-		.stoken	  = PE_START_EVENTS,
-		.fake_pmu = fake_pmu,
-		.fake_tp  = fake_tp,
-		.pmu_filter = pmu_filter,
+		.list			= LIST_HEAD_INIT(parse_state.list),
+		.idx			= evlist__nr_entries(evlist),
+		.error			= err,
+		.stoken			= PE_START_EVENTS,
+		.fake_pmu		= fake_pmu,
+		.fake_tp		= fake_tp,
+		.pmu_filter		= pmu_filter,
+		.cputype_filter		= cputype_filter,
 		.match_legacy_cache_terms = true,
 	};
 	int ret, ret2;
@@ -2237,15 +2318,15 @@ int __parse_events(struct evlist *evlist, const char *str, const char *pmu_filte
 	}
 
 	ret2 = parse_events__sort_events_and_fix_groups(&parse_state.list);
-	if (ret2 < 0)
-		return ret;
+	if (ret2 < 0 && !ret)
+		ret = ret2;
 
 	/*
 	 * Add list to the evlist even with errors to allow callers to clean up.
 	 */
 	evlist__splice_list_tail(evlist, &parse_state.list);
 
-	if (ret2 && warn_if_reordered && !parse_state.wild_card_pmus) {
+	if (ret2 > 0 && warn_if_reordered && !parse_state.wild_card_pmus) {
 		evlist__uniquify_evsel_names(evlist, &stat_config);
 		pr_warning("WARNING: events were regrouped to match PMUs\n");
 
@@ -2268,7 +2349,7 @@ int __parse_events(struct evlist *evlist, const char *str, const char *pmu_filte
 
 	/*
 	 * There are 2 users - builtin-record and builtin-test objects.
-	 * Both call evlist__delete in case of error, so we dont
+	 * Both call evlist__put in case of error, so we dont
 	 * need to bother.
 	 */
 	return ret;
@@ -2443,8 +2524,9 @@ int parse_events_option(const struct option *opt, const char *str,
 	int ret;
 
 	parse_events_error__init(&err);
-	ret = __parse_events(*args->evlistp, str, args->pmu_filter, &err,
-			     /*fake_pmu=*/false, /*warn_if_reordered=*/true,
+	ret = __parse_events(*args->evlistp, str, args->pmu_filter,
+			     args->cputype_filter, &err, /*fake_pmu=*/false,
+			     /*warn_if_reordered=*/true,
 			     /*fake_tp=*/false);
 
 	if (ret) {
@@ -2471,7 +2553,7 @@ int parse_events_option_new_evlist(const struct option *opt, const char *str, in
 	}
 	ret = parse_events_option(opt, str, unset);
 	if (ret) {
-		evlist__delete(*args->evlistp);
+		evlist__put(*args->evlistp);
 		*args->evlistp = NULL;
 	}
 
@@ -2493,7 +2575,7 @@ foreach_evsel_in_last_glob(struct evlist *evlist,
 	 *
 	 * So no need to WARN here, let *func do this.
 	 */
-	if (evlist->core.nr_entries > 0)
+	if (evlist__nr_entries(evlist) > 0)
 		last = evlist__last(evlist);
 
 	do {
@@ -2503,7 +2585,7 @@ foreach_evsel_in_last_glob(struct evlist *evlist,
 		if (!last)
 			return 0;
 
-		if (last->core.node.prev == &evlist->core.entries)
+		if (last->core.node.prev == &evlist__core(evlist)->entries)
 			return 0;
 		last = list_entry(last->core.node.prev, struct evsel, core.node);
 	} while (!last->cmdline_group_boundary);

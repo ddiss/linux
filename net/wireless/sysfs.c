@@ -5,7 +5,7 @@
  *
  * Copyright 2005-2006	Jiri Benc <jbenc@suse.cz>
  * Copyright 2006	Johannes Berg <johannes@sipsolutions.net>
- * Copyright (C) 2020-2021, 2023-2024 Intel Corporation
+ * Copyright (C) 2020-2021, 2023-2024, 2026 Intel Corporation
  */
 
 #include <linux/device.h>
@@ -52,16 +52,16 @@ static ssize_t addresses_show(struct device *dev,
 			      char *buf)
 {
 	struct wiphy *wiphy = &dev_to_rdev(dev)->wiphy;
-	char *start = buf;
-	int i;
+	int i, len = 0;
 
 	if (!wiphy->addresses)
-		return sprintf(buf, "%pM\n", wiphy->perm_addr);
+		return sysfs_emit(buf, "%pM\n", wiphy->perm_addr);
 
 	for (i = 0; i < wiphy->n_addresses; i++)
-		buf += sprintf(buf, "%pM\n", wiphy->addresses[i].addr);
+		len += sysfs_emit_at(buf, len, "%pM\n",
+				     wiphy->addresses[i].addr);
 
-	return buf - start;
+	return len;
 }
 static DEVICE_ATTR_RO(addresses);
 
@@ -99,26 +99,32 @@ static int wiphy_suspend(struct device *dev)
 	rdev->suspend_at = ktime_get_boottime_seconds();
 
 	rtnl_lock();
-	wiphy_lock(&rdev->wiphy);
-	if (rdev->wiphy.registered) {
-		if (!rdev->wiphy.wowlan_config) {
-			cfg80211_leave_all(rdev);
-			cfg80211_process_rdev_events(rdev);
+	if (!rdev->wiphy.registered)
+		goto out_unlock_rtnl;
+
+	if (rdev->wiphy.wowlan_config) {
+		scoped_guard(wiphy, &rdev->wiphy) {
+			cfg80211_process_wiphy_works(rdev, NULL);
+			if (rdev->ops->suspend)
+				ret = rdev_suspend(rdev,
+						   rdev->wiphy.wowlan_config);
+			if (ret <= 0)
+				goto out_unlock_rtnl;
 		}
+	}
+
+	/* Driver refused to configure wowlan (ret = 1) or no wowlan */
+
+	cfg80211_leave_all(rdev);
+	scoped_guard(wiphy, &rdev->wiphy) {
+		cfg80211_process_rdev_events(rdev);
 		cfg80211_process_wiphy_works(rdev, NULL);
 		if (rdev->ops->suspend)
-			ret = rdev_suspend(rdev, rdev->wiphy.wowlan_config);
-		if (ret == 1) {
-			/* Driver refuse to configure wowlan */
-			cfg80211_leave_all(rdev);
-			cfg80211_process_rdev_events(rdev);
-			cfg80211_process_wiphy_works(rdev, NULL);
 			ret = rdev_suspend(rdev, NULL);
-		}
-		if (ret == 0)
-			rdev->suspended = true;
 	}
-	wiphy_unlock(&rdev->wiphy);
+out_unlock_rtnl:
+	if (ret == 0)
+		rdev->suspended = true;
 	rtnl_unlock();
 
 	return ret;
@@ -154,11 +160,11 @@ static SIMPLE_DEV_PM_OPS(wiphy_pm_ops, wiphy_suspend, wiphy_resume);
 #define WIPHY_PM_OPS NULL
 #endif
 
-static const void *wiphy_namespace(const struct device *d)
+static const struct ns_common *wiphy_namespace(const struct device *d)
 {
 	struct wiphy *wiphy = container_of(d, struct wiphy, dev);
 
-	return wiphy_net(wiphy);
+	return to_ns_common(wiphy_net(wiphy));
 }
 
 struct class ieee80211_class = {

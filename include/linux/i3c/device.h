@@ -12,7 +12,7 @@
 #include <linux/device.h>
 #include <linux/i2c.h>
 #include <linux/kconfig.h>
-#include <linux/mod_devicetable.h>
+#include <linux/device-id/i3c.h>
 #include <linux/module.h>
 
 /**
@@ -78,6 +78,10 @@ struct i3c_xfer {
 	} data;
 	enum i3c_error_code err;
 };
+
+/* For splitting 'cmd' from struct i3c_xfer */
+#define I3C_HDR_CMD_RNW			BIT(7)
+#define I3C_HDR_CMD_CODE		GENMASK(6, 0)
 
 /**
  * enum i3c_dcr - I3C DCR values

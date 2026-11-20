@@ -346,7 +346,7 @@ static int mtk_hdmi_ddc_v2_probe(struct platform_device *pdev)
 	struct mtk_hdmi_ddc *ddc;
 	int ret;
 
-	ddc = devm_kzalloc(dev, sizeof(*ddc), GFP_KERNEL);
+	ddc = devm_kzalloc_obj(dev, *ddc);
 	if (!ddc)
 		return -ENOMEM;
 
@@ -376,8 +376,10 @@ static int mtk_hdmi_ddc_v2_probe(struct platform_device *pdev)
 	pm_runtime_get_sync(dev);
 
 	ret = devm_i2c_add_adapter(dev, &ddc->adap);
-	if (ret < 0)
+	if (ret < 0) {
+		pm_runtime_put_noidle(dev);
 		return dev_err_probe(dev, ret, "Cannot add DDC I2C adapter\n");
+	}
 
 	platform_set_drvdata(pdev, ddc);
 	return 0;
@@ -389,7 +391,7 @@ static const struct of_device_id mtk_hdmi_ddc_v2_match[] = {
 };
 MODULE_DEVICE_TABLE(of, mtk_hdmi_ddc_v2_match);
 
-struct platform_driver mtk_hdmi_ddc_v2_driver = {
+static struct platform_driver mtk_hdmi_ddc_v2_driver = {
 	.probe = mtk_hdmi_ddc_v2_probe,
 	.driver = {
 		.name = "mediatek-hdmi-ddc-v2",

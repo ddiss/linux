@@ -35,10 +35,8 @@ bool hsr_addr_is_self(struct hsr_priv *hsr, unsigned char *addr)
 
 	rcu_read_lock();
 	sn = rcu_dereference(hsr->self_node);
-	if (!sn) {
-		WARN_ONCE(1, "HSR: No self node\n");
+	if (!sn)
 		goto out;
-	}
 
 	if (ether_addr_equal(addr, sn->macaddress_A) ||
 	    ether_addr_equal(addr, sn->macaddress_B))
@@ -71,8 +69,8 @@ bool hsr_is_node_in_db(struct list_head *node_db,
 	return !!find_node_by_addr_A(node_db, addr);
 }
 
-/* Helper for device init; the self_node is used in hsr_rcv() to recognize
- * frames from self that's been looped over the HSR ring.
+/* Helper for device init; the self_node is used in hsr_handle_frame() to
+ * recognize frames from self that's been looped over the HSR ring.
  */
 int hsr_create_self_node(struct hsr_priv *hsr,
 			 const unsigned char addr_a[ETH_ALEN],
@@ -123,14 +121,48 @@ static void hsr_free_node_rcu(struct rcu_head *rn)
 	hsr_free_node(node);
 }
 
+static void hsr_lock_seq_out_pair(struct hsr_node *node_a,
+				  struct hsr_node *node_b)
+{
+	if (node_a == node_b) {
+		spin_lock_bh(&node_a->seq_out_lock);
+		return;
+	}
+
+	if (node_a < node_b) {
+		spin_lock_bh(&node_a->seq_out_lock);
+		spin_lock_nested(&node_b->seq_out_lock, SINGLE_DEPTH_NESTING);
+	} else {
+		spin_lock_bh(&node_b->seq_out_lock);
+		spin_lock_nested(&node_a->seq_out_lock, SINGLE_DEPTH_NESTING);
+	}
+}
+
+static void hsr_unlock_seq_out_pair(struct hsr_node *node_a,
+				    struct hsr_node *node_b)
+{
+	if (node_a == node_b) {
+		spin_unlock_bh(&node_a->seq_out_lock);
+		return;
+	}
+
+	if (node_a < node_b) {
+		spin_unlock(&node_b->seq_out_lock);
+		spin_unlock_bh(&node_a->seq_out_lock);
+	} else {
+		spin_unlock(&node_a->seq_out_lock);
+		spin_unlock_bh(&node_b->seq_out_lock);
+	}
+}
+
 void hsr_del_nodes(struct list_head *node_db)
 {
 	struct hsr_node *node;
 	struct hsr_node *tmp;
 
 	list_for_each_entry_safe(node, tmp, node_db, mac_list) {
-		list_del(&node->mac_list);
-		hsr_free_node(node);
+		list_del_rcu(&node->mac_list);
+		call_rcu(&node->rcu_head, hsr_free_node_rcu);
 	}
 }
 
@@ -167,7 +199,7 @@ static struct hsr_node *hsr_add_node(struct hsr_priv *hsr,
 	spin_lock_init(&new_node->seq_out_lock);
 
 	if (hsr->prot_version == PRP_V1)
-		new_node->seq_port_cnt = 1;
+		new_node->seq_port_cnt = hsr->redbox ? 2 : 1;
 	else
 		new_node->seq_port_cnt = HSR_PT_PORTS - 1;
 
@@ -261,8 +293,17 @@ struct hsr_node *hsr_get_node(struct hsr_port *port, struct list_head *node_db,
 	 */
 	if (ethhdr->h_proto == htons(ETH_P_PRP) ||
 	    ethhdr->h_proto == htons(ETH_P_HSR)) {
-		/* Check if skb contains hsr_ethhdr */
-		if (skb->mac_len < sizeof(struct hsr_ethhdr))
+		bool prp_sup;
+
+		/* A PRP supervision frame is an untagged ETH_P_PRP frame
+		 * (mac_len == ETH_HLEN); its RCT is appended only on egress.
+		 * HSR (ETH_P_HSR) supervision is front-tagged and still must
+		 * contain a struct hsr_ethhdr.
+		 */
+		prp_sup = hsr->prot_version == PRP_V1 &&
+			  ethhdr->h_proto == htons(ETH_P_PRP) && is_sup;
+
+		if (!prp_sup && skb->mac_len < sizeof(struct hsr_ethhdr))
 			return NULL;
 	} else {
 		rct = skb_get_PRP_rct(skb);
@@ -349,6 +390,7 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 	struct ethhdr *ethhdr;
 	unsigned int total_pull_size = 0;
 	unsigned int pull_size = 0;
+	unsigned int seq_port_cnt;
 	unsigned long idx;
 	int i;
 
@@ -432,7 +474,7 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 	}
 
 	ether_addr_copy(node_real->macaddress_B, ethhdr->h_source);
-	spin_lock_bh(&node_real->seq_out_lock);
+	hsr_lock_seq_out_pair(node_real, node_curr);
 	for (i = 0; i < HSR_PT_PORTS; i++) {
 		if (!node_curr->time_in_stale[i] &&
 		    time_after(node_curr->time_in[i], node_real->time_in[i])) {
@@ -442,6 +484,7 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 		}
 	}
 
+	seq_port_cnt = min(node_real->seq_port_cnt, node_curr->seq_port_cnt);
 	xa_for_each(&node_curr->seq_blocks, idx, src_blk) {
 		if (hsr_seq_block_is_old(src_blk))
 			continue;
@@ -450,12 +493,12 @@ void hsr_handle_sup_frame(struct hsr_frame_info *frame)
 		if (!merge_blk)
 			continue;
 		merge_blk->time = min(merge_blk->time, src_blk->time);
-		for (i = 0; i < node_real->seq_port_cnt; i++) {
+		for (i = 0; i < seq_port_cnt; i++) {
 			bitmap_or(merge_blk->seq_nrs[i], merge_blk->seq_nrs[i],
 				  src_blk->seq_nrs[i], HSR_SEQ_BLOCK_SIZE);
 		}
 	}
-	spin_unlock_bh(&node_real->seq_out_lock);
+	hsr_unlock_seq_out_pair(node_real, node_curr);
 	node_real->addr_B_port = port_rcv->type;
 
 	spin_lock_bh(&hsr->list_lock);
@@ -617,9 +660,13 @@ int prp_register_frame_out(struct hsr_port *port, struct hsr_frame_info *frame)
 	if (frame->port_rcv->type == HSR_PT_MASTER)
 		return 0;
 
-	/* for PRP we should only forward frames from the slave ports
-	 * to the master port
+	/* RedBox: forward LAN frames out the interlink to a SAN, deduping the
+	 * two LAN copies on a dedicated slot.
 	 */
+	if (port->type == HSR_PT_INTERLINK)
+		return hsr_check_duplicate(frame, 1);
+
+	/* For PRP only slave-to-master frames are forwarded. */
 	if (port->type != HSR_PT_MASTER)
 		return 1;
 
@@ -793,18 +840,16 @@ static void fill_last_seq_nrs(struct hsr_node *node, u16 *if1_seq, u16 *if2_seq)
 	block_sz = hsr_seq_block_size(node);
 	block = node->block_buf + block_off * block_sz;
 
-	if (!bitmap_empty(block->seq_nrs[HSR_PT_SLAVE_B - 1],
-			  HSR_SEQ_BLOCK_SIZE)) {
-		seq_bit = find_last_bit(block->seq_nrs[HSR_PT_SLAVE_B - 1],
-					HSR_SEQ_BLOCK_SIZE);
+	seq_bit = find_last_bit(block->seq_nrs[HSR_PT_SLAVE_B - 1],
+				HSR_SEQ_BLOCK_SIZE);
+	if (seq_bit < HSR_SEQ_BLOCK_SIZE)
 		*if1_seq = (block->block_idx << HSR_SEQ_BLOCK_SHIFT) | seq_bit;
-	}
-	if (!bitmap_empty(block->seq_nrs[HSR_PT_SLAVE_A - 1],
-			  HSR_SEQ_BLOCK_SIZE)) {
-		seq_bit = find_last_bit(block->seq_nrs[HSR_PT_SLAVE_A - 1],
-					HSR_SEQ_BLOCK_SIZE);
+
+	seq_bit = find_last_bit(block->seq_nrs[HSR_PT_SLAVE_A - 1],
+				HSR_SEQ_BLOCK_SIZE);
+	if (seq_bit < HSR_SEQ_BLOCK_SIZE)
 		*if2_seq = (block->block_idx << HSR_SEQ_BLOCK_SHIFT) | seq_bit;
-	}
+
 	spin_unlock_bh(&node->seq_out_lock);
 }
 
@@ -855,7 +900,10 @@ int hsr_get_node_data(struct hsr_priv *hsr,
 
 	if (node->addr_B_port != HSR_PT_NONE) {
 		port = hsr_port_get_hsr(hsr, node->addr_B_port);
-		*addr_b_ifindex = port->dev->ifindex;
+		if (port)
+			*addr_b_ifindex = port->dev->ifindex;
+		else
+			*addr_b_ifindex = -1;
 	} else {
 		*addr_b_ifindex = -1;
 	}

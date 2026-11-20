@@ -1522,8 +1522,8 @@ static int felix_init_structs(struct felix *felix, int num_phys_ports)
 	int port, i, err;
 
 	ocelot->num_phys_ports = num_phys_ports;
-	ocelot->ports = devm_kcalloc(ocelot->dev, num_phys_ports,
-				     sizeof(struct ocelot_port *), GFP_KERNEL);
+	ocelot->ports = devm_kzalloc_objs(ocelot->dev, struct ocelot_port *,
+					  num_phys_ports);
 	if (!ocelot->ports)
 		return -ENOMEM;
 
@@ -1572,9 +1572,7 @@ static int felix_init_structs(struct felix *felix, int num_phys_ports)
 	for (port = 0; port < num_phys_ports; port++) {
 		struct ocelot_port *ocelot_port;
 
-		ocelot_port = devm_kzalloc(ocelot->dev,
-					   sizeof(struct ocelot_port),
-					   GFP_KERNEL);
+		ocelot_port = devm_kzalloc_obj(ocelot->dev, struct ocelot_port);
 		if (!ocelot_port) {
 			dev_err(ocelot->dev,
 				"failed to allocate port memory\n");
@@ -2001,7 +1999,8 @@ static int felix_cls_flower_stats(struct dsa_switch *ds, int port,
 }
 
 static int felix_port_policer_add(struct dsa_switch *ds, int port,
-				  const struct flow_action_police *policer)
+				  const struct flow_action_police *policer,
+				  struct netlink_ext_ack *extack)
 {
 	struct ocelot *ocelot = ds->priv;
 	struct ocelot_policer pol = {
@@ -2397,11 +2396,11 @@ int felix_register_switch(struct device *dev, resource_size_t switch_base,
 	struct felix *felix;
 	int err;
 
-	felix = devm_kzalloc(dev, sizeof(*felix), GFP_KERNEL);
+	felix = devm_kzalloc_obj(dev, *felix);
 	if (!felix)
 		return -ENOMEM;
 
-	ds = devm_kzalloc(dev, sizeof(*ds), GFP_KERNEL);
+	ds = devm_kzalloc_obj(dev, *ds);
 	if (!ds)
 		return -ENOMEM;
 
@@ -2445,12 +2444,14 @@ struct net_device *felix_port_to_netdev(struct ocelot *ocelot, int port)
 }
 EXPORT_SYMBOL_GPL(felix_port_to_netdev);
 
-int felix_netdev_to_port(struct net_device *dev)
+int felix_netdev_to_port(struct ocelot *ocelot, struct net_device *dev)
 {
+	struct felix *felix = ocelot_to_felix(ocelot);
+	struct dsa_switch *ds = felix->ds;
 	struct dsa_port *dp;
 
 	dp = dsa_port_from_netdev(dev);
-	if (IS_ERR(dp))
+	if (IS_ERR(dp) || dp->ds != ds)
 		return -EINVAL;
 
 	return dp->index;

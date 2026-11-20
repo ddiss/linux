@@ -1426,9 +1426,8 @@ static int iproc_pcie_rev_init(struct iproc_pcie *pcie)
 		return -EINVAL;
 	}
 
-	pcie->reg_offsets = devm_kcalloc(dev, IPROC_PCIE_MAX_NUM_REG,
-					 sizeof(*pcie->reg_offsets),
-					 GFP_KERNEL);
+	pcie->reg_offsets = devm_kzalloc_objs(dev, *pcie->reg_offsets,
+					      IPROC_PCIE_MAX_NUM_REG);
 	if (!pcie->reg_offsets)
 		return -ENOMEM;
 
@@ -1502,7 +1501,6 @@ int iproc_pcie_setup(struct iproc_pcie *pcie, struct list_head *res)
 
 	host->ops = &iproc_pcie_ops;
 	host->sysdata = pcie;
-	host->map_irq = pcie->map_irq;
 
 	ret = pci_host_probe(host);
 	if (ret < 0) {
@@ -1529,8 +1527,10 @@ void iproc_pcie_remove(struct iproc_pcie *pcie)
 {
 	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
 
+	pci_lock_rescan_remove();
 	pci_stop_root_bus(host->bus);
 	pci_remove_root_bus(host->bus);
+	pci_unlock_rescan_remove();
 
 	iproc_pcie_msi_disable(pcie);
 

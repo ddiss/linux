@@ -87,6 +87,7 @@
 	 SECONDARY_EXEC_PT_CONCEAL_VMX |				\
 	 SECONDARY_EXEC_BUS_LOCK_DETECTION |				\
 	 SECONDARY_EXEC_NOTIFY_VM_EXITING |				\
+	 SECONDARY_EXEC_MODE_BASED_EPT_EXEC |				\
 	 SECONDARY_EXEC_ENCLS_EXITING)
 
 #define EVMCS1_SUPPORTED_3RDEXEC (0ULL)
@@ -134,6 +135,8 @@ static __always_inline int evmcs_field_offset(unsigned long field,
 
 	if (unlikely(index >= nr_evmcs_1_fields))
 		return -ENOENT;
+
+	index = array_index_nospec(index, nr_evmcs_1_fields);
 
 	evmcs_field = &vmcs_field_to_evmcs_1[index];
 

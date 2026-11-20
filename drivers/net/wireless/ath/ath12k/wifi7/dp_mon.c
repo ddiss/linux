@@ -405,6 +405,42 @@ ath12k_wifi7_dp_mon_hal_rx_parse_user_info(const struct hal_receive_user_info *r
 	}
 }
 
+static __always_inline u8
+ath12k_wifi7_hal_mon_map_legacy_rate_to_hw_rate(u8 rate)
+{
+	u8 ath12k_rate;
+
+	/* Map hal_rx_legacy_rate to ath12k_hw_rate_cck */
+	switch (rate) {
+	case HAL_RX_LEGACY_RATE_LP_1_MBPS:
+		ath12k_rate = ATH12K_HW_RATE_CCK_LP_1M;
+		break;
+	case HAL_RX_LEGACY_RATE_LP_2_MBPS:
+		ath12k_rate = ATH12K_HW_RATE_CCK_LP_2M;
+		break;
+	case HAL_RX_LEGACY_RATE_LP_5_5_MBPS:
+		ath12k_rate = ATH12K_HW_RATE_CCK_LP_5_5M;
+		break;
+	case HAL_RX_LEGACY_RATE_LP_11_MBPS:
+		ath12k_rate = ATH12K_HW_RATE_CCK_LP_11M;
+		break;
+	case HAL_RX_LEGACY_RATE_SP_2_MBPS:
+		ath12k_rate = ATH12K_HW_RATE_CCK_SP_2M;
+		break;
+	case HAL_RX_LEGACY_RATE_SP_5_5_MBPS:
+		ath12k_rate = ATH12K_HW_RATE_CCK_SP_5_5M;
+		break;
+	case HAL_RX_LEGACY_RATE_SP_11_MBPS:
+		ath12k_rate = ATH12K_HW_RATE_CCK_SP_11M;
+		break;
+	default:
+		ath12k_rate = rate;
+		break;
+	}
+
+	return ath12k_rate;
+}
+
 static void
 ath12k_wifi7_dp_mon_parse_l_sig_b(const struct hal_rx_lsig_b_info *lsigb,
 				  struct hal_rx_mon_ppdu_info *ppdu_info)
@@ -415,25 +451,32 @@ ath12k_wifi7_dp_mon_parse_l_sig_b(const struct hal_rx_lsig_b_info *lsigb,
 	rate = u32_get_bits(info0, HAL_RX_LSIG_B_INFO_INFO0_RATE);
 	switch (rate) {
 	case 1:
-		rate = HAL_RX_LEGACY_RATE_1_MBPS;
+		rate = HAL_RX_LEGACY_RATE_LP_1_MBPS;
 		break;
 	case 2:
-	case 5:
-		rate = HAL_RX_LEGACY_RATE_2_MBPS;
+		rate = HAL_RX_LEGACY_RATE_LP_2_MBPS;
 		break;
 	case 3:
-	case 6:
-		rate = HAL_RX_LEGACY_RATE_5_5_MBPS;
+		rate = HAL_RX_LEGACY_RATE_LP_5_5_MBPS;
 		break;
 	case 4:
+		rate = HAL_RX_LEGACY_RATE_LP_11_MBPS;
+		break;
+	case 5:
+		rate = HAL_RX_LEGACY_RATE_SP_2_MBPS;
+		break;
+	case 6:
+		rate = HAL_RX_LEGACY_RATE_SP_5_5_MBPS;
+		break;
 	case 7:
-		rate = HAL_RX_LEGACY_RATE_11_MBPS;
+		rate = HAL_RX_LEGACY_RATE_SP_11_MBPS;
 		break;
 	default:
 		rate = HAL_RX_LEGACY_RATE_INVALID;
+		break;
 	}
 
-	ppdu_info->rate = rate;
+	ppdu_info->rate = ath12k_wifi7_hal_mon_map_legacy_rate_to_hw_rate(rate);
 	ppdu_info->cck_flag = 1;
 }
 
@@ -447,31 +490,32 @@ ath12k_wifi7_dp_mon_parse_l_sig_a(const struct hal_rx_lsig_a_info *lsiga,
 	rate = u32_get_bits(info0, HAL_RX_LSIG_A_INFO_INFO0_RATE);
 	switch (rate) {
 	case 8:
-		rate = HAL_RX_LEGACY_RATE_48_MBPS;
+		rate = HAL_RX_LEGACY_RATE_OFDM_48_MBPS;
 		break;
 	case 9:
-		rate = HAL_RX_LEGACY_RATE_24_MBPS;
+		rate = HAL_RX_LEGACY_RATE_OFDM_24_MBPS;
 		break;
 	case 10:
-		rate = HAL_RX_LEGACY_RATE_12_MBPS;
+		rate = HAL_RX_LEGACY_RATE_OFDM_12_MBPS;
 		break;
 	case 11:
-		rate = HAL_RX_LEGACY_RATE_6_MBPS;
+		rate = HAL_RX_LEGACY_RATE_OFDM_6_MBPS;
 		break;
 	case 12:
-		rate = HAL_RX_LEGACY_RATE_54_MBPS;
+		rate = HAL_RX_LEGACY_RATE_OFDM_54_MBPS;
 		break;
 	case 13:
-		rate = HAL_RX_LEGACY_RATE_36_MBPS;
+		rate = HAL_RX_LEGACY_RATE_OFDM_36_MBPS;
 		break;
 	case 14:
-		rate = HAL_RX_LEGACY_RATE_18_MBPS;
+		rate = HAL_RX_LEGACY_RATE_OFDM_18_MBPS;
 		break;
 	case 15:
-		rate = HAL_RX_LEGACY_RATE_9_MBPS;
+		rate = HAL_RX_LEGACY_RATE_OFDM_9_MBPS;
 		break;
 	default:
-		rate = HAL_RX_LEGACY_RATE_INVALID;
+		rate = HAL_RX_LEGACY_RATE_OFDM_INVALID;
+		break;
 	}
 
 	ppdu_info->rate = rate;
@@ -1521,16 +1565,17 @@ ath12k_wifi7_dp_mon_parse_status_msdu_end(struct ath12k_mon_data *pmon,
 static enum hal_rx_mon_status
 ath12k_wifi7_dp_mon_rx_parse_status_tlv(struct ath12k_pdev_dp *dp_pdev,
 					struct ath12k_mon_data *pmon,
-					const struct hal_tlv_64_hdr *tlv)
+					const void *tlv)
 {
 	struct hal_rx_mon_ppdu_info *ppdu_info = &pmon->mon_ppdu_info;
-	const void *tlv_data = tlv->value;
-	u32 info[7], userid;
-	u16 tlv_tag, tlv_len;
+	struct ath12k *ar = ath12k_pdev_dp_to_ar(dp_pdev);
+	struct ath12k_hal *hal = &ar->ab->hal;
+	u16 tlv_tag, tlv_len, userid;
+	void *tlv_data;
+	u32 info[7];
 
-	tlv_tag = le64_get_bits(tlv->tl, HAL_TLV_64_HDR_TAG);
-	tlv_len = le64_get_bits(tlv->tl, HAL_TLV_64_HDR_LEN);
-	userid = le64_get_bits(tlv->tl, HAL_TLV_64_USR_ID);
+	tlv_data = hal->ops->mon_rx_status_dec_tlv_hdr((void *)tlv, &tlv_tag,
+						       &tlv_len, &userid);
 
 	if (ppdu_info->tlv_aggr.in_progress && ppdu_info->tlv_aggr.tlv_tag != tlv_tag) {
 		ath12k_wifi7_dp_mon_parse_eht_sig_hdr(ppdu_info,
@@ -1735,8 +1780,7 @@ ath12k_wifi7_dp_mon_rx_parse_status_tlv(struct ath12k_pdev_dp *dp_pdev,
 
 		info[1] = __le32_to_cpu(mpdu_start->info1);
 		peer_id = u32_get_bits(info[1], HAL_RX_MPDU_START_INFO1_PEERID);
-		if (peer_id)
-			ppdu_info->peer_id = peer_id;
+		ppdu_info->peer_id = peer_id;
 
 		ppdu_info->mpdu_len += u32_get_bits(info[1],
 						    HAL_RX_MPDU_START_INFO2_MPDU_LEN);
@@ -2437,7 +2481,6 @@ ath12k_wifi7_dp_mon_rx_deliver(struct ath12k_pdev_dp *dp_pdev,
 {
 	struct sk_buff *mon_skb, *skb_next, *header;
 	struct ieee80211_rx_status *rxs = &dp_pdev->rx_status;
-	u8 decap = DP_RX_DECAP_TYPE_RAW;
 
 	mon_skb = ath12k_dp_mon_rx_merg_msdus(dp_pdev, mon_mpdu, ppduinfo, rxs);
 	if (!mon_skb)
@@ -2464,12 +2507,8 @@ ath12k_wifi7_dp_mon_rx_deliver(struct ath12k_pdev_dp *dp_pdev,
 		}
 		rxs->flag |= RX_FLAG_ONLY_MONITOR;
 
-		if (!(rxs->flag & RX_FLAG_ONLY_MONITOR))
-			decap = mon_mpdu->decap_format;
-
 		ath12k_dp_mon_update_radiotap(dp_pdev, ppduinfo, mon_skb, rxs);
-		ath12k_dp_mon_rx_deliver_msdu(dp_pdev, napi, mon_skb, ppduinfo,
-					      rxs, decap);
+		ath12k_dp_mon_rx_deliver_msdu(dp_pdev, napi, mon_skb, rxs);
 		mon_skb = skb_next;
 	} while (mon_skb);
 	rxs->flag = 0;
@@ -2636,6 +2675,8 @@ ath12k_wifi7_dp_rx_mon_mpdu_pop(struct ath12k *ar, int mac_id,
 		if (pmon->mon_last_linkdesc_paddr == paddr) {
 			pmon->rx_mon_stats.dup_mon_linkdesc_cnt++;
 			spin_unlock_bh(&pmon->mon_lock);
+			kfree_skb_list(*head_msdu);
+			*head_msdu = NULL;
 			return rx_bufs_used;
 		}
 
@@ -2679,7 +2720,6 @@ ath12k_wifi7_dp_rx_mon_mpdu_pop(struct ath12k *ar, int mac_id,
 					   i, (unsigned long)rxcb->paddr,
 					   (unsigned long)msdu_list.paddr[i]);
 				drop_mpdu = true;
-				continue;
 			}
 			if (!rxcb->unmapped) {
 				dma_unmap_single(ar->ab->dev, rxcb->paddr,
@@ -2762,7 +2802,7 @@ next_msdu:
 	if (last)
 		last->next = NULL;
 
-	*tail_msdu = msdu;
+	*tail_msdu = last;
 
 	if (msdu_cnt == 0)
 		*npackets = 1;
@@ -2787,7 +2827,6 @@ ath12k_wifi7_dp_rx_mon_dest_process(struct ath12k *ar, int mac_id,
 	struct ath12k_base *ab = ar->ab;
 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
 	void *ring_entry, *mon_dst_srng;
-	struct dp_mon_mpdu *tmp_mpdu;
 	LIST_HEAD(rx_desc_used_list);
 	struct hal_srng *srng;
 
@@ -2853,18 +2892,16 @@ ath12k_wifi7_dp_rx_mon_dest_process(struct ath12k *ar, int mac_id,
 		}
 
 		if (head_msdu && tail_msdu) {
-			tmp_mpdu = kzalloc_obj(*tmp_mpdu, GFP_ATOMIC);
-			if (!tmp_mpdu)
-				break;
+			struct dp_mon_mpdu tmp_mpdu = {
+				.head = head_msdu,
+				.tail = tail_msdu,
+				.err_bitmap = pmon->err_bitmap,
+				.decap_format = pmon->decap_format,
+			};
 
-			tmp_mpdu->head = head_msdu;
-			tmp_mpdu->tail = tail_msdu;
-			tmp_mpdu->err_bitmap = pmon->err_bitmap;
-			tmp_mpdu->decap_format = pmon->decap_format;
-			ath12k_wifi7_dp_mon_rx_deliver(&ar->dp, tmp_mpdu,
+			ath12k_wifi7_dp_mon_rx_deliver(&ar->dp, &tmp_mpdu,
 						       &pmon->mon_ppdu_info, napi);
 			rx_mon_stats->dest_mpdu_done++;
-			kfree(tmp_mpdu);
 		}
 
 		ring_entry = ath12k_hal_srng_dst_get_next_entry(ar->ab,
@@ -2887,11 +2924,12 @@ static enum dp_mon_status_buf_state
 ath12k_wifi7_dp_rx_mon_buf_done(struct ath12k_base *ab, struct hal_srng *srng,
 				struct dp_rxdma_mon_ring *rx_ring)
 {
+	struct ath12k_hal *hal = &ab->hal;
 	struct ath12k_skb_rxcb *rxcb;
-	struct hal_tlv_64_hdr *tlv;
 	struct sk_buff *skb;
 	void *status_desc;
 	dma_addr_t paddr;
+	u16 tlv_tag;
 	u32 cookie;
 	int buf_id;
 	u8 rbm;
@@ -2916,8 +2954,8 @@ ath12k_wifi7_dp_rx_mon_buf_done(struct ath12k_base *ab, struct hal_srng *srng,
 				skb->len + skb_tailroom(skb),
 				DMA_FROM_DEVICE);
 
-	tlv = (struct hal_tlv_64_hdr *)skb->data;
-	if (le64_get_bits(tlv->tl, HAL_TLV_HDR_TAG) != HAL_RX_STATUS_BUFFER_DONE)
+	hal->ops->mon_rx_status_dec_tlv_hdr(skb->data, &tlv_tag, NULL, NULL);
+	if (tlv_tag != HAL_RX_STATUS_BUFFER_DONE)
 		return DP_MON_STATUS_NO_DMA;
 
 	return DP_MON_STATUS_REPLINISH;
@@ -2929,41 +2967,40 @@ ath12k_wifi7_dp_mon_parse_rx_dest(struct ath12k_pdev_dp *dp_pdev,
 				  struct sk_buff *skb)
 {
 	struct ath12k *ar = ath12k_pdev_dp_to_ar(dp_pdev);
-	struct hal_tlv_64_hdr *tlv;
+	struct ath12k_hal *hal = &ar->ab->hal;
+	u8 *tlv_value, *tlv = skb->data;
 	struct ath12k_skb_rxcb *rxcb;
 	enum hal_rx_mon_status hal_status;
 	u16 tlv_tag, tlv_len;
-	u8 *ptr = skb->data;
+	u32 tlv_hdr_len;
+
+	tlv_hdr_len = hal->ops->get_tlv_hdr_align();
 
 	do {
-		tlv = (struct hal_tlv_64_hdr *)ptr;
-		tlv_tag = le64_get_bits(tlv->tl, HAL_TLV_64_HDR_TAG);
+		tlv_value = hal->ops->mon_rx_status_dec_tlv_hdr(tlv, &tlv_tag,
+								&tlv_len, NULL);
 
 		/* The actual length of PPDU_END is the combined length of many PHY
 		 * TLVs that follow. Skip the TLV header and
 		 * rx_rxpcu_classification_overview that follows the header to get to
 		 * next TLV.
 		 */
-
 		if (tlv_tag == HAL_RX_PPDU_END)
 			tlv_len = sizeof(struct hal_rx_rxpcu_classification_overview);
-		else
-			tlv_len = le64_get_bits(tlv->tl, HAL_TLV_64_HDR_LEN);
 
 		hal_status = ath12k_wifi7_dp_mon_rx_parse_status_tlv(dp_pdev, pmon,
 								     tlv);
 
 		if (ar->monitor_started && ar->ab->hw_params->rxdma1_enable &&
 		    ath12k_wifi7_dp_mon_parse_rx_dest_tlv(dp_pdev, pmon, hal_status,
-							  tlv->value))
+							  tlv_value))
 			return HAL_RX_MON_STATUS_PPDU_DONE;
 
-		ptr += sizeof(*tlv) + tlv_len;
-		ptr = PTR_ALIGN(ptr, HAL_TLV_64_ALIGN);
+		tlv = PTR_ALIGN(tlv + tlv_len + tlv_hdr_len, tlv_hdr_len);
 
-		if ((ptr - skb->data) > skb->len)
+		if (unlikely(tlv - skb->data > skb->len ||
+			     skb->len - (tlv - skb->data) < tlv_hdr_len))
 			break;
-
 	} while ((hal_status == HAL_RX_MON_STATUS_PPDU_NOT_DONE) ||
 		 (hal_status == HAL_RX_MON_STATUS_BUF_ADDR) ||
 		 (hal_status == HAL_RX_MON_STATUS_MPDU_START) ||
@@ -3013,15 +3050,16 @@ ath12k_wifi7_dp_rx_reap_mon_status_ring(struct ath12k_base *ab, int mac_id,
 	int buf_id, srng_id, num_buffs_reaped = 0;
 	enum dp_mon_status_buf_state reap_status;
 	struct dp_rxdma_mon_ring *rx_ring;
+	struct ath12k_hal *hal = &ab->hal;
 	struct ath12k_mon_data *pmon;
 	struct ath12k_skb_rxcb *rxcb;
-	struct hal_tlv_64_hdr *tlv;
 	void *rx_mon_status_desc;
 	struct hal_srng *srng;
 	struct ath12k_dp *dp;
 	struct sk_buff *skb;
 	struct ath12k *ar;
 	dma_addr_t paddr;
+	u16 tlv_tag;
 	u32 cookie;
 	u8 rbm;
 
@@ -3066,14 +3104,13 @@ ath12k_wifi7_dp_rx_reap_mon_status_ring(struct ath12k_base *ab, int mac_id,
 						skb->len + skb_tailroom(skb),
 						DMA_FROM_DEVICE);
 
-			tlv = (struct hal_tlv_64_hdr *)skb->data;
-			if (le64_get_bits(tlv->tl, HAL_TLV_HDR_TAG) !=
-					HAL_RX_STATUS_BUFFER_DONE) {
+			hal->ops->mon_rx_status_dec_tlv_hdr(skb->data, &tlv_tag,
+							    NULL, NULL);
+			if (tlv_tag != HAL_RX_STATUS_BUFFER_DONE) {
 				pmon->buf_state = DP_MON_STATUS_NO_DMA;
 				ath12k_warn(ab,
-					    "mon status DONE not set %llx, buf_id %d\n",
-					    le64_get_bits(tlv->tl, HAL_TLV_HDR_TAG),
-					    buf_id);
+					    "mon status DONE not set %x, buf_id %d\n",
+					    tlv_tag, buf_id);
 				/* RxDMA status done bit might not be set even
 				 * though tp is moved by HW.
 				 */
@@ -3172,18 +3209,23 @@ __ath12k_wifi7_dp_mon_process_ring(struct ath12k *ar, int mac_id,
 		goto exit;
 
 	while ((skb = __skb_dequeue(&skb_list))) {
-		memset(ppdu_info, 0, sizeof(*ppdu_info));
-		ppdu_info->peer_id = HAL_INVALID_PEERID;
+		if (!ppdu_info->ppdu_continuation)
+			ath12k_wifi7_dp_mon_rx_memset_ppdu_info(ppdu_info);
 
 		hal_status = ath12k_wifi7_dp_mon_parse_rx_dest(&ar->dp, pmon, skb);
 
-		if (ar->monitor_started &&
-		    pmon->mon_ppdu_status == DP_PPDU_STATUS_START &&
-		    hal_status == HAL_TLV_STATUS_PPDU_DONE) {
-			rx_mon_stats->status_ppdu_done++;
-			pmon->mon_ppdu_status = DP_PPDU_STATUS_DONE;
-			ath12k_wifi7_dp_rx_mon_dest_process(ar, mac_id, *budget, napi);
-			pmon->mon_ppdu_status = DP_PPDU_STATUS_START;
+		if (hal_status == HAL_TLV_STATUS_PPDU_DONE) {
+			ppdu_info->ppdu_continuation = false;
+			if (ar->monitor_started &&
+			    pmon->mon_ppdu_status == DP_PPDU_STATUS_START) {
+				rx_mon_stats->status_ppdu_done++;
+				pmon->mon_ppdu_status = DP_PPDU_STATUS_DONE;
+				ath12k_wifi7_dp_rx_mon_dest_process(ar, mac_id,
+								    *budget, napi);
+				pmon->mon_ppdu_status = DP_PPDU_STATUS_START;
+			}
+		} else {
+			ppdu_info->ppdu_continuation = true;
 		}
 
 		dev_kfree_skb_any(skb);

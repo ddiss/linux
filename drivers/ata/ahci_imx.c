@@ -598,6 +598,7 @@ static void imx_sata_disable(struct ahci_host_priv *hpriv)
 }
 
 static void ahci_imx_error_handler(struct ata_port *ap)
+	__must_hold(&ap->host->eh_mutex)
 {
 	u32 reg_val;
 	struct ata_device *dev;
@@ -862,7 +863,7 @@ static int imx_ahci_probe(struct platform_device *pdev)
 	unsigned int reg_val;
 	int ret;
 
-	imxpriv = devm_kzalloc(dev, sizeof(*imxpriv), GFP_KERNEL);
+	imxpriv = devm_kzalloc_obj(dev, *imxpriv);
 	if (!imxpriv)
 		return -ENOMEM;
 

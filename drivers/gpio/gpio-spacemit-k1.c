@@ -228,6 +228,7 @@ static int spacemit_gpio_add_bank(struct spacemit_gpio *sg,
 	gc->label		= dev_name(dev);
 	gc->request		= gpiochip_generic_request;
 	gc->free		= gpiochip_generic_free;
+	gc->set_config		= gpiochip_generic_config;
 	gc->ngpio		= SPACEMIT_NR_GPIOS_PER_BANK;
 	gc->base		= -1;
 	gc->of_gpio_n_cells	= 3;
@@ -273,7 +274,7 @@ static int spacemit_gpio_probe(struct platform_device *pdev)
 	void __iomem *regs;
 	int i, irq, ret;
 
-	sg = devm_kzalloc(dev, sizeof(*sg), GFP_KERNEL);
+	sg = devm_kzalloc_obj(dev, *sg);
 	if (!sg)
 		return -ENOMEM;
 

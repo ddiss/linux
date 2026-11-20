@@ -26,15 +26,17 @@ static int imx9_soc_probe(struct platform_device *pdev)
 	u64 uid127_64, uid63_0;
 	int err;
 
-	attr = devm_kzalloc(dev, sizeof(*attr), GFP_KERNEL);
+	attr = devm_kzalloc_obj(dev, *attr);
 	if (!attr)
 		return -ENOMEM;
 
-	err = of_property_read_string(of_root, "model", &attr->machine);
+	err = soc_attr_read_machine(attr);
 	if (err)
 		return dev_err_probe(dev, err, "%s: missing model property\n", __func__);
 
 	attr->family = devm_kasprintf(dev, GFP_KERNEL, "Freescale i.MX");
+	if (!attr->family)
+		return -ENOMEM;
 
 	/*
 	 * Retrieve the soc id, rev & uid info:
@@ -52,11 +54,18 @@ static int imx9_soc_probe(struct platform_device *pdev)
 	rev_minor = SOC_REV_MINOR(res.a1);
 
 	attr->soc_id = devm_kasprintf(dev, GFP_KERNEL, "i.MX%2x", soc_id);
+	if (!attr->soc_id)
+		return -ENOMEM;
+
 	attr->revision = devm_kasprintf(dev, GFP_KERNEL, "%d.%d", rev_major, rev_minor);
+	if (!attr->revision)
+		return -ENOMEM;
 
 	uid127_64 = res.a2;
 	uid63_0 = res.a3;
 	attr->serial_number = devm_kasprintf(dev, GFP_KERNEL, "%016llx%016llx", uid127_64, uid63_0);
+	if (!attr->serial_number)
+		return -ENOMEM;
 
 	sdev = soc_device_register(attr);
 	if (IS_ERR(sdev))
@@ -89,7 +98,7 @@ static int __init imx9_soc_init(void)
 	struct platform_device *pdev;
 
 	/* No match means it is not an i.MX 9 series SoC, do nothing. */
-	if (!of_match_node(imx9_soc_match, of_root))
+	if (!of_machine_device_match(imx9_soc_match))
 		return 0;
 
 	ret = platform_driver_register(&imx9_soc_driver);

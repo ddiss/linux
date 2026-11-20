@@ -17,6 +17,8 @@
 #define MTK_SCPD_MODEM_PWRSEQ		BIT(10)
 #define MTK_SCPD_SKIP_RESET_B		BIT(11)
 #define MTK_SCPD_INFRA_PWR_CTL		BIT(12)
+#define MTK_SCPD_SIMPLE_PWRSEQ		BIT(13)
+#define MTK_SCPD_MODEM_SECURE_PWRSEQ	BIT(14)
 #define MTK_SCPD_CAPS(_scpd, _x)	((_scpd)->data ?		\
 					 (_scpd)->data->caps & (_x) :	\
 					 (_scpd)->hwv_data->caps & (_x))
@@ -56,6 +58,7 @@ enum scpsys_bus_prot_flags {
 	BUS_PROT_REG_UPDATE = BIT(1),
 	BUS_PROT_IGNORE_CLR_ACK = BIT(2),
 	BUS_PROT_INVERTED = BIT(3),
+	BUS_PROT_IGNORE_SUBCLK = BIT(4),
 };
 
 enum scpsys_bus_prot_block {
@@ -63,6 +66,11 @@ enum scpsys_bus_prot_block {
 	BUS_PROT_BLOCK_INFRA_NAO,
 	BUS_PROT_BLOCK_SMI,
 	BUS_PROT_BLOCK_SPM,
+	BUS_PROT_BLOCK_IMG_SUB0,
+	BUS_PROT_BLOCK_CAM_SUB1,
+	BUS_PROT_BLOCK_CAM_SUB0,
+	BUS_PROT_BLOCK_IPE_SUB0,
+	BUS_PROT_BLOCK_VLP,
 	BUS_PROT_BLOCK_COUNT,
 };
 
@@ -94,6 +102,10 @@ enum scpsys_bus_prot_block {
 #define BUS_PROT_UPDATE(_hwip, _mask, _set, _clr, _sta)			\
 		_BUS_PROT(_hwip, _mask, _set, _clr, _mask, _sta,	\
 			  BUS_PROT_REG_UPDATE)
+
+#define BUS_PROT_WR_IGN_SUBCLK(_hwip, _mask, _set, _clr, _sta)		\
+		_BUS_PROT(_hwip, _mask, _set, _clr, _mask, _sta,	\
+			  BUS_PROT_IGNORE_CLR_ACK | BUS_PROT_IGNORE_SUBCLK)
 
 #define BUS_PROT_INFRA_UPDATE_TOPAXI(_mask)			\
 		BUS_PROT_UPDATE(INFRA, _mask,			\

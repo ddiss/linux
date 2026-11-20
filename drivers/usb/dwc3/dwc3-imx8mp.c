@@ -191,7 +191,7 @@ static int dwc3_imx8mp_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	dwc3_imx = devm_kzalloc(dev, sizeof(*dwc3_imx), GFP_KERNEL);
+	dwc3_imx = devm_kzalloc_obj(dev, *dwc3_imx);
 	if (!dwc3_imx)
 		return -ENOMEM;
 
@@ -263,7 +263,7 @@ static int dwc3_imx8mp_probe(struct platform_device *pdev)
 	dwc3 = platform_get_drvdata(dwc3_imx->dwc3_pdev);
 	if (!dwc3) {
 		err = dev_err_probe(dev, -EPROBE_DEFER, "failed to get dwc3 platform data\n");
-		goto depopulate;
+		goto put_dwc3;
 	}
 
 	dwc3->glue_ops = &dwc3_imx_glue_ops;
@@ -273,10 +273,8 @@ static int dwc3_imx8mp_probe(struct platform_device *pdev)
 
 	err = devm_request_threaded_irq(dev, irq, NULL, dwc3_imx8mp_interrupt,
 					IRQF_ONESHOT, dev_name(dev), dwc3_imx);
-	if (err) {
-		dev_err(dev, "failed to request IRQ #%d --> %d\n", irq, err);
+	if (err)
 		goto put_dwc3;
-	}
 
 	device_set_wakeup_capable(dev, true);
 	pm_runtime_put(dev);

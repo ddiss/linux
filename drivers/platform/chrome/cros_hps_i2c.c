@@ -62,7 +62,7 @@ static int hps_i2c_probe(struct i2c_client *client)
 	struct hps_drvdata *hps;
 	int ret;
 
-	hps = devm_kzalloc(&client->dev, sizeof(*hps), GFP_KERNEL);
+	hps = devm_kzalloc_obj(&client->dev, *hps);
 	if (!hps)
 		return -ENOMEM;
 
@@ -131,7 +131,7 @@ static int hps_resume(struct device *dev)
 static DEFINE_RUNTIME_DEV_PM_OPS(hps_pm_ops, hps_suspend, hps_resume, NULL);
 
 static const struct i2c_device_id hps_i2c_id[] = {
-	{ "cros-hps" },
+	{ .name = "cros-hps" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, hps_i2c_id);

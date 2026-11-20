@@ -179,7 +179,7 @@ static int max9768_i2c_probe(struct i2c_client *client)
 	struct max9768 *max9768;
 	struct max9768_pdata *pdata = client->dev.platform_data;
 
-	max9768 = devm_kzalloc(&client->dev, sizeof(*max9768), GFP_KERNEL);
+	max9768 = devm_kzalloc_obj(&client->dev, *max9768);
 	if (!max9768)
 		return -ENOMEM;
 
@@ -213,7 +213,7 @@ static int max9768_i2c_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max9768_i2c_id[] = {
-	{ "max9768" },
+	{ .name = "max9768" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max9768_i2c_id);

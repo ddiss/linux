@@ -45,7 +45,7 @@ config DRM_MIPI_DSI
 config DRM_KMS_HELPER
 	tristate
 	depends on DRM
-	select FB_CORE if DRM_FBDEV_EMULATION
+	select DRM_PANIC_HELPER if DRM_PANIC
 	help
 	  CRTC helpers for KMS drivers.
 
@@ -55,9 +55,7 @@ config DRM_DRAW
 
 config DRM_PANIC
 	bool "Display a user-friendly message when a kernel panic occurs"
-	depends on DRM
-	select FONT_SUPPORT
-	select DRM_DRAW
+	depends on DRM && PRINTK
 	help
 	  Enable a drm panic handler, which will display a user-friendly message
 	  when a kernel panic occurs. It's useful when using a user-space
@@ -129,6 +127,22 @@ config DRM_PANIC_SCREEN_QR_VERSION
 	  version ranges from Version 1 (21x21) to Version 40 (177x177).
 	  Smaller QR code are easier to read, but will contain less debugging
 	  data. Default is 40.
+
+config DRM_PANIC_HELPER
+	bool
+	depends on DRM
+	select DRM_DRAW
+	select FONT_SUPPORT
+
+config DRM_RAS
+	bool "DRM RAS support"
+	depends on DRM
+	depends on NET
+	help
+	  Enables the DRM RAS (Reliability, Availability and Serviceability)
+	  support for DRM drivers. This provides a Generic Netlink interface
+	  for error reporting and queries.
+	  If in doubt, say "N".
 
 config DRM_DEBUG_DP_MST_TOPOLOGY_REFS
         bool "Enable refcount backtrace history in the DP MST helpers"
@@ -208,6 +222,13 @@ config DRM_GPUVM
 	  GPU-VM representation providing helpers to manage a GPUs virtual
 	  address space
 
+config RUST_DRM_GPUVM
+	bool
+	depends on DRM
+	select DRM_GPUVM
+	help
+	  Choose this if you need GPUVM functions in Rust
+
 config DRM_GPUSVM
 	tristate
 	depends on DRM
@@ -220,6 +241,7 @@ config DRM_GPUSVM
 config DRM_BUDDY
 	tristate
 	depends on DRM
+	select GPU_BUDDY
 	help
 	  A page based buddy allocator
 
@@ -233,7 +255,7 @@ config DRM_TTM_HELPER
 	tristate
 	depends on DRM
 	select DRM_TTM
-	select DRM_KMS_HELPER if DRM_FBDEV_EMULATION
+	select DRM_CLIENT_LIB if DRM_FBDEV_EMULATION
 	select FB_CORE if DRM_FBDEV_EMULATION
 	select FB_SYSMEM_HELPERS_DEFERRED if DRM_FBDEV_EMULATION
 	help
@@ -242,7 +264,7 @@ config DRM_TTM_HELPER
 config DRM_GEM_DMA_HELPER
 	tristate
 	depends on DRM
-	select DRM_KMS_HELPER if DRM_FBDEV_EMULATION
+	select DRM_CLIENT_LIB if DRM_FBDEV_EMULATION
 	select FB_CORE if DRM_FBDEV_EMULATION
 	select FB_DMAMEM_HELPERS_DEFERRED if DRM_FBDEV_EMULATION
 	help
@@ -251,11 +273,18 @@ config DRM_GEM_DMA_HELPER
 config DRM_GEM_SHMEM_HELPER
 	tristate
 	depends on DRM && MMU
-	select DRM_KMS_HELPER if DRM_FBDEV_EMULATION
+	select DRM_CLIENT_LIB if DRM_FBDEV_EMULATION
 	select FB_CORE if DRM_FBDEV_EMULATION
 	select FB_SYSMEM_HELPERS_DEFERRED if DRM_FBDEV_EMULATION
 	help
 	  Choose this if you need the GEM shmem helper functions
+
+config RUST_DRM_GEM_SHMEM_HELPER
+	bool
+	depends on DRM && MMU
+	select DRM_GEM_SHMEM_HELPER
+	help
+	  Choose this if you need the GEM shmem helper functions In Rust
 
 config DRM_SUBALLOC_HELPER
 	tristate
@@ -268,10 +297,6 @@ config DRM_SCHED
 # Separate option as not all DRM drivers use it
 config DRM_PANEL_BACKLIGHT_QUIRKS
 	tristate
-
-config DRM_LIB_RANDOM
-	bool
-	default n
 
 config DRM_PRIVACY_SCREEN
 	bool
@@ -335,6 +360,7 @@ source "drivers/gpu/drm/udl/Kconfig"
 source "drivers/gpu/drm/v3d/Kconfig"
 source "drivers/gpu/drm/vboxvideo/Kconfig"
 source "drivers/gpu/drm/vc4/Kconfig"
+source "drivers/gpu/drm/verisilicon/Kconfig"
 source "drivers/gpu/drm/vgem/Kconfig"
 source "drivers/gpu/drm/virtio/Kconfig"
 source "drivers/gpu/drm/vkms/Kconfig"

@@ -1063,6 +1063,9 @@ err_free_tx_ring:
 	while (i--)
 		t7xx_cldma_ring_free(md_ctrl, &md_ctrl->tx_ring[i], DMA_TO_DEVICE);
 
+	dma_pool_destroy(md_ctrl->gpd_dmapool);
+	md_ctrl->gpd_dmapool = NULL;
+
 	return ret;
 }
 
@@ -1107,7 +1110,7 @@ int t7xx_cldma_alloc(enum cldma_id hif_id, struct t7xx_pci_dev *t7xx_dev)
 	struct cldma_ctrl *md_ctrl;
 	int qno;
 
-	md_ctrl = devm_kzalloc(dev, sizeof(*md_ctrl), GFP_KERNEL);
+	md_ctrl = devm_kzalloc_obj(dev, *md_ctrl);
 	if (!md_ctrl)
 		return -ENOMEM;
 

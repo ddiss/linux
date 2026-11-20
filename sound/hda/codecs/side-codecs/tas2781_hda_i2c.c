@@ -14,7 +14,6 @@
 #include <linux/efi.h>
 #include <linux/firmware.h>
 #include <linux/i2c.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pci_ids.h>
 #include <linux/pm_runtime.h>
@@ -60,7 +59,6 @@ struct tas2781_hda_i2c_priv {
 	int (*save_calibration)(struct tas2781_hda *h);
 
 	int hda_chip_id;
-	bool skip_calibration;
 };
 
 static int tas2781_get_i2c_res(struct acpi_resource *ares, void *data)
@@ -90,7 +88,6 @@ static int tas2781_read_acpi(struct tasdevice_priv *p, const char *hid)
 {
 	struct gpio_desc *speaker_id;
 	struct acpi_device *adev;
-	struct device *physdev;
 	LIST_HEAD(resources);
 	const char *sub;
 	uint32_t subid;
@@ -103,7 +100,7 @@ static int tas2781_read_acpi(struct tasdevice_priv *p, const char *hid)
 		return -ENODEV;
 	}
 
-	physdev = get_device(acpi_get_first_physical_node(adev));
+	struct device *physdev __free(put_device) = acpi_bus_get_primary_device(adev);
 	ret = acpi_dev_get_resources(adev, &resources, tas2781_get_i2c_res, p);
 	if (ret < 0) {
 		dev_err(p->dev, "Failed to get ACPI resource.\n");
@@ -153,14 +150,12 @@ static int tas2781_read_acpi(struct tasdevice_priv *p, const char *hid)
 end_2563:
 	acpi_dev_free_resource_list(&resources);
 	strscpy(p->dev_name, hid, sizeof(p->dev_name));
-	put_device(physdev);
 	acpi_dev_put(adev);
 
 	return 0;
 
 err:
 	dev_err(p->dev, "read acpi error, ret: %d\n", ret);
-	put_device(physdev);
 	acpi_dev_put(adev);
 
 	return ret;
@@ -175,13 +170,13 @@ static void tas2781_hda_playback_hook(struct device *dev, int action)
 	case HDA_GEN_PCM_ACT_OPEN:
 		pm_runtime_get_sync(dev);
 		scoped_guard(mutex, &tas_hda->priv->codec_lock) {
-			tasdevice_tuning_switch(tas_hda->priv, 0);
+			tasdevice_tuning_switch(tas_hda->priv, 0, false);
 			tas_hda->priv->playback_started = true;
 		}
 		break;
 	case HDA_GEN_PCM_ACT_CLOSE:
 		scoped_guard(mutex, &tas_hda->priv->codec_lock) {
-			tasdevice_tuning_switch(tas_hda->priv, 1);
+			tasdevice_tuning_switch(tas_hda->priv, 1, false);
 			tas_hda->priv->playback_started = false;
 		}
 
@@ -339,10 +334,11 @@ static int tas2563_save_calibration(struct tas2781_hda *h)
 	}
 
 	cd->cali_dat_sz_per_dev = TAS2563_CAL_DATA_SIZE * TASDEV_CALIB_N;
+	cd->total_sz = 0;
 
 	/* extra byte for each device is the device number */
-	cd->total_sz = (cd->cali_dat_sz_per_dev + 1) * p->ndev;
-	data = cd->data = devm_kzalloc(p->dev, cd->total_sz,
+	data = cd->data = devm_kzalloc(p->dev,
+		(cd->cali_dat_sz_per_dev + 1) * p->ndev,
 		GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
@@ -375,17 +371,18 @@ static int tas2563_save_calibration(struct tas2781_hda *h)
 					i, j, status);
 				return -EINVAL;
 			}
+			if (*(uint32_t *)&data[offset] == 0) {
+				dev_warn(p->dev,
+					 "Dev %d: Caldat[%d] is zero\n", i, j);
+				return -EINVAL;
+			}
 			bedata = cpu_to_be32(*(uint32_t *)&data[offset]);
 			memcpy(&data[offset], &bedata, sizeof(bedata));
 			offset += TAS2563_CAL_DATA_SIZE;
 		}
 	}
 
-	if (cd->total_sz != offset) {
-		dev_err(p->dev, "%s: tot_size(%lu) and offset(%u) mismatch\n",
-			__func__, cd->total_sz, offset);
-		return -EINVAL;
-	}
+	cd->total_sz = offset;
 
 	r->r0_reg = TAS2563_CAL_R0;
 	r->invr0_reg = TAS2563_CAL_INVR0;
@@ -479,8 +476,7 @@ static void tasdevice_dspfw_init(void *context)
 	/* If calibrated data occurs error, dsp will still works with default
 	 * calibrated data inside algo.
 	 */
-	if (!hda_priv->skip_calibration)
-		hda_priv->save_calibration(tas_hda);
+	hda_priv->save_calibration(tas_hda);
 }
 
 static void tasdev_fw_ready(const struct firmware *fmw, void *context)
@@ -535,7 +531,6 @@ static int tas2781_hda_bind(struct device *dev, struct device *master,
 	void *master_data)
 {
 	struct tas2781_hda *tas_hda = dev_get_drvdata(dev);
-	struct tas2781_hda_i2c_priv *hda_priv = tas_hda->hda_priv;
 	struct hda_component_parent *parent = master_data;
 	struct hda_component *comp;
 	struct hda_codec *codec;
@@ -564,14 +559,6 @@ static int tas2781_hda_bind(struct device *dev, struct device *master,
 		break;
 	}
 
-	/*
-	 * Using ASUS ROG Xbox Ally X (RC73XA) UEFI calibration data
-	 * causes audio dropouts during playback, use fallback data
-	 * from DSP firmware as a workaround.
-	 */
-	if (codec->core.subsystem_id == 0x10431384)
-		hda_priv->skip_calibration = true;
-
 	guard(pm_runtime_active_auto)(dev);
 
 	comp->dev = dev;
@@ -599,6 +586,9 @@ static void tas2781_hda_unbind(struct device *dev,
 		comp->playback_hook = NULL;
 	}
 
+	request_firmware_nowait_cancel(tas_hda->priv->dev, tas_hda->priv,
+				       tasdev_fw_ready);
+
 	tas2781_hda_remove_controls(tas_hda);
 
 	tasdevice_config_info_remove(tas_hda->priv);
@@ -619,11 +609,11 @@ static int tas2781_hda_i2c_probe(struct i2c_client *clt)
 	const char *device_name;
 	int ret;
 
-	tas_hda = devm_kzalloc(&clt->dev, sizeof(*tas_hda), GFP_KERNEL);
+	tas_hda = devm_kzalloc_obj(&clt->dev, *tas_hda);
 	if (!tas_hda)
 		return -ENOMEM;
 
-	hda_priv = devm_kzalloc(&clt->dev, sizeof(*hda_priv), GFP_KERNEL);
+	hda_priv = devm_kzalloc_obj(&clt->dev, *hda_priv);
 	if (!hda_priv)
 		return -ENOMEM;
 
@@ -643,6 +633,7 @@ static int tas2781_hda_i2c_probe(struct i2c_client *clt)
 		 */
 		device_name = "TIAS2781";
 		hda_priv->hda_chip_id = HDA_TAS2781;
+		tas_hda->priv->chip_id = TAS2781;
 		hda_priv->save_calibration = tas2781_save_calibration;
 		tas_hda->priv->global_addr = TAS2781_GLOBAL_ADDR;
 	} else if (strstarts(dev_name(&clt->dev), "i2c-TXNW2770")) {
@@ -656,6 +647,7 @@ static int tas2781_hda_i2c_probe(struct i2c_client *clt)
 			     "i2c-TXNW2781:00-tas2781-hda.0")) {
 		device_name = "TXNW2781";
 		hda_priv->hda_chip_id = HDA_TAS2781;
+		tas_hda->priv->chip_id = TAS2781;
 		hda_priv->save_calibration = tas2781_save_calibration;
 		tas_hda->priv->global_addr = TAS2781_GLOBAL_ADDR;
 	} else if (strstr(dev_name(&clt->dev), "INT8866")) {
@@ -726,7 +718,7 @@ static int tas2781_runtime_suspend(struct device *dev)
 	 * Stop the playback if it's unused.
 	 */
 	if (tas_hda->priv->playback_started) {
-		tasdevice_tuning_switch(tas_hda->priv, 1);
+		tasdevice_tuning_switch(tas_hda->priv, 1, false);
 		tas_hda->priv->playback_started = false;
 	}
 
@@ -756,7 +748,7 @@ static int tas2781_system_suspend(struct device *dev)
 
 	/* Shutdown chip before system suspend */
 	if (tas_hda->priv->playback_started)
-		tasdevice_tuning_switch(tas_hda->priv, 1);
+		tasdevice_tuning_switch(tas_hda->priv, 1, false);
 
 	/*
 	 * Reset GPIO may be shared, so cannot reset here.
@@ -789,7 +781,7 @@ static int tas2781_system_resume(struct device *dev)
 			TASDEVICE_BIN_BLK_PRE_POWER_UP);
 
 	if (tas_hda->priv->playback_started)
-		tasdevice_tuning_switch(tas_hda->priv, 0);
+		tasdevice_tuning_switch(tas_hda->priv, 0, false);
 
 	return 0;
 }
@@ -800,8 +792,8 @@ static const struct dev_pm_ops tas2781_hda_pm_ops = {
 };
 
 static const struct i2c_device_id tas2781_hda_i2c_id[] = {
-	{ "tas2781-hda" },
-	{}
+	{ .name = "tas2781-hda" },
+	{ }
 };
 
 static const struct acpi_device_id tas2781_acpi_hda_match[] = {

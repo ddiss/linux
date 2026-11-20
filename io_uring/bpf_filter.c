@@ -85,7 +85,7 @@ int __io_uring_run_bpf_filters(struct io_bpf_filter __rcu **filters,
 	do {
 		if (filter == &dummy_filter)
 			return -EACCES;
-		ret = bpf_prog_run(filter->prog, &bpf_ctx);
+		ret = bpf_prog_run_pin_on_cpu(filter->prog, &bpf_ctx);
 		if (!ret)
 			return -EACCES;
 		filter = filter->next;
@@ -253,6 +253,7 @@ void io_bpf_filter_clone(struct io_restriction *dst, struct io_restriction *src)
 	 * If the src filter is going away, just ignore it.
 	 */
 	if (refcount_inc_not_zero(&src->bpf_filters->refs)) {
+		src->bpf_filters_cow = true;
 		dst->bpf_filters = src->bpf_filters;
 		dst->bpf_filters_cow = true;
 	}

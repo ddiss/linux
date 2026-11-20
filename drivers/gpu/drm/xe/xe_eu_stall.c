@@ -7,6 +7,7 @@
 #include <linux/fs.h>
 #include <linux/poll.h>
 #include <linux/types.h>
+#include <linux/iopoll.h>
 
 #include <drm/drm_drv.h>
 #include <generated/xe_wa_oob.h>
@@ -20,6 +21,7 @@
 #include "xe_gt_printk.h"
 #include "xe_gt_topology.h"
 #include "xe_macros.h"
+#include "xe_mmio.h"
 #include "xe_observation.h"
 #include "xe_pm.h"
 #include "xe_trace.h"
@@ -27,8 +29,16 @@
 
 #include "regs/xe_eu_stall_regs.h"
 #include "regs/xe_gt_regs.h"
+#include "regs/xe_regs.h"
 
 #define POLL_PERIOD_MS	5
+#define FW_WA_WAIT_TIMEOUT_US	10000
+
+#define SWF_EUSTALL_MASK	REG_GENMASK(6, 5)
+#define REQ_EUSTALL_ENABLE	REG_BIT(5)
+#define ACK_EUSTALL_ENABLE	REG_GENMASK(6, 5)
+#define REQ_EUSTALL_DISABLE	REG_BIT(6)
+#define ACK_EUSTALL_DISABLE	0
 
 static size_t per_xecore_buf_size = SZ_512K;
 
@@ -44,6 +54,7 @@ struct per_xecore_buf {
 struct xe_eu_stall_data_stream {
 	bool pollin;
 	bool enabled;
+	bool reset_detected;
 	int wait_num_reports;
 	int sampling_rate_mult;
 	wait_queue_head_t poll_wq;
@@ -428,9 +439,20 @@ static bool eu_stall_data_buf_poll(struct xe_eu_stall_data_stream *stream)
 			set_bit(xecore, stream->data_drop.mask);
 		xecore_buf->write = write_ptr;
 	}
+	/* If a GT or engine reset happens during EU stall sampling,
+	 * all EU stall registers get reset to 0 and the cached values of
+	 * the EU stall data buffers' read pointers are out of sync with
+	 * the register values. This causes invalid data to be returned
+	 * from read(). To prevent this, check the value of a EU stall base
+	 * register. If it is zero, there has been a reset.
+	 */
+	if (unlikely(!xe_gt_mcr_unicast_read_any(gt, XEHPC_EUSTALL_BASE)))
+		stream->reset_detected = true;
+
+	stream->pollin = min_data_present || stream->reset_detected;
 	mutex_unlock(&stream->xecore_buf_lock);
 
-	return min_data_present;
+	return stream->pollin;
 }
 
 static void clear_dropped_eviction_line_bit(struct xe_gt *gt, u16 group, u16 instance)
@@ -442,9 +464,9 @@ static void clear_dropped_eviction_line_bit(struct xe_gt *gt, u16 group, u16 ins
 	 * On Xe2 and later GPUs, the bit has to be cleared by writing 0 to it.
 	 */
 	if (GRAPHICS_VER(xe) >= 20)
-		write_ptr_reg = _MASKED_BIT_DISABLE(XEHPC_EUSTALL_REPORT_OVERFLOW_DROP);
+		write_ptr_reg = REG_MASKED_FIELD_DISABLE(XEHPC_EUSTALL_REPORT_OVERFLOW_DROP);
 	else
-		write_ptr_reg = _MASKED_BIT_ENABLE(XEHPC_EUSTALL_REPORT_OVERFLOW_DROP);
+		write_ptr_reg = REG_MASKED_FIELD_ENABLE(XEHPC_EUSTALL_REPORT_OVERFLOW_DROP);
 
 	xe_gt_mcr_unicast_write(gt, XEHPC_EUSTALL_REPORT, write_ptr_reg, group, instance);
 }
@@ -504,7 +526,7 @@ static int xe_eu_stall_data_buf_read(struct xe_eu_stall_data_stream *stream,
 	/* Read pointer can overflow into one additional bit */
 	read_ptr &= (buf_size << 1) - 1;
 	read_ptr_reg = REG_FIELD_PREP(XEHPC_EUSTALL_REPORT1_READ_PTR_MASK, (read_ptr >> 6));
-	read_ptr_reg = _MASKED_FIELD(XEHPC_EUSTALL_REPORT1_READ_PTR_MASK, read_ptr_reg);
+	read_ptr_reg = REG_MASKED_FIELD(XEHPC_EUSTALL_REPORT1_READ_PTR_MASK, read_ptr_reg);
 	xe_gt_mcr_unicast_write(gt, XEHPC_EUSTALL_REPORT1, read_ptr_reg, group, instance);
 	xecore_buf->read = read_ptr;
 	trace_xe_eu_stall_data_read(group, instance, read_ptr, write_ptr,
@@ -544,6 +566,15 @@ static ssize_t xe_eu_stall_stream_read_locked(struct xe_eu_stall_data_stream *st
 	int ret = 0;
 
 	mutex_lock(&stream->xecore_buf_lock);
+	/* If EU stall registers got reset due to a GT/engine reset,
+	 * continuing with the read() will return invalid data to
+	 * the user space. Just return -ENODEV instead.
+	 */
+	if (unlikely(stream->reset_detected)) {
+		xe_gt_dbg(gt, "EU stall base register has been reset\n");
+		mutex_unlock(&stream->xecore_buf_lock);
+		return -ENODEV;
+	}
 	if (bitmap_weight(stream->data_drop.mask, XE_MAX_DSS_FUSE_BITS)) {
 		if (!stream->data_drop.reported_to_user) {
 			stream->data_drop.reported_to_user = true;
@@ -554,7 +585,6 @@ static ssize_t xe_eu_stall_stream_read_locked(struct xe_eu_stall_data_stream *st
 		}
 		stream->data_drop.reported_to_user = false;
 	}
-
 	for_each_dss_steering(xecore, gt, group, instance) {
 		ret = xe_eu_stall_data_buf_read(stream, buf, count, &total_size,
 						gt, group, instance, xecore);
@@ -609,7 +639,8 @@ static ssize_t xe_eu_stall_stream_read(struct file *file, char __user *buf,
 	 * We don't want to block the next read() when there is data in the buffer
 	 * now, but couldn't be accommodated in the small user buffer.
 	 */
-	stream->pollin = false;
+	if (!stream->reset_detected)
+		stream->pollin = false;
 
 	return ret;
 }
@@ -661,7 +692,7 @@ static int xe_eu_stall_stream_enable(struct xe_eu_stall_data_stream *stream)
 	struct per_xecore_buf *xecore_buf;
 	struct xe_gt *gt = stream->gt;
 	u16 group, instance;
-	int xecore;
+	int xecore, ret = 0;
 
 	/* Take runtime pm ref and forcewake to disable RC6 */
 	xe_pm_runtime_get(gt_to_xe(gt));
@@ -672,9 +703,21 @@ static int xe_eu_stall_stream_enable(struct xe_eu_stall_data_stream *stream)
 		return -ETIMEDOUT;
 	}
 
+	if (XE_GT_WA(gt, 14027054324)) {
+		/* Request the firmware to apply the workaround and wait for an ACK */
+		xe_mmio_write32(&gt->mmio, SWF_SCRATCHPAD(0), REQ_EUSTALL_ENABLE);
+		ret = xe_mmio_wait32(&gt->mmio, SWF_SCRATCHPAD(0), SWF_EUSTALL_MASK,
+				     ACK_EUSTALL_ENABLE, FW_WA_WAIT_TIMEOUT_US, NULL, false);
+		if (ret) {
+			xe_gt_err(gt, "Timeout polling for EU stall enable ACK from firmware\n");
+			xe_force_wake_put(gt_to_fw(gt), stream->fw_ref);
+			xe_pm_runtime_put(gt_to_xe(gt));
+			return ret;
+		}
+	}
 	if (XE_GT_WA(gt, 22016596838))
 		xe_gt_mcr_multicast_write(gt, ROW_CHICKEN2,
-					  _MASKED_BIT_ENABLE(DISABLE_DOP_GATING));
+					  REG_MASKED_FIELD_ENABLE(DISABLE_DOP_GATING));
 
 	for_each_dss_steering(xecore, gt, group, instance) {
 		write_ptr_reg = xe_gt_mcr_unicast_read(gt, XEHPC_EUSTALL_REPORT, group, instance);
@@ -683,7 +726,7 @@ static int xe_eu_stall_stream_enable(struct xe_eu_stall_data_stream *stream)
 			clear_dropped_eviction_line_bit(gt, group, instance);
 		write_ptr = REG_FIELD_GET(XEHPC_EUSTALL_REPORT_WRITE_PTR_MASK, write_ptr_reg);
 		read_ptr_reg = REG_FIELD_PREP(XEHPC_EUSTALL_REPORT1_READ_PTR_MASK, write_ptr);
-		read_ptr_reg = _MASKED_FIELD(XEHPC_EUSTALL_REPORT1_READ_PTR_MASK, read_ptr_reg);
+		read_ptr_reg = REG_MASKED_FIELD(XEHPC_EUSTALL_REPORT1_READ_PTR_MASK, read_ptr_reg);
 		/* Initialize the read pointer to the write pointer */
 		xe_gt_mcr_unicast_write(gt, XEHPC_EUSTALL_REPORT1, read_ptr_reg, group, instance);
 		write_ptr <<= 6;
@@ -692,13 +735,14 @@ static int xe_eu_stall_stream_enable(struct xe_eu_stall_data_stream *stream)
 		xecore_buf->write = write_ptr;
 		xecore_buf->read = write_ptr;
 	}
+	stream->reset_detected = false;
 	stream->data_drop.reported_to_user = false;
 	bitmap_zero(stream->data_drop.mask, XE_MAX_DSS_FUSE_BITS);
 
-	reg_value = _MASKED_FIELD(EUSTALL_MOCS | EUSTALL_SAMPLE_RATE,
-				  REG_FIELD_PREP(EUSTALL_MOCS, gt->mocs.uc_index << 1) |
-				  REG_FIELD_PREP(EUSTALL_SAMPLE_RATE,
-						 stream->sampling_rate_mult));
+	reg_value = REG_MASKED_FIELD(EUSTALL_MOCS | EUSTALL_SAMPLE_RATE,
+				     REG_FIELD_PREP(EUSTALL_MOCS, gt->mocs.uc_index << 1) |
+				     REG_FIELD_PREP(EUSTALL_SAMPLE_RATE,
+						    stream->sampling_rate_mult));
 	xe_gt_mcr_multicast_write(gt, XEHPC_EUSTALL_CTRL, reg_value);
 	/* GGTT addresses can never be > 32 bits */
 	xe_gt_mcr_multicast_write(gt, XEHPC_EUSTALL_BASE_UPPER, 0);
@@ -708,7 +752,7 @@ static int xe_eu_stall_stream_enable(struct xe_eu_stall_data_stream *stream)
 	reg_value |= XEHPC_EUSTALL_BASE_ENABLE_SAMPLING;
 	xe_gt_mcr_multicast_write(gt, XEHPC_EUSTALL_BASE, reg_value);
 
-	return 0;
+	return ret;
 }
 
 static void eu_stall_data_buf_poll_work_fn(struct work_struct *work)
@@ -717,13 +761,13 @@ static void eu_stall_data_buf_poll_work_fn(struct work_struct *work)
 		container_of(work, typeof(*stream), buf_poll_work.work);
 	struct xe_gt *gt = stream->gt;
 
-	if (eu_stall_data_buf_poll(stream)) {
-		stream->pollin = true;
+	if (eu_stall_data_buf_poll(stream))
 		wake_up(&stream->poll_wq);
-	}
-	queue_delayed_work(gt->eu_stall->buf_ptr_poll_wq,
-			   &stream->buf_poll_work,
-			   msecs_to_jiffies(POLL_PERIOD_MS));
+
+	if (!stream->reset_detected)
+		queue_delayed_work(gt->eu_stall->buf_ptr_poll_wq,
+				   &stream->buf_poll_work,
+				   msecs_to_jiffies(POLL_PERIOD_MS));
 }
 
 static int xe_eu_stall_stream_init(struct xe_eu_stall_data_stream *stream,
@@ -818,6 +862,7 @@ static int xe_eu_stall_enable_locked(struct xe_eu_stall_data_stream *stream)
 static int xe_eu_stall_disable_locked(struct xe_eu_stall_data_stream *stream)
 {
 	struct xe_gt *gt = stream->gt;
+	int ret = 0;
 
 	if (!stream->enabled)
 		return 0;
@@ -830,12 +875,20 @@ static int xe_eu_stall_disable_locked(struct xe_eu_stall_data_stream *stream)
 
 	if (XE_GT_WA(gt, 22016596838))
 		xe_gt_mcr_multicast_write(gt, ROW_CHICKEN2,
-					  _MASKED_BIT_DISABLE(DISABLE_DOP_GATING));
+					  REG_MASKED_FIELD_DISABLE(DISABLE_DOP_GATING));
+	if (XE_GT_WA(gt, 14027054324)) {
+		/* Request the firmware to revert the workaround and wait for an ACK */
+		xe_mmio_write32(&gt->mmio, SWF_SCRATCHPAD(0), REQ_EUSTALL_DISABLE);
+		ret = xe_mmio_wait32(&gt->mmio, SWF_SCRATCHPAD(0), SWF_EUSTALL_MASK,
+				     ACK_EUSTALL_DISABLE, FW_WA_WAIT_TIMEOUT_US, NULL, false);
+		if (ret)
+			xe_gt_err(gt, "Timeout polling for EU stall disable ACK from firmware\n");
+	}
 
 	xe_force_wake_put(gt_to_fw(gt), stream->fw_ref);
 	xe_pm_runtime_put(gt_to_xe(gt));
 
-	return 0;
+	return ret;
 }
 
 static long xe_eu_stall_stream_ioctl_locked(struct xe_eu_stall_data_stream *stream,
@@ -869,13 +922,13 @@ static int xe_eu_stall_stream_close(struct inode *inode, struct file *file)
 	struct xe_eu_stall_data_stream *stream = file->private_data;
 	struct xe_gt *gt = stream->gt;
 
-	drm_dev_put(&gt->tile->xe->drm);
-
 	mutex_lock(&gt->eu_stall->stream_lock);
 	xe_eu_stall_disable_locked(stream);
 	xe_eu_stall_data_buf_destroy(stream);
 	xe_eu_stall_stream_free(stream);
 	mutex_unlock(&gt->eu_stall->stream_lock);
+
+	drm_dev_put(&gt->tile->xe->drm);
 
 	return 0;
 }
@@ -963,9 +1016,10 @@ int xe_eu_stall_stream_open(struct drm_device *dev, u64 data, struct drm_file *f
 		return -ENODEV;
 	}
 
-	if (xe_observation_paranoid && !perfmon_capable()) {
+	ret = xe_observation_paranoid_check();
+	if (ret) {
 		drm_dbg(&xe->drm,  "Insufficient privileges for EU stall monitoring\n");
-		return -EACCES;
+		return ret;
 	}
 
 	/* Initialize and set default values */

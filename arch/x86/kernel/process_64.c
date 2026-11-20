@@ -104,10 +104,10 @@ void __show_regs(struct pt_regs *regs, enum show_regs_mode mode,
 		return;
 	}
 
-	asm("movl %%ds,%0" : "=r" (ds));
-	asm("movl %%es,%0" : "=r" (es));
-	asm("movl %%fs,%0" : "=r" (fsindex));
-	asm("movl %%gs,%0" : "=r" (gsindex));
+	savesegment(ds, ds);
+	savesegment(es, es);
+	savesegment(fs, fsindex);
+	savesegment(gs, gsindex);
 
 	rdmsrq(MSR_FS_BASE, fs);
 	rdmsrq(MSR_GS_BASE, gs);
@@ -277,7 +277,7 @@ static __always_inline void save_fsgs(struct task_struct *task)
 {
 	savesegment(fs, task->thread.fsindex);
 	savesegment(gs, task->thread.gsindex);
-	if (static_cpu_has(X86_FEATURE_FSGSBASE)) {
+	if (cpu_feature_enabled(X86_FEATURE_FSGSBASE)) {
 		/*
 		 * If FSGSBASE is enabled, we can't make any useful guesses
 		 * about the base, and user code expects us to save the current
@@ -391,7 +391,7 @@ static __always_inline void x86_pkru_load(struct thread_struct *prev,
 static __always_inline void x86_fsgsbase_load(struct thread_struct *prev,
 					      struct thread_struct *next)
 {
-	if (static_cpu_has(X86_FEATURE_FSGSBASE)) {
+	if (cpu_feature_enabled(X86_FEATURE_FSGSBASE)) {
 		/* Update the FS and GS selectors if they could have changed. */
 		if (unlikely(prev->fsindex || next->fsindex))
 			loadseg(FS, next->fsindex);
@@ -533,7 +533,7 @@ start_thread_common(struct pt_regs *regs, unsigned long new_ip,
 {
 	WARN_ON_ONCE(regs != current_pt_regs());
 
-	if (static_cpu_has(X86_BUG_NULL_SEG)) {
+	if (cpu_feature_enabled(X86_BUG_NULL_SEG)) {
 		/* Loading zero below won't clear the base. */
 		loadsegment(fs, __USER_DS);
 		load_gs_index(__USER_DS);
@@ -708,7 +708,7 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 
 	/* Reset hw history on AMD CPUs */
 	if (cpu_feature_enabled(X86_FEATURE_AMD_WORKLOAD_CLASS))
-		wrmsrl(MSR_AMD_WORKLOAD_HRST, 0x1);
+		wrmsrq(MSR_AMD_WORKLOAD_HRST, 0x1);
 
 	return prev_p;
 }

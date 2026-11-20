@@ -25,7 +25,7 @@ int inet_release(struct socket *sock);
 int inet_stream_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 			int addr_len, int flags);
 int __inet_stream_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
-			  int addr_len, int flags, int is_sendmsg);
+			  int addr_len, int flags, bool defer_connect);
 int inet_dgram_connect(struct socket *sock, struct sockaddr_unsized *uaddr,
 		       int addr_len, int flags);
 int inet_accept(struct socket *sock, struct socket *newsock,
@@ -59,8 +59,7 @@ int inet_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);
 int inet_ctl_sock_create(struct sock **sk, unsigned short family,
 			 unsigned short type, unsigned char protocol,
 			 struct net *net);
-int inet_recv_error(struct sock *sk, struct msghdr *msg, int len,
-		    int *addr_len);
+int inet_recv_error(struct sock *sk, struct msghdr *msg, int len);
 
 struct sk_buff *inet_gro_receive(struct list_head *head, struct sk_buff *skb);
 int inet_gro_complete(struct sk_buff *skb, int nhoff);

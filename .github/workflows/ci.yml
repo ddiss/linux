@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    # aarch64 github runners don't provide kvm, but perform well without
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install toolchains, rapido and xfstests dependencies
+        run: |
+          cat /proc/cpuinfo
+          df -h
+          free -h
+          case "$(uname -m)" in
+          x86_64)
+            export QEMU_SYSTEM=qemu-system-x86
+            ;;
+          aarch64)
+            export QEMU_SYSTEM=qemu-system-arm
+            ;;
+          *)
+            exit 1
+            ;;
+          esac
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends --no-install-suggests \
+            cargo rustc "$QEMU_SYSTEM" qemu-utils \
+            make flex bison libelf-dev acl attr automake bc dbench dump \
+            e2fsprogs fio gawk libtool sed libgdbm-compat-dev \
+            gcc git indent libacl1-dev libaio-dev libcap-dev libgdbm-dev \
+            libtool-bin liburing-dev libuuid1 lvm2 make psmisc python3 quota \
+            uuid-dev uuid-runtime xfsprogs linux-headers-$(uname -r) sqlite3 \
+            xfsdump xfslibs-dev btrfs-progs pkg-config
+          # chmod /dev/kvm to allow non-root QEMU to use it.
+          # chmod needs to go after install, as udev may be triggered.
+          [ -c /dev/kvm ] && sudo chmod 0666 /dev/kvm || echo "no KVM acceleration"
+          git clone --depth 1 https://github.com/rapido-linux/rapido ${HOME}/rapido
+          pushd ${HOME}/rapido
+          cargo build --offline --release
+          popd
+      - name: build mainline kernel and xfstests
+        run: |
+          cp ${HOME}/rapido/kernel/selftest.defconfig .config
+          make olddefconfig
+          make -j$(nproc)
+          make modules_install INSTALL_MOD_PATH=./mods
+          # this gives us modules.dep, etc. which rapido needs.
+          # XXX should come with modules_install but doesn't... perhaps due to no modules?
+          objtree=./ INSTALL_MOD_PATH=./mods ./scripts/depmod.sh \
+            "$(cat include/config/kernel.release)"
+          git clone --depth 1 -b master https://github.com/btrfs/fstests \
+            ${HOME}/xfstests
+          pushd ${HOME}/xfstests
+          make -j$(nproc)
+          popd
+      - name: boot mainline kernel and run xfstests
+        run: |
+          linux_dir="${PWD}"
+          pushd ${HOME}/rapido
+          # rapido fstests-btrfs uses 5x guest-zram-dev by default (for raid),
+          # but we probably don't have enough memory. Use compressed qcow2:
+          test_img="${HOME}/fstests_test_zstd.qcow2"
+          scratch_img="${HOME}/fstests_scratch_zstd.qcow2"
+          qemu-img create -f qcow2 "$test_img" 12G
+          qemu-img create -f qcow2 "$scratch_img" 12G
+          mkdir -p "${HOME}/9p"
+          cat > rapido.conf <<EOF
+          KERNEL_SRC=${linux_dir}
+          KERNEL_INSTALL_MOD_PATH=${linux_dir}/mods
+          FSTESTS_SRC=${HOME}/xfstests
+          FSTESTS_ZRAM_SIZE=0
+          VIRTFS_SHARE_PATH=${HOME}/9p
+          EOF
+          printf 'QEMU_EXTRA_ARGS="-nographic -device virtio-rng-pci -drive id=test,file='"$test_img"',if=none,cache=none -device virtio-blk-pci,drive=test,serial=TEST_DEV -drive id=scratch,file='"$scratch_img"',if=none,cache=none -device virtio-blk-pci,drive=scratch,serial=SCRATCH_DEV"' \
+            >> rapido.conf
+          cat rapido.conf
+          ./rapido cut \
+            -x "./check -R xunit btrfs/284; cp results/result.xml /host/; exit" \
+            fstests-btrfs
+          popd
+      - name: dump results
+        run: |
+          cat "${HOME}/9p/result.xml"
+      - name: Archive xunit test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: xunit-results
+          path: ~/9p/result.xml
+          retention-days: 2

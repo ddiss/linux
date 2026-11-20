@@ -75,9 +75,8 @@ struct selinux_fs_info {
 	char **bool_pending_names;
 	int *bool_pending_values;
 	struct dentry *class_dir;
-	unsigned long last_class_ino;
-	bool policy_opened;
-	unsigned long last_ino;
+	u64 last_class_ino;
+	u64 last_ino;
 	struct super_block *sb;
 };
 
@@ -95,9 +94,8 @@ static int selinux_fs_info_create(struct super_block *sb)
 	return 0;
 }
 
-static void selinux_fs_info_free(struct super_block *sb)
+static void selinux_fs_info_free(struct selinux_fs_info *fsi)
 {
-	struct selinux_fs_info *fsi = sb->s_fs_info;
 	unsigned int i;
 
 	if (fsi) {
@@ -106,8 +104,7 @@ static void selinux_fs_info_free(struct super_block *sb)
 		kfree(fsi->bool_pending_names);
 		kfree(fsi->bool_pending_values);
 	}
-	kfree(sb->s_fs_info);
-	sb->s_fs_info = NULL;
+	kfree(fsi);
 }
 
 #define SEL_INITCON_INO_OFFSET		0x01000000
@@ -250,11 +247,6 @@ static int sel_mmap_handle_status(struct file *filp,
 	/* only allows one page from the head */
 	if (vma->vm_pgoff > 0 || size != PAGE_SIZE)
 		return -EIO;
-	/* disallow writable mapping */
-	if (vma->vm_flags & VM_WRITE)
-		return -EPERM;
-	/* disallow mprotect() turns it into writable */
-	vm_flags_clear(vma, VM_MAYWRITE);
 
 	return remap_pfn_range(vma, vma->vm_start,
 			       page_to_pfn(status),
@@ -272,35 +264,13 @@ static ssize_t sel_write_disable(struct file *file, const char __user *buf,
 				 size_t count, loff_t *ppos)
 
 {
-	char *page;
-	ssize_t length;
-	int new_value;
-
-	if (count >= PAGE_SIZE)
-		return -ENOMEM;
-
-	/* No partial writes. */
-	if (*ppos != 0)
-		return -EINVAL;
-
-	page = memdup_user_nul(buf, count);
-	if (IS_ERR(page))
-		return PTR_ERR(page);
-
-	if (sscanf(page, "%d", &new_value) != 1) {
-		length = -EINVAL;
-		goto out;
-	}
-	length = count;
-
-	if (new_value) {
-		pr_err("SELinux: https://github.com/SELinuxProject/selinux-kernel/wiki/DEPRECATE-runtime-disable\n");
-		pr_err("SELinux: Runtime disable is not supported, use selinux=0 on the kernel cmdline.\n");
-	}
-
-out:
-	kfree(page);
-	return length;
+	/*
+	 * Setting disable is no longer supported, see
+	 * https://github.com/SELinuxProject/selinux-kernel/wiki/DEPRECATE-runtime-disable
+	 */
+	pr_err_once("SELinux: %s (%d) wrote to disable. This is no longer supported.\n",
+		    current->comm, current->pid);
+	return count;
 }
 
 static const struct file_operations sel_disable_ops = {
@@ -329,15 +299,14 @@ static int sel_make_bools(struct selinux_policy *newpolicy, struct dentry *bool_
 			  int **bool_pending_values);
 static int sel_make_classes(struct selinux_policy *newpolicy,
 			    struct dentry *class_dir,
-			    unsigned long *last_class_ino);
+			    u64 *last_class_ino);
 
 /* declaration for sel_make_class_dirs */
 static struct dentry *sel_make_dir(struct dentry *dir, const char *name,
-			unsigned long *ino);
+				   u64 *ino);
 
 /* declaration for sel_make_policy_nodes */
-static struct dentry *sel_make_swapover_dir(struct super_block *sb,
-						unsigned long *ino);
+static struct dentry *sel_make_swapover_dir(struct super_block *sb, u64 *ino);
 
 static ssize_t sel_read_mls(struct file *filp, char __user *buf,
 				size_t count, loff_t *ppos)
@@ -362,43 +331,33 @@ struct policy_load_memory {
 
 static int sel_open_policy(struct inode *inode, struct file *filp)
 {
-	struct selinux_fs_info *fsi = inode->i_sb->s_fs_info;
 	struct policy_load_memory *plm = NULL;
 	int rc;
 
-	BUG_ON(filp->private_data);
-
-	mutex_lock(&selinux_state.policy_mutex);
+	if (filp->f_mode & FMODE_WRITE)
+		return -EACCES;
 
 	rc = avc_has_perm(current_sid(), SECINITSID_SECURITY,
 			  SECCLASS_SECURITY, SECURITY__READ_POLICY, NULL);
 	if (rc)
-		goto err;
+		return rc;
 
-	rc = -EBUSY;
-	if (fsi->policy_opened)
-		goto err;
-
-	rc = -ENOMEM;
 	plm = kzalloc_obj(*plm);
 	if (!plm)
-		goto err;
+		return -ENOMEM;
 
+	mutex_lock(&selinux_state.policy_mutex);
 	rc = security_read_policy(&plm->data, &plm->len);
 	if (rc)
 		goto err;
-
 	if ((size_t)i_size_read(inode) != plm->len) {
 		inode_lock(inode);
 		i_size_write(inode, plm->len);
 		inode_unlock(inode);
 	}
-
-	fsi->policy_opened = 1;
+	mutex_unlock(&selinux_state.policy_mutex);
 
 	filp->private_data = plm;
-
-	mutex_unlock(&selinux_state.policy_mutex);
 
 	return 0;
 err:
@@ -412,12 +371,7 @@ err:
 
 static int sel_release_policy(struct inode *inode, struct file *filp)
 {
-	struct selinux_fs_info *fsi = inode->i_sb->s_fs_info;
 	struct policy_load_memory *plm = filp->private_data;
-
-	BUG_ON(!plm);
-
-	fsi->policy_opened = 0;
 
 	vfree(plm->data);
 	kfree(plm);
@@ -467,14 +421,6 @@ static const struct vm_operations_struct sel_mmap_policy_ops = {
 
 static int sel_mmap_policy(struct file *filp, struct vm_area_struct *vma)
 {
-	if (vma->vm_flags & VM_SHARED) {
-		/* do not allow mprotect to make mapping writable */
-		vm_flags_clear(vma, VM_MAYWRITE);
-
-		if (vma->vm_flags & VM_WRITE)
-			return -EACCES;
-	}
-
 	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
 	vma->vm_ops = &sel_mmap_policy_ops;
 
@@ -510,7 +456,7 @@ static int sel_make_policy_nodes(struct selinux_fs_info *fsi,
 	unsigned int bool_num = 0;
 	char **bool_names = NULL;
 	int *bool_values = NULL;
-	unsigned long tmp_ino = fsi->last_ino; /* Don't increment last_ino in this function */
+	u64 tmp_ino = fsi->last_ino; /* Don't increment last_ino in this function */
 
 	tmp_parent = sel_make_swapover_dir(fsi->sb, &tmp_ino);
 	if (IS_ERR(tmp_parent))
@@ -594,34 +540,31 @@ static ssize_t sel_write_load(struct file *file, const char __user *buf,
 	if (!count)
 		return -EINVAL;
 
-	mutex_lock(&selinux_state.policy_mutex);
-
 	length = avc_has_perm(current_sid(), SECINITSID_SECURITY,
 			      SECCLASS_SECURITY, SECURITY__LOAD_POLICY, NULL);
 	if (length)
-		goto out;
+		return length;
 
 	data = vmalloc(count);
-	if (!data) {
-		length = -ENOMEM;
-		goto out;
-	}
+	if (!data)
+		return -ENOMEM;
 	if (copy_from_user(data, buf, count) != 0) {
 		length = -EFAULT;
 		goto out;
 	}
 
+	mutex_lock(&selinux_state.policy_mutex);
 	length = security_load_policy(data, count, &load_state);
 	if (length) {
 		pr_warn_ratelimited("SELinux: failed to load policy\n");
-		goto out;
+		goto out_unlock;
 	}
 	fsi = file_inode(file)->i_sb->s_fs_info;
 	length = sel_make_policy_nodes(fsi, load_state.policy);
 	if (length) {
 		pr_warn_ratelimited("SELinux: failed to initialize selinuxfs\n");
 		selinux_policy_cancel(&load_state);
-		goto out;
+		goto out_unlock;
 	}
 
 	selinux_policy_commit(&load_state);
@@ -631,8 +574,9 @@ static ssize_t sel_write_load(struct file *file, const char __user *buf,
 		from_kuid(&init_user_ns, audit_get_loginuid(current)),
 		audit_get_sessionid(current));
 
-out:
+out_unlock:
 	mutex_unlock(&selinux_state.policy_mutex);
+out:
 	vfree(data);
 	return length;
 }
@@ -689,46 +633,13 @@ static ssize_t sel_read_checkreqprot(struct file *filp, char __user *buf,
 static ssize_t sel_write_checkreqprot(struct file *file, const char __user *buf,
 				      size_t count, loff_t *ppos)
 {
-	char *page;
-	ssize_t length;
-	unsigned int new_value;
-
-	length = avc_has_perm(current_sid(), SECINITSID_SECURITY,
-			      SECCLASS_SECURITY, SECURITY__SETCHECKREQPROT,
-			      NULL);
-	if (length)
-		return length;
-
-	if (count >= PAGE_SIZE)
-		return -ENOMEM;
-
-	/* No partial writes. */
-	if (*ppos != 0)
-		return -EINVAL;
-
-	page = memdup_user_nul(buf, count);
-	if (IS_ERR(page))
-		return PTR_ERR(page);
-
-	if (sscanf(page, "%u", &new_value) != 1) {
-		length = -EINVAL;
-		goto out;
-	}
-	length = count;
-
-	if (new_value) {
-		char comm[sizeof(current->comm)];
-
-		strscpy(comm, current->comm);
-		pr_err("SELinux: %s (%d) set checkreqprot to 1. This is no longer supported.\n",
-		       comm, current->pid);
-	}
-
-	selinux_ima_measure_state();
-
-out:
-	kfree(page);
-	return length;
+	/*
+	 * Setting checkreqprot is no longer supported, see
+	 * https://github.com/SELinuxProject/selinux-kernel/wiki/DEPRECATE-checkreqprot
+	 */
+	pr_err_once("SELinux: %s (%d) wrote to checkreqprot. This is no longer supported.\n",
+		    current->comm, current->pid);
+	return count;
 }
 static const struct file_operations sel_checkreqprot_ops = {
 	.read		= sel_read_checkreqprot,
@@ -861,7 +772,7 @@ static const struct file_operations transaction_ops = {
 /*
  * payload - write methods
  * If the method has a response, the response should be put in buf,
- * and the length returned.  Otherwise return 0 or and -error.
+ * and the length returned.  Otherwise return 0 or -error.
  */
 
 static ssize_t sel_write_access(struct file *file, char *buf, size_t size)
@@ -1073,69 +984,11 @@ out:
 
 static ssize_t sel_write_user(struct file *file, char *buf, size_t size)
 {
-	char *con = NULL, *user = NULL, *ptr;
-	u32 sid, *sids = NULL;
-	ssize_t length;
-	char *newcon;
-	int rc;
-	u32 i, len, nsids;
-
-	pr_warn_ratelimited("SELinux: %s (%d) wrote to /sys/fs/selinux/user!"
-		" This will not be supported in the future; please update your"
-		" userspace.\n", current->comm, current->pid);
-	ssleep(5);
-
-	length = avc_has_perm(current_sid(), SECINITSID_SECURITY,
-			      SECCLASS_SECURITY, SECURITY__COMPUTE_USER,
-			      NULL);
-	if (length)
-		goto out;
-
-	length = -ENOMEM;
-	con = kzalloc(size + 1, GFP_KERNEL);
-	if (!con)
-		goto out;
-
-	length = -ENOMEM;
-	user = kzalloc(size + 1, GFP_KERNEL);
-	if (!user)
-		goto out;
-
-	length = -EINVAL;
-	if (sscanf(buf, "%s %s", con, user) != 2)
-		goto out;
-
-	length = security_context_str_to_sid(con, &sid, GFP_KERNEL);
-	if (length)
-		goto out;
-
-	length = security_get_user_sids(sid, user, &sids, &nsids);
-	if (length)
-		goto out;
-
-	length = sprintf(buf, "%u", nsids) + 1;
-	ptr = buf + length;
-	for (i = 0; i < nsids; i++) {
-		rc = security_sid_to_context(sids[i], &newcon, &len);
-		if (rc) {
-			length = rc;
-			goto out;
-		}
-		if ((length + len) >= SIMPLE_TRANSACTION_LIMIT) {
-			kfree(newcon);
-			length = -ERANGE;
-			goto out;
-		}
-		memcpy(ptr, newcon, len);
-		kfree(newcon);
-		ptr += len;
-		length += len;
-	}
-out:
-	kfree(sids);
-	kfree(user);
-	kfree(con);
-	return length;
+	pr_err_once("SELinux: %s (%d) wrote to user. This is no longer supported.\n",
+		    current->comm, current->pid);
+	buf[0] = '0';
+	buf[1] = 0;
+	return 2;
 }
 
 static ssize_t sel_write_member(struct file *file, char *buf, size_t size)
@@ -1378,7 +1231,7 @@ static int sel_make_bools(struct selinux_policy *newpolicy, struct dentry *bool_
 	char **names, *page;
 	u32 i, num;
 
-	page = (char *)get_zeroed_page(GFP_KERNEL);
+	page = kzalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!page)
 		return -ENOMEM;
 
@@ -1424,7 +1277,7 @@ static int sel_make_bools(struct selinux_policy *newpolicy, struct dentry *bool_
 		ret = sel_attach_file(bool_dir, names[i], inode);
 	}
 out:
-	free_page((unsigned long)page);
+	kfree(page);
 	return ret;
 }
 
@@ -1483,14 +1336,14 @@ static ssize_t sel_read_avc_hash_stats(struct file *filp, char __user *buf,
 	char *page;
 	ssize_t length;
 
-	page = (char *)__get_free_page(GFP_KERNEL);
+	page = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!page)
 		return -ENOMEM;
 
 	length = avc_get_hash_stats(page);
 	if (length >= 0)
 		length = simple_read_from_buffer(buf, count, ppos, page, length);
-	free_page((unsigned long)page);
+	kfree(page);
 
 	return length;
 }
@@ -1501,7 +1354,7 @@ static ssize_t sel_read_sidtab_hash_stats(struct file *filp, char __user *buf,
 	char *page;
 	ssize_t length;
 
-	page = (char *)__get_free_page(GFP_KERNEL);
+	page = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (!page)
 		return -ENOMEM;
 
@@ -1509,7 +1362,7 @@ static ssize_t sel_read_sidtab_hash_stats(struct file *filp, char __user *buf,
 	if (length >= 0)
 		length = simple_read_from_buffer(buf, count, ppos, page,
 						length);
-	free_page((unsigned long)page);
+	kfree(page);
 
 	return length;
 }
@@ -1704,30 +1557,32 @@ static int sel_make_initcon_files(struct dentry *dir)
 	return err;
 }
 
-static inline unsigned long sel_class_to_ino(u16 class)
+static inline u64 sel_class_to_ino(u16 class)
 {
 	return (class * (SEL_VEC_MAX + 1)) | SEL_CLASS_INO_OFFSET;
 }
 
-static inline u16 sel_ino_to_class(unsigned long ino)
+static inline u16 sel_ino_to_class(u64 ino)
 {
-	return (ino & SEL_INO_MASK) / (SEL_VEC_MAX + 1);
+	u32 ino_masked = ino & SEL_INO_MASK;
+	return ino_masked / (SEL_VEC_MAX + 1);
 }
 
-static inline unsigned long sel_perm_to_ino(u16 class, u32 perm)
+static inline u64 sel_perm_to_ino(u16 class, u32 perm)
 {
 	return (class * (SEL_VEC_MAX + 1) + perm) | SEL_CLASS_INO_OFFSET;
 }
 
-static inline u32 sel_ino_to_perm(unsigned long ino)
+static inline u32 sel_ino_to_perm(u64 ino)
 {
-	return (ino & SEL_INO_MASK) % (SEL_VEC_MAX + 1);
+	u32 ino_masked = ino & SEL_INO_MASK;
+	return ino_masked % (SEL_VEC_MAX + 1);
 }
 
 static ssize_t sel_read_class(struct file *file, char __user *buf,
 				size_t count, loff_t *ppos)
 {
-	unsigned long ino = file_inode(file)->i_ino;
+	u64 ino = file_inode(file)->i_ino;
 	char res[TMPBUFLEN];
 	ssize_t len = scnprintf(res, sizeof(res), "%d", sel_ino_to_class(ino));
 	return simple_read_from_buffer(buf, count, ppos, res, len);
@@ -1741,7 +1596,7 @@ static const struct file_operations sel_class_ops = {
 static ssize_t sel_read_perm(struct file *file, char __user *buf,
 				size_t count, loff_t *ppos)
 {
-	unsigned long ino = file_inode(file)->i_ino;
+	u64 ino = file_inode(file)->i_ino;
 	char res[TMPBUFLEN];
 	ssize_t len = scnprintf(res, sizeof(res), "%d", sel_ino_to_perm(ino));
 	return simple_read_from_buffer(buf, count, ppos, res, len);
@@ -1758,7 +1613,7 @@ static ssize_t sel_read_policycap(struct file *file, char __user *buf,
 	int value;
 	char tmpbuf[TMPBUFLEN];
 	ssize_t length;
-	unsigned long i_ino = file_inode(file)->i_ino;
+	u64 i_ino = file_inode(file)->i_ino;
 
 	value = security_policycap_supported(i_ino & SEL_INO_MASK);
 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d", value);
@@ -1834,7 +1689,7 @@ static int sel_make_class_dir_entries(struct selinux_policy *newpolicy,
 
 static int sel_make_classes(struct selinux_policy *newpolicy,
 			    struct dentry *class_dir,
-			    unsigned long *last_class_ino)
+			    u64 *last_class_ino)
 {
 	u32 i, nclasses;
 	int rc;
@@ -1899,7 +1754,7 @@ static int sel_make_policycap(struct dentry *dir)
 }
 
 static struct dentry *sel_make_dir(struct dentry *dir, const char *name,
-			unsigned long *ino)
+				   u64 *ino)
 {
 	struct inode *inode;
 
@@ -1918,7 +1773,7 @@ static struct dentry *sel_make_dir(struct dentry *dir, const char *name,
 	return sel_attach(dir, name, inode);
 }
 
-static int reject_all(struct mnt_idmap *idmap, struct inode *inode, int mask)
+static int reject_all(const struct mnt_idmap *idmap, struct inode *inode, int mask)
 {
 	return -EPERM;	// no access for anyone, root or no root.
 }
@@ -1928,34 +1783,43 @@ static const struct inode_operations swapover_dir_inode_operations = {
 	.permission	= reject_all,
 };
 
-static struct dentry *sel_make_swapover_dir(struct super_block *sb,
-						unsigned long *ino)
+static struct dentry *sel_make_swapover_dir(struct super_block *sb, u64 *ino)
 {
-	struct dentry *dentry = d_alloc_name(sb->s_root, ".swapover");
+	struct dentry *dentry;
 	struct inode *inode;
 
-	if (!dentry)
+	inode = sel_make_inode(sb, S_IFDIR);
+	if (!inode)
 		return ERR_PTR(-ENOMEM);
 
-	inode = sel_make_inode(sb, S_IFDIR);
-	if (!inode) {
-		dput(dentry);
-		return ERR_PTR(-ENOMEM);
+	dentry = simple_start_creating(sb->s_root, ".swapover");
+	if (IS_ERR(dentry)) {
+		iput(inode);
+		return dentry;
 	}
 
 	inode->i_op = &swapover_dir_inode_operations;
 	inode->i_ino = ++(*ino);
 	/* directory inodes start off with i_nlink == 2 (for "." entry) */
 	inc_nlink(inode);
-	inode_lock(sb->s_root->d_inode);
 	d_make_persistent(dentry, inode);
 	inc_nlink(sb->s_root->d_inode);
-	inode_unlock(sb->s_root->d_inode);
-	dput(dentry);
+	simple_done_creating(dentry);
 	return dentry;	// borrowed
 }
 
 #define NULL_FILE_NAME "null"
+
+static void sel_mark_immutable(struct dentry *root, const char *name)
+{
+	struct qstr q = QSTR(name);
+	struct dentry *dentry = try_lookup_noperm(&q, root);
+
+	if (!IS_ERR_OR_NULL(dentry)) {
+		d_inode(dentry)->i_flags |= S_IMMUTABLE;
+		dput(dentry);
+	}
+}
 
 static int sel_fill_super(struct super_block *sb, struct fs_context *fc)
 {
@@ -1995,6 +1859,9 @@ static int sel_fill_super(struct super_block *sb, struct fs_context *fc)
 	ret = simple_fill_super(sb, SELINUX_MAGIC, selinux_files);
 	if (ret)
 		goto err;
+
+	sel_mark_immutable(sb->s_root, "status");
+	sel_mark_immutable(sb->s_root, "policy");
 
 	fsi = sb->s_fs_info;
 	fsi->bool_dir = sel_make_dir(sb->s_root, BOOL_DIR_NAME, &fsi->last_ino);
@@ -2094,8 +1961,10 @@ static int sel_init_fs_context(struct fs_context *fc)
 
 static void sel_kill_sb(struct super_block *sb)
 {
-	selinux_fs_info_free(sb);
+	struct selinux_fs_info *fsi = sb->s_fs_info;
+
 	kill_anon_super(sb);
+	selinux_fs_info_free(fsi);
 }
 
 static struct file_system_type sel_fs_type = {
@@ -2108,8 +1977,7 @@ struct path selinux_null __ro_after_init;
 
 int __init init_sel_fs(void)
 {
-	struct qstr null_name = QSTR_INIT(NULL_FILE_NAME,
-					  sizeof(NULL_FILE_NAME)-1);
+	struct qstr null_name = QSTR(NULL_FILE_NAME);
 	int err;
 
 	if (!selinux_enabled_boot)
@@ -2120,17 +1988,15 @@ int __init init_sel_fs(void)
 		return err;
 
 	err = register_filesystem(&sel_fs_type);
-	if (err) {
-		sysfs_remove_mount_point(fs_kobj, "selinux");
-		return err;
-	}
+	if (err)
+		goto err_remove_mount_point;
 
 	selinux_null.mnt = kern_mount(&sel_fs_type);
 	if (IS_ERR(selinux_null.mnt)) {
 		pr_err("selinuxfs:  could not mount!\n");
 		err = PTR_ERR(selinux_null.mnt);
 		selinux_null.mnt = NULL;
-		return err;
+		goto err_unregister_fs;
 	}
 
 	selinux_null.dentry = try_lookup_noperm(&null_name,
@@ -2139,7 +2005,7 @@ int __init init_sel_fs(void)
 		pr_err("selinuxfs:  could not lookup null!\n");
 		err = PTR_ERR(selinux_null.dentry);
 		selinux_null.dentry = NULL;
-		return err;
+		goto err_unmount;
 	}
 
 	/*
@@ -2148,5 +2014,14 @@ int __init init_sel_fs(void)
 	 */
 	(void) selinux_kernel_status_page();
 
+	return 0;
+
+err_unmount:
+	kern_unmount(selinux_null.mnt);
+	selinux_null.mnt = NULL;
+err_unregister_fs:
+	unregister_filesystem(&sel_fs_type);
+err_remove_mount_point:
+	sysfs_remove_mount_point(fs_kobj, "selinux");
 	return err;
 }

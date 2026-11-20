@@ -127,19 +127,19 @@
 #define CFG0_READ_FMTTYPE                                        \
 	FIELD_PREP(ASPEED_TLP_COMMON_FIELDS,                     \
 		   ASPEED_TLP_FMT_TYPE(PCIE_TLP_FMT_3DW_NO_DATA, \
-				       PCIE_TLP_TYPE_CFG0_RD))
+				       PCIE_TLP_TYPE_CFG0_RDWR))
 #define CFG0_WRITE_FMTTYPE                                    \
 	FIELD_PREP(ASPEED_TLP_COMMON_FIELDS,                  \
 		   ASPEED_TLP_FMT_TYPE(PCIE_TLP_FMT_3DW_DATA, \
-				       PCIE_TLP_TYPE_CFG0_WR))
+				       PCIE_TLP_TYPE_CFG0_RDWR))
 #define CFG1_READ_FMTTYPE                                        \
 	FIELD_PREP(ASPEED_TLP_COMMON_FIELDS,                     \
 		   ASPEED_TLP_FMT_TYPE(PCIE_TLP_FMT_3DW_NO_DATA, \
-				       PCIE_TLP_TYPE_CFG1_RD))
+				       PCIE_TLP_TYPE_CFG1_RDWR))
 #define CFG1_WRITE_FMTTYPE                                    \
 	FIELD_PREP(ASPEED_TLP_COMMON_FIELDS,                  \
 		   ASPEED_TLP_FMT_TYPE(PCIE_TLP_FMT_3DW_DATA, \
-				       PCIE_TLP_TYPE_CFG1_WR))
+				       PCIE_TLP_TYPE_CFG1_RDWR))
 #define CFG_PAYLOAD_SIZE		0x01 /* 1 DWORD */
 #define TLP_HEADER_BYTE_EN(x, y)	((GENMASK((x) - 1, 0) << ((y) % 4)))
 #define TLP_GET_VALUE(x, y, z)	\
@@ -725,10 +725,10 @@ static int aspeed_pcie_init_irq_domain(struct aspeed_pcie *pcie)
 {
 	int ret;
 
-	pcie->intx_domain = irq_domain_add_linear(pcie->dev->of_node,
-						  PCI_NUM_INTX,
-						  &aspeed_intx_domain_ops,
-						  pcie);
+	pcie->intx_domain = irq_domain_create_linear(dev_fwnode(pcie->dev),
+						     PCI_NUM_INTX,
+						     &aspeed_intx_domain_ops,
+						     pcie);
 	if (!pcie->intx_domain) {
 		ret = dev_err_probe(pcie->dev, -ENOMEM,
 				    "failed to get INTx IRQ domain\n");
@@ -761,16 +761,21 @@ static int aspeed_pcie_port_init(struct aspeed_pcie_port *port)
 				     port->slot);
 
 	ret = phy_init(port->phy);
-	if (ret)
+	if (ret) {
+		clk_disable_unprepare(port->clk);
 		return dev_err_probe(dev, ret,
 				     "failed to init phy pcie for slot (%d)\n",
 				     port->slot);
+	}
 
 	ret = phy_set_mode_ext(port->phy, PHY_MODE_PCIE, PHY_MODE_PCIE_RC);
-	if (ret)
+	if (ret) {
+		phy_exit(port->phy);
+		clk_disable_unprepare(port->clk);
 		return dev_err_probe(dev, ret,
 				     "failed to set phy mode for slot (%d)\n",
 				     port->slot);
+	}
 
 	reset_control_deassert(port->perst);
 	msleep(PCIE_RESET_CONFIG_WAIT_MS);
@@ -921,7 +926,7 @@ static int aspeed_pcie_parse_port(struct aspeed_pcie *pcie,
 	struct device *dev = pcie->dev;
 	int ret;
 
-	port = devm_kzalloc(dev, sizeof(*port), GFP_KERNEL);
+	port = devm_kzalloc_obj(dev, *port);
 	if (!port)
 		return -ENOMEM;
 
@@ -1052,13 +1057,13 @@ static int aspeed_pcie_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
-
 	ret = devm_add_action_or_reset(dev, aspeed_pcie_irq_domain_free, pcie);
 	if (ret)
 		return ret;
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0)
+		return irq;
 
 	ret = devm_request_irq(dev, irq, aspeed_pcie_intr_handler, IRQF_SHARED,
 			       dev_name(dev), pcie);

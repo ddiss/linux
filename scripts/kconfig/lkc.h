@@ -51,7 +51,8 @@ static inline void xfwrite(const void *str, size_t len, size_t count, FILE *out)
 }
 
 /* util.c */
-const char *file_lookup(const char *name);
+const char *file_lookup(const char *name,
+			const char *parent_name, int parent_lineno);
 
 /* lexer.l */
 int yylex(void);
@@ -88,7 +89,7 @@ struct property *menu_add_prompt(enum prop_type type, const char *prompt,
 				 struct expr *dep);
 void menu_add_expr(enum prop_type type, struct expr *expr, struct expr *dep);
 void menu_add_symbol(enum prop_type type, struct symbol *sym, struct expr *dep);
-void menu_finalize(void);
+int menu_finalize(void);
 void menu_set_type(int type);
 
 extern struct menu rootmenu;

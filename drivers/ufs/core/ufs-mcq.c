@@ -31,7 +31,8 @@
 
 #define UFSHCD_ENABLE_MCQ_INTRS	(UTP_TASK_REQ_COMPL |\
 				 UFSHCD_ERROR_MASK |\
-				 MCQ_CQ_EVENT_STATUS)
+				 MCQ_CQ_EVENT_STATUS |\
+				 MCQ_IAG_EVENT_STATUS)
 
 /* Max mcq register polling time in microseconds */
 #define MCQ_POLL_US 500000
@@ -182,8 +183,8 @@ static int ufshcd_mcq_config_nr_queues(struct ufs_hba *hba)
 	}
 
 	/*
-	 * Device should support at least one I/O queue to handle device
-	 * commands via hba->dev_cmd_queue.
+	 * At least one non-poll (HCTX_TYPE_DEFAULT) queue is required for
+	 * non-polled SCSI commands and UFS device management commands.
 	 */
 	if (hba_maxq == poll_queues) {
 		dev_err(hba->dev, "At least one non-poll queue required\n");
@@ -272,22 +273,52 @@ void ufshcd_mcq_write_cqis(struct ufs_hba *hba, u32 val, int i)
 }
 EXPORT_SYMBOL_GPL(ufshcd_mcq_write_cqis);
 
+u32 ufshcd_mcq_read_mcqiacr(struct ufs_hba *hba, int i)
+{
+	return readl(mcq_opr_base(hba, OPR_CQIS, i) + REG_MCQIACR);
+}
+
+void ufshcd_mcq_write_mcqiacr(struct ufs_hba *hba, u32 val, int i)
+{
+	writel(val, mcq_opr_base(hba, OPR_CQIS, i) + REG_MCQIACR);
+}
+
 /*
- * Current MCQ specification doesn't provide a Task Tag or its equivalent in
+ * UFSHCI 4.0 MCQ specification doesn't provide a Task Tag or its equivalent in
  * the Completion Queue Entry. Find the Task Tag using an indirect method.
+ * UFSHCI 4.1 and above can directly return the Task Tag in the Completion Queue
+ * Entry.
  */
 static int ufshcd_mcq_get_tag(struct ufs_hba *hba, struct cq_entry *cqe)
 {
 	u64 addr;
 
-	/* sizeof(struct utp_transfer_cmd_desc) must be a multiple of 128 */
+	if (hba->ufs_version >= ufshci_version(4, 1))
+		return cqe->task_tag;
+
+	/* Both UCD types must have a size that is a multiple of 128 bytes */
 	BUILD_BUG_ON(sizeof(struct utp_transfer_cmd_desc) & GENMASK(6, 0));
+	BUILD_BUG_ON(sizeof(struct utp_devman_cmd_desc) & GENMASK(6, 0));
 
 	/* Bits 63:7 UCD base address, 6:5 are reserved, 4:0 is SQ ID */
-	addr = (le64_to_cpu(cqe->command_desc_base_addr) & CQE_UCD_BA) -
-		hba->ucdl_dma_addr;
+	addr = le64_to_cpu(cqe->command_desc_base_addr) & CQE_UCD_BA;
 
-	return div_u64(addr, ufshcd_get_ucd_size(hba));
+	/* The devman UCD is outside the pool; return its reserved tag. */
+	if (unlikely(addr == hba->devman_ucd_dma_addr))
+		return hba->dev_cmd.tag;
+
+	/* Pool entries follow the reserved tags. */
+	return div_u64(addr - hba->ucdl_dma_addr, ufshcd_get_ucd_size(hba)) +
+		UFSHCD_NUM_RESERVED;
+}
+
+static void ufshcd_mcq_compl_cqe(struct ufs_hba *hba, struct cq_entry *cqe)
+{
+	int tag = ufshcd_mcq_get_tag(hba, cqe);
+
+	ufshcd_compl_one_cqe(hba, tag, cqe);
+	/* After processing the CQE, mark it as an empty (invalid) entry. */
+	cqe->command_desc_base_addr = 0;
 }
 
 static void ufshcd_mcq_process_cqe(struct ufs_hba *hba,
@@ -295,15 +326,20 @@ static void ufshcd_mcq_process_cqe(struct ufs_hba *hba,
 {
 	struct cq_entry *cqe = ufshcd_mcq_cur_cqe(hwq);
 
-	if (cqe->command_desc_base_addr) {
-		int tag = ufshcd_mcq_get_tag(hba, cqe);
-
-		ufshcd_compl_one_cqe(hba, tag, cqe);
-		/* After processed the cqe, mark it empty (invalid) entry */
-		cqe->command_desc_base_addr = 0;
-	}
+	if (cqe->command_desc_base_addr)
+		ufshcd_mcq_compl_cqe(hba, cqe);
+	else
+		dev_err(hba->dev, "Abnormal CQ entry!\n");
 }
 
+/*
+ * This function is called from the UFS error handler with the UFS host
+ * controller disabled (HCE = 0). Reading host controller registers, e.g. the
+ * CQ tail pointer (CQTPy), may not be safe with the host controller disabled.
+ * Hence, iterate over all completion queue entries. This won't result in
+ * double completions because ufshcd_mcq_compl_cqe() clears a CQE after it
+ * has been processed.
+ */
 void ufshcd_mcq_compl_all_cqes_lock(struct ufs_hba *hba,
 				    struct ufs_hw_queue *hwq)
 {
@@ -312,13 +348,13 @@ void ufshcd_mcq_compl_all_cqes_lock(struct ufs_hba *hba,
 
 	spin_lock_irqsave(&hwq->cq_lock, flags);
 	while (entries > 0) {
-		ufshcd_mcq_process_cqe(hba, hwq);
+		struct cq_entry *cqe = ufshcd_mcq_cur_cqe(hwq);
+
+		if (cqe->command_desc_base_addr)
+			ufshcd_mcq_compl_cqe(hba, cqe);
 		ufshcd_mcq_inc_cq_head_slot(hwq);
 		entries--;
 	}
-
-	ufshcd_mcq_update_cq_tail_slot(hwq);
-	hwq->cq_head_slot = hwq->cq_tail_slot;
 	spin_unlock_irqrestore(&hwq->cq_lock, flags);
 }
 
@@ -611,7 +647,7 @@ static bool ufshcd_mcq_sqe_search(struct ufs_hba *hba,
 				  struct ufs_hw_queue *hwq, int task_tag)
 {
 	struct scsi_cmnd *cmd = ufshcd_tag_to_cmd(hba, task_tag);
-	struct ufshcd_lrb *lrbp = scsi_cmd_priv(cmd);
+	struct ufshcd_lrb *lrbp;
 	struct utp_transfer_req_desc *utrd;
 	__le64  cmd_desc_base_addr;
 	bool ret = false;
@@ -620,6 +656,11 @@ static bool ufshcd_mcq_sqe_search(struct ufs_hba *hba,
 
 	if (hba->quirks & UFSHCD_QUIRK_MCQ_BROKEN_RTC)
 		return true;
+
+	if (!cmd)
+		return false;
+
+	lrbp = scsi_cmd_priv(cmd);
 
 	mutex_lock(&hwq->sq_mutex);
 

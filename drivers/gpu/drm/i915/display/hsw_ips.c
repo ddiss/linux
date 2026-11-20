@@ -6,15 +6,15 @@
 #include <linux/debugfs.h>
 
 #include <drm/drm_print.h>
+#include <drm/intel/intel_pcode_regs.h>
 
 #include "hsw_ips.h"
-#include "i915_reg.h"
 #include "intel_color_regs.h"
 #include "intel_de.h"
 #include "intel_display_regs.h"
 #include "intel_display_rpm.h"
 #include "intel_display_types.h"
-#include "intel_pcode.h"
+#include "intel_parent.h"
 
 static void hsw_ips_enable(const struct intel_crtc_state *crtc_state)
 {
@@ -39,8 +39,8 @@ static void hsw_ips_enable(const struct intel_crtc_state *crtc_state)
 
 	if (display->platform.broadwell) {
 		drm_WARN_ON(display->drm,
-			    intel_pcode_write(display->drm, DISPLAY_IPS_CONTROL,
-					      val | IPS_PCODE_CONTROL));
+			    intel_parent_pcode_write(display, DISPLAY_IPS_CONTROL,
+						     val | IPS_PCODE_CONTROL));
 		/*
 		 * Quoting Art Runyan: "its not safe to expect any particular
 		 * value in IPS_CTL bit 31 after enabling IPS through the
@@ -72,7 +72,7 @@ bool hsw_ips_disable(const struct intel_crtc_state *crtc_state)
 
 	if (display->platform.broadwell) {
 		drm_WARN_ON(display->drm,
-			    intel_pcode_write(display->drm, DISPLAY_IPS_CONTROL, 0));
+			    intel_parent_pcode_write(display, DISPLAY_IPS_CONTROL, 0));
 		/*
 		 * Wait for PCODE to finish disabling IPS. The BSpec specified
 		 * 42ms timeout value leads to occasional timeouts so use 100ms
@@ -207,7 +207,7 @@ static int _hsw_ips_min_cdclk(const struct intel_crtc_state *crtc_state)
 	struct intel_display *display = to_intel_display(crtc_state);
 
 	if (display->platform.broadwell)
-		return DIV_ROUND_UP(crtc_state->pixel_rate * 100, 95);
+		return DIV_ROUND_UP(crtc_state->pixel_rate_cdclk * 100, 95);
 
 	/* no IPS specific limits to worry about */
 	return 0;

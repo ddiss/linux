@@ -6,7 +6,6 @@
 
 #include <linux/clk.h>
 #include <linux/component.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <drm/bridge/dw_hdmi.h>
@@ -122,7 +121,7 @@ static int imx8mp_dw_hdmi_probe(struct platform_device *pdev)
 	struct device_node *remote;
 	struct imx8mp_hdmi *hdmi;
 
-	hdmi = devm_kzalloc(dev, sizeof(*hdmi), GFP_KERNEL);
+	hdmi = devm_kzalloc_obj(dev, *hdmi);
 	if (!hdmi)
 		return -ENOMEM;
 
@@ -138,6 +137,7 @@ static int imx8mp_dw_hdmi_probe(struct platform_device *pdev)
 	plat_data->phy_name = "SAMSUNG HDMI TX PHY";
 	plat_data->priv_data = hdmi;
 	plat_data->phy_force_vendor = true;
+	plat_data->output_port = 1;
 
 	platform_set_drvdata(pdev, hdmi);
 

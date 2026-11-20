@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-15 Advanced Micro Devices, Inc.
+ * Copyright 2012-2026 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -330,6 +330,8 @@ struct dpp_funcs {
 			uint32_t height
 			);
 
+	void (*refresh_cursor_state)(struct dpp *dpp_base);
+
 	void (*dpp_set_hdr_multiplier)(
 			struct dpp *dpp_base,
 			uint32_t multiplier);
@@ -367,6 +369,22 @@ struct dpp_funcs {
 
 	void (*dpp_force_disable_cursor)(struct dpp *dpp_base);
 
+	void (*dpp_cm_hist_control)(
+		struct dpp *dpp_base,
+		struct cm_hist_control cm_hist_control,
+		enum dc_color_space color_space);
+
+	bool (*dpp_cm_hist_read)(
+		struct dpp *dpp_base,
+		struct cm_hist *cm_hist);
+	void (*dpp_set_pregam_state)(
+			struct dpp *dpp_base,
+			enum dc_transfer_func_predefined tr,
+			enum dc_scaling_linearity scaling,
+			bool source_is_linear);
+	void (*dpp_program_upsp)(
+			struct dpp *dpp_base,
+			const struct dscl_prog_data *dscl_prog_data);
 };
 
 

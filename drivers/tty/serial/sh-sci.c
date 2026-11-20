@@ -1184,7 +1184,8 @@ static int sci_handle_errors(struct uart_port *port)
 
 static bool sci_is_rsci_type(u8 type)
 {
-	return (type == RSCI_PORT_SCIF16 || type == RSCI_PORT_SCIF32);
+	return (type == RSCI_PORT_SCIF16 || type == RSCI_PORT_SCIF32 ||
+		type == RSCI_PORT_SCIF32_SINGLE_TCLK);
 }
 
 static int sci_handle_fifo_overrun(struct uart_port *port)
@@ -1494,7 +1495,7 @@ static void sci_dma_rx_release(struct sci_port *s)
 	uart_port_unlock_irqrestore(port, flags);
 
 	dmaengine_terminate_sync(chan);
-	dma_free_coherent(chan->device->dev, s->buf_len_rx * 2, s->rx_buf[0],
+	dma_free_coherent(dmaengine_get_dma_device(chan), s->buf_len_rx * 2, s->rx_buf[0],
 			  sg_dma_address(&s->sg_rx[0]));
 	dma_release_channel(chan);
 }
@@ -1590,7 +1591,7 @@ static void sci_dma_tx_release(struct sci_port *s)
 	s->chan_tx_saved = s->chan_tx = NULL;
 	s->cookie_tx = -EINVAL;
 	dmaengine_terminate_sync(chan);
-	dma_unmap_single(chan->device->dev, s->tx_dma_addr, UART_XMIT_SIZE,
+	dma_unmap_single(dmaengine_get_dma_device(chan), s->tx_dma_addr, UART_XMIT_SIZE,
 			 DMA_TO_DEVICE);
 	dma_release_channel(chan);
 }
@@ -1675,7 +1676,7 @@ static void sci_dma_tx_work_fn(struct work_struct *work)
 		goto switch_to_pio;
 	}
 
-	dma_sync_single_for_device(chan->device->dev, buf, s->tx_dma_len,
+	dma_sync_single_for_device(dmaengine_get_dma_device(chan), buf, s->tx_dma_len,
 				   DMA_TO_DEVICE);
 
 	desc->callback = sci_dma_tx_complete;
@@ -1831,12 +1832,13 @@ static void sci_request_dma(struct uart_port *port)
 	chan = sci_request_dma_chan(port, DMA_MEM_TO_DEV);
 	dev_dbg(port->dev, "%s: TX: got channel %p\n", __func__, chan);
 	if (chan) {
+		struct device *dma_dev = dmaengine_get_dma_device(chan);
 		/* UART circular tx buffer is an aligned page. */
-		s->tx_dma_addr = dma_map_single(chan->device->dev,
+		s->tx_dma_addr = dma_map_single(dma_dev,
 						tport->xmit_buf,
 						UART_XMIT_SIZE,
 						DMA_TO_DEVICE);
-		if (dma_mapping_error(chan->device->dev, s->tx_dma_addr)) {
+		if (dma_mapping_error(dma_dev, s->tx_dma_addr)) {
 			dev_warn(port->dev, "Failed mapping Tx DMA descriptor\n");
 			dma_release_channel(chan);
 		} else {
@@ -1852,12 +1854,13 @@ static void sci_request_dma(struct uart_port *port)
 	chan = sci_request_dma_chan(port, DMA_DEV_TO_MEM);
 	dev_dbg(port->dev, "%s: RX: got channel %p\n", __func__, chan);
 	if (chan) {
+		struct device *dma_dev = dmaengine_get_dma_device(chan);
 		unsigned int i;
 		dma_addr_t dma;
 		void *buf;
 
 		s->buf_len_rx = 2 * max_t(size_t, 16, port->fifosize);
-		buf = dma_alloc_coherent(chan->device->dev, s->buf_len_rx * 2,
+		buf = dma_alloc_coherent(dma_dev, s->buf_len_rx * 2,
 					 &dma, GFP_KERNEL);
 		if (!buf) {
 			dev_warn(port->dev,
@@ -2718,8 +2721,6 @@ static void sci_set_termios(struct uart_port *port, struct ktermios *termios,
 		max_freq = max(max_freq, s->clk_rates[i]);
 
 	baud = uart_get_baud_rate(port, termios, old, 0, max_freq / min_sr(s));
-	if (!baud)
-		goto done;
 
 	/*
 	 * There can be multiple sources for the sampling clock.  Find the one
@@ -3024,7 +3025,7 @@ int sci_request_port(struct uart_port *port)
 
 	ret = sci_remap_port(port);
 	if (unlikely(ret != 0)) {
-		release_resource(res);
+		release_mem_region(port->mapbase, sport->reg_size);
 		return ret;
 	}
 
@@ -3181,7 +3182,8 @@ static int sci_init_clocks(struct sci_port *sci_port, struct device *dev)
 
 	if (sci_port->type == PORT_HSCIF) {
 		clk_names[SCI_SCK] = "hsck";
-	} else if (sci_port->type == RSCI_PORT_SCIF16) {
+	} else if (sci_port->type == RSCI_PORT_SCIF16 ||
+		   sci_port->type == RSCI_PORT_SCIF32_SINGLE_TCLK) {
 		clk_names[SCI_FCK] = "operation";
 		clk_names[SCI_BRG_INT] = "bus";
 	} else if (sci_port->type == RSCI_PORT_SCIF32) {
@@ -3196,7 +3198,8 @@ static int sci_init_clocks(struct sci_port *sci_port, struct device *dev)
 		if (IS_ERR(clk))
 			return PTR_ERR(clk);
 
-		if (!clk && sci_port->type == RSCI_PORT_SCIF16 &&
+		if (!clk && (sci_port->type == RSCI_PORT_SCIF16 ||
+			     sci_port->type == RSCI_PORT_SCIF32_SINGLE_TCLK) &&
 		    (i == SCI_FCK || i == SCI_BRG_INT))
 			return dev_err_probe(dev, -ENODEV, "failed to get %s\n", name);
 
@@ -3330,6 +3333,7 @@ static int sci_init_single(struct platform_device *dev,
 		break;
 	case PORT_SCIFA:
 	case RSCI_PORT_SCIF32:
+	case RSCI_PORT_SCIF32_SINGLE_TCLK:
 		sci_port->rx_trigger = 32;
 		break;
 	case PORT_SCIF:
@@ -3365,7 +3369,7 @@ static int sci_init_single(struct platform_device *dev,
 	}
 
 	port->type		= SCI_PUBLIC_PORT_ID(p->type);
-	port->flags		= UPF_FIXED_PORT | UPF_BOOT_AUTOCONF | p->flags;
+	port->flags		= UPF_FIXED_PORT | UPF_BOOT_AUTOCONF;
 	port->fifosize		= sci_port->params->fifosize;
 
 	if (p->type == PORT_SCI && !dev->dev.of_node) {
@@ -3664,6 +3668,10 @@ static const struct of_device_id of_sci_match[] __maybe_unused = {
 	},
 #ifdef CONFIG_SERIAL_RSCI
 	{
+		.compatible = "renesas,r9a08g046-rsci",
+		.data = &of_rsci_rzg3l_data,
+	},
+	{
 		.compatible = "renesas,r9a09g047-rsci",
 		.data = &of_rsci_rzg3e_data,
 	},
@@ -3749,7 +3757,7 @@ static struct plat_sci_port *sci_parse_dt(struct platform_device *pdev,
 		return ERR_PTR(ret);
 	}
 
-	p = devm_kzalloc(&pdev->dev, sizeof(struct plat_sci_port), GFP_KERNEL);
+	p = devm_kzalloc_obj(&pdev->dev, struct plat_sci_port);
 	if (!p)
 		return ERR_PTR(-ENOMEM);
 
@@ -3931,12 +3939,12 @@ static int sci_probe(struct platform_device *dev)
 	if (sp->port.fifosize > 1) {
 		ret = device_create_file(&dev->dev, &dev_attr_rx_fifo_trigger);
 		if (ret)
-			return ret;
+			goto err_remove_port;
 
 		ret = device_create_file(&dev->dev, &dev_attr_rx_fifo_timeout);
 		if (ret) {
 			device_remove_file(&dev->dev, &dev_attr_rx_fifo_trigger);
-			return ret;
+			goto err_remove_port;
 		}
 	}
 
@@ -3946,6 +3954,10 @@ static int sci_probe(struct platform_device *dev)
 
 	sci_ports_in_use |= BIT(dev_id);
 	return 0;
+
+err_remove_port:
+	uart_remove_one_port(&sci_uart_driver, &sp->port);
+	return ret;
 }
 
 static int sci_suspend(struct device *dev)

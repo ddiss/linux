@@ -19,8 +19,6 @@
 #include "coresight-priv.h"
 #include "coresight-tpdm.h"
 
-DEFINE_CORESIGHT_DEVLIST(tpdm_devs, "tpdm");
-
 static bool tpdm_has_dsb_dataset(struct tpdm_drvdata *drvdata)
 {
 	return (drvdata->datasets & TPDM_PIDR0_DS_DSB);
@@ -483,7 +481,7 @@ static void __tpdm_enable(struct tpdm_drvdata *drvdata)
 
 static int tpdm_enable(struct coresight_device *csdev, struct perf_event *event,
 		       enum cs_mode mode,
-		       __maybe_unused struct coresight_path *path)
+		       struct coresight_path *path)
 {
 	struct tpdm_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
 
@@ -499,6 +497,7 @@ static int tpdm_enable(struct coresight_device *csdev, struct perf_event *event,
 	}
 
 	__tpdm_enable(drvdata);
+	drvdata->traceid = path->trace_id;
 	drvdata->enable = true;
 	spin_unlock(&drvdata->spinlock);
 
@@ -583,15 +582,13 @@ static int tpdm_datasets_setup(struct tpdm_drvdata *drvdata)
 	drvdata->datasets |= pidr & GENMASK(TPDM_DATASETS - 1, 0);
 
 	if (tpdm_has_dsb_dataset(drvdata) && (!drvdata->dsb)) {
-		drvdata->dsb = devm_kzalloc(drvdata->dev,
-						sizeof(*drvdata->dsb), GFP_KERNEL);
+		drvdata->dsb = devm_kzalloc_obj(drvdata->dev, *drvdata->dsb);
 		if (!drvdata->dsb)
 			return -ENOMEM;
 	}
 	if ((tpdm_has_cmb_dataset(drvdata) || tpdm_has_mcmb_dataset(drvdata))
 			&& (!drvdata->cmb)) {
-		drvdata->cmb = devm_kzalloc(drvdata->dev,
-						sizeof(*drvdata->cmb), GFP_KERNEL);
+		drvdata->cmb = devm_kzalloc_obj(drvdata->dev, *drvdata->cmb);
 		if (!drvdata->cmb)
 			return -ENOMEM;
 	}
@@ -606,8 +603,7 @@ static int static_tpdm_datasets_setup(struct tpdm_drvdata *drvdata, struct devic
 	/* setup datasets for static TPDM */
 	if (fwnode_property_present(dev->fwnode, "qcom,dsb-element-bits") &&
 	    (!drvdata->dsb)) {
-		drvdata->dsb = devm_kzalloc(drvdata->dev,
-						sizeof(*drvdata->dsb), GFP_KERNEL);
+		drvdata->dsb = devm_kzalloc_obj(drvdata->dev, *drvdata->dsb);
 
 		if (!drvdata->dsb)
 			return -ENOMEM;
@@ -615,8 +611,7 @@ static int static_tpdm_datasets_setup(struct tpdm_drvdata *drvdata, struct devic
 
 	if (fwnode_property_present(dev->fwnode, "qcom,cmb-element-bits") &&
 	    (!drvdata->cmb)) {
-		drvdata->cmb = devm_kzalloc(drvdata->dev,
-						sizeof(*drvdata->cmb), GFP_KERNEL);
+		drvdata->cmb = devm_kzalloc_obj(drvdata->dev, *drvdata->cmb);
 
 		if (!drvdata->cmb)
 			return -ENOMEM;
@@ -693,6 +688,29 @@ static struct attribute *tpdm_attrs[] = {
 
 static struct attribute_group tpdm_attr_grp = {
 	.attrs = tpdm_attrs,
+};
+
+static ssize_t traceid_show(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	unsigned long val;
+	struct tpdm_drvdata *drvdata = dev_get_drvdata(dev->parent);
+
+	val = drvdata->traceid;
+	if (!val)
+		return -EINVAL;
+
+	return sysfs_emit(buf, "%#lx\n", val);
+}
+static DEVICE_ATTR_RO(traceid);
+
+static struct attribute *traceid_attrs[] = {
+	&dev_attr_traceid.attr,
+	NULL,
+};
+
+static struct attribute_group traceid_attr_grp = {
+	.attrs = traceid_attrs,
 };
 
 static ssize_t dsb_mode_show(struct device *dev,
@@ -1369,6 +1387,12 @@ static const struct attribute_group *tpdm_attr_grps[] = {
 	&tpdm_cmb_patt_grp,
 	&tpdm_cmb_msr_grp,
 	&tpdm_mcmb_attr_grp,
+	&traceid_attr_grp,
+	NULL,
+};
+
+static const struct attribute_group *static_tpdm_attr_grps[] = {
+	&traceid_attr_grp,
 	NULL,
 };
 
@@ -1386,7 +1410,7 @@ static int tpdm_probe(struct device *dev, struct resource *res)
 	dev->platform_data = pdata;
 
 	/* driver data*/
-	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
+	drvdata = devm_kzalloc_obj(dev, *drvdata);
 	if (!drvdata)
 		return -ENOMEM;
 	drvdata->dev = dev;
@@ -1402,6 +1426,7 @@ static int tpdm_probe(struct device *dev, struct resource *res)
 		if (ret)
 			return ret;
 
+		desc.access = CSDEV_ACCESS_IOMEM(base);
 		if (tpdm_has_dsb_dataset(drvdata))
 			of_property_read_u32(drvdata->dev->of_node,
 					     "qcom,dsb-msrs-num", &drvdata->dsb_msr_num);
@@ -1416,7 +1441,7 @@ static int tpdm_probe(struct device *dev, struct resource *res)
 	}
 
 	/* Set up coresight component description */
-	desc.name = coresight_alloc_device_name(&tpdm_devs, dev);
+	desc.name = coresight_alloc_device_name("tpdm", dev);
 	if (!desc.name)
 		return -ENOMEM;
 	desc.type = CORESIGHT_DEV_TYPE_SOURCE;
@@ -1424,9 +1449,10 @@ static int tpdm_probe(struct device *dev, struct resource *res)
 	desc.ops = &tpdm_cs_ops;
 	desc.pdata = dev->platform_data;
 	desc.dev = dev;
-	desc.access = CSDEV_ACCESS_IOMEM(base);
 	if (res)
 		desc.groups = tpdm_attr_grps;
+	else
+		desc.groups = static_tpdm_attr_grps;
 	drvdata->csdev = coresight_register(&desc);
 	if (IS_ERR(drvdata->csdev))
 		return PTR_ERR(drvdata->csdev);
@@ -1533,8 +1559,7 @@ static struct platform_driver static_tpdm_driver = {
 
 static int __init tpdm_init(void)
 {
-	return coresight_init_driver("tpdm", &dynamic_tpdm_driver, &static_tpdm_driver,
-				     THIS_MODULE);
+	return coresight_init_driver("tpdm", &dynamic_tpdm_driver, &static_tpdm_driver);
 }
 
 static void __exit tpdm_exit(void)

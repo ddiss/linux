@@ -378,7 +378,7 @@ static int alsa_open(struct snd_pcm_substream *substream)
 
 	stream_clear(stream);
 
-	xen_snd_front_evtchnl_pair_set_connected(stream->evt_pair, true);
+	xen_snd_front_evtchnl_set_connected(&stream->evt_pair->req, true);
 
 	ret = snd_pcm_hw_rule_add(runtime, 0, SNDRV_PCM_HW_PARAM_FORMAT,
 				  alsa_hw_rule, stream,
@@ -498,6 +498,8 @@ static int alsa_hw_free(struct snd_pcm_substream *substream)
 	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
 	int ret;
 
+	xen_snd_front_evtchnl_set_connected(&stream->evt_pair->evt, false);
+
 	ret = xen_snd_front_stream_close(&stream->evt_pair->req);
 	stream_free(stream);
 	return ret;
@@ -532,6 +534,7 @@ static int alsa_prepare(struct snd_pcm_substream *substream)
 			return ret;
 
 		stream->is_open = true;
+		xen_snd_front_evtchnl_set_connected(&stream->evt_pair->evt, true);
 	}
 
 	return 0;
@@ -571,20 +574,24 @@ void xen_snd_front_alsa_handle_cur_pos(struct xen_snd_front_evtchnl *evtchnl,
 {
 	struct snd_pcm_substream *substream = evtchnl->u.evt.substream;
 	struct xen_snd_front_pcm_stream_info *stream = stream_get(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
 	snd_pcm_uframes_t delta, new_hw_ptr, cur_frame;
 
-	cur_frame = bytes_to_frames(substream->runtime, pos_bytes);
+	if (!runtime->buffer_size || !runtime->period_size)
+		return;
+
+	cur_frame = bytes_to_frames(runtime, pos_bytes);
 
 	delta = cur_frame - stream->be_cur_frame;
 	stream->be_cur_frame = cur_frame;
 
 	new_hw_ptr = (snd_pcm_uframes_t)atomic_read(&stream->hw_ptr);
-	new_hw_ptr = (new_hw_ptr + delta) % substream->runtime->buffer_size;
+	new_hw_ptr = (new_hw_ptr + delta) % runtime->buffer_size;
 	atomic_set(&stream->hw_ptr, (int)new_hw_ptr);
 
 	stream->out_frames += delta;
-	if (stream->out_frames > substream->runtime->period_size) {
-		stream->out_frames %= substream->runtime->period_size;
+	if (stream->out_frames > runtime->period_size) {
+		stream->out_frames %= runtime->period_size;
 		snd_pcm_period_elapsed(substream);
 	}
 }
@@ -694,20 +701,18 @@ static int new_pcm_instance(struct xen_snd_front_card_info *card_info,
 
 	if (instance_cfg->num_streams_pb) {
 		pcm_instance_info->streams_pb =
-				devm_kcalloc(&card_info->card->card_dev,
-					     instance_cfg->num_streams_pb,
-					     sizeof(struct xen_snd_front_pcm_stream_info),
-					     GFP_KERNEL);
+				devm_kzalloc_objs(&card_info->card->card_dev,
+						  struct xen_snd_front_pcm_stream_info,
+						  instance_cfg->num_streams_pb);
 		if (!pcm_instance_info->streams_pb)
 			return -ENOMEM;
 	}
 
 	if (instance_cfg->num_streams_cap) {
 		pcm_instance_info->streams_cap =
-				devm_kcalloc(&card_info->card->card_dev,
-					     instance_cfg->num_streams_cap,
-					     sizeof(struct xen_snd_front_pcm_stream_info),
-					     GFP_KERNEL);
+				devm_kzalloc_objs(&card_info->card->card_dev,
+						  struct xen_snd_front_pcm_stream_info,
+						  instance_cfg->num_streams_cap);
 		if (!pcm_instance_info->streams_cap)
 			return -ENOMEM;
 	}
@@ -777,9 +782,9 @@ int xen_snd_front_alsa_init(struct xen_snd_front_info *front_info)
 	front_info->card_info = card_info;
 	card_info->card = card;
 	card_info->pcm_instances =
-			devm_kcalloc(dev, cfg->num_pcm_instances,
-				     sizeof(struct xen_snd_front_pcm_instance_info),
-				     GFP_KERNEL);
+			devm_kzalloc_objs(dev,
+					  struct xen_snd_front_pcm_instance_info,
+					  cfg->num_pcm_instances);
 	if (!card_info->pcm_instances) {
 		ret = -ENOMEM;
 		goto fail;

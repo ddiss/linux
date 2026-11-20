@@ -156,6 +156,26 @@
 #define PIDFD_INFO_COREDUMP_SIGNAL	(1UL << 6)
 #endif
 
+#ifndef PIDFD_INFO_COREDUMP_CODE
+#define PIDFD_INFO_COREDUMP_CODE	(1UL << 7)
+#endif
+
+#ifndef PIDFD_INFO_SIZE_VER0
+#define PIDFD_INFO_SIZE_VER0		64 /* sizeof first published struct */
+#endif
+
+#ifndef PIDFD_INFO_SIZE_VER1
+#define PIDFD_INFO_SIZE_VER1		72 /* sizeof second published struct */
+#endif
+
+#ifndef PIDFD_INFO_SIZE_VER2
+#define PIDFD_INFO_SIZE_VER2		80 /* sizeof third published struct */
+#endif
+
+#ifndef PIDFD_INFO_SIZE_VER3
+#define PIDFD_INFO_SIZE_VER3		88 /* sizeof fourth published struct */
+#endif
+
 #ifndef PIDFD_COREDUMPED
 #define PIDFD_COREDUMPED	(1U << 0) /* Did crash and... */
 #endif
@@ -194,6 +214,7 @@ struct pidfd_info {
 	struct {
 		__u32 coredump_mask;
 		__u32 coredump_signal;
+		__u32 coredump_code;
 	};
 	__u64 supported_mask;
 };

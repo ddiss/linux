@@ -76,8 +76,6 @@ static inline s64 wb_stat_sum(struct bdi_writeback *wb, enum wb_stat_item item)
 	return percpu_counter_sum_positive(&wb->stat[item]);
 }
 
-extern void wb_writeout_inc(struct bdi_writeback *wb);
-
 /*
  * maximal error of a stat counter.
  */
@@ -134,6 +132,19 @@ struct backing_dev_info *inode_to_bdi(struct inode *inode);
 static inline bool mapping_can_writeback(struct address_space *mapping)
 {
 	return inode_to_bdi(mapping->host)->capabilities & BDI_CAP_WRITEBACK;
+}
+
+/* Must not be used by file systems that support cgroup writeback */
+static inline int bdi_wb_dirty_exceeded(struct backing_dev_info *bdi)
+{
+	return bdi->wb.dirty_exceeded;
+}
+
+/* Must not be used by file systems that support cgroup writeback */
+static inline void bdi_wb_stat_mod(struct inode *inode, enum wb_stat_item item,
+				   s64 amount)
+{
+	wb_stat_mod(&inode_to_bdi(inode)->wb, item, amount);
 }
 
 #ifdef CONFIG_CGROUP_WRITEBACK

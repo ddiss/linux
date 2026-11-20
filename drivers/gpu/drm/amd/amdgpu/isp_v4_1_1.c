@@ -129,7 +129,7 @@ static int isp_genpd_add_device(struct device *dev, void *data)
 	if (!pdev)
 		return -EINVAL;
 
-	if (!dev->type->name) {
+	if (!dev->type || !dev->type->name) {
 		drm_dbg(&adev->ddev, "Invalid device type to add\n");
 		goto exit;
 	}
@@ -165,7 +165,7 @@ static int isp_genpd_remove_device(struct device *dev, void *data)
 	if (!pdev)
 		return -EINVAL;
 
-	if (!dev->type->name) {
+	if (!dev->type || !dev->type->name) {
 		drm_dbg(&adev->ddev, "Invalid device type to remove\n");
 		goto exit;
 	}
@@ -235,7 +235,7 @@ static int isp_v4_1_1_hw_init(struct amdgpu_isp *isp)
 
 	r = amdgpu_acpi_get_isp4_dev(&acpi_dev);
 	if (r) {
-		drm_dbg(&adev->ddev, "Invalid isp platform detected (%d)", r);
+		drm_dbg(&adev->ddev, "Invalid isp platform detected (%d)\n", r);
 		/* allow GPU init to progress */
 		return 0;
 	}

@@ -89,10 +89,10 @@ static void detect_diag9c(void)
 
 	cpu = stap();
 	asm_inline volatile(
-		"	diag	%[cpu],%%r0,0x9c\n"
-		"0:	lhi	%[rc],0\n"
+		"0:	diag	%[cpu],%%r0,0x9c\n"
+		"	lhi	%[rc],0\n"
 		"1:\n"
-		EX_TABLE(0b, 1b)
+		EX_TABLE_INSN(0b, 1b)
 		: [rc] "+d" (rc)
 		: [cpu] "d" (cpu)
 		: "cc", "memory");
@@ -150,10 +150,10 @@ static int cmma_test_essa(void)
 
 	/* Test ESSA_GET_STATE */
 	asm_inline volatile(
-		"	.insn	rrf,0xb9ab0000,%[tmp],%[tmp],%[cmd],0\n"
-		"0:	lhi	%[rc],0\n"
+		"0:	.insn	rrf,0xb9ab0000,%[tmp],%[tmp],%[cmd],0\n"
+		"	lhi	%[rc],0\n"
 		"1:\n"
-		EX_TABLE(0b, 1b)
+		EX_TABLE_INSN(0b, 1b)
 		: [rc] "+d" (rc), [tmp] "+d" (tmp)
 		: [cmd] "i" (ESSA_GET_STATE)
 		: "cc", "memory");
@@ -440,7 +440,8 @@ static unsigned long setup_kernel_memory_layout(unsigned long kernel_size)
 	max_mappable = max(ident_map_size, MAX_DCSS_ADDR);
 	max_mappable = min(max_mappable, vmemmap_start);
 #ifdef CONFIG_RANDOMIZE_IDENTITY_BASE
-	__identity_base = round_down(vmemmap_start - max_mappable, rte_size);
+	if (kaslr_enabled())
+		__identity_base = round_down(vmemmap_start - max_mappable, rte_size);
 #endif
 	boot_debug("identity map:        0x%016lx-0x%016lx\n", __identity_base,
 		   __identity_base + ident_map_size);

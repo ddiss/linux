@@ -95,39 +95,49 @@ static DEFINE_PER_CPU_READ_MOSTLY(struct smca_bank[MAX_NR_BANKS], smca_banks);
 static DEFINE_PER_CPU_READ_MOSTLY(u8[N_SMCA_BANK_TYPES], smca_bank_counts);
 
 static const char * const smca_names[] = {
-	[SMCA_LS ... SMCA_LS_V2]	= "load_store",
-	[SMCA_IF]			= "insn_fetch",
-	[SMCA_L2_CACHE]			= "l2_cache",
+	[SMCA_CS ... SMCA_CS_V2]	= "coherent_station",
+	[SMCA_DACC_BE]			= "dacc_be",
+	[SMCA_DACC_FE]			= "dacc_fe",
 	[SMCA_DE]			= "decode_unit",
-	[SMCA_RESERVED]			= "reserved",
+	[SMCA_EDDR5CMN]			= "eddr5_cmn",
 	[SMCA_EX]			= "execution_unit",
 	[SMCA_FP]			= "floating_point",
+	[SMCA_GMI_PCS]			= "gmi_pcs",
+	[SMCA_GMI_PHY]			= "gmi_phy",
+	[SMCA_IF]			= "insn_fetch",
+	[SMCA_L2_CACHE]			= "l2_cache",
 	[SMCA_L3_CACHE]			= "l3_cache",
-	[SMCA_CS ... SMCA_CS_V2]	= "coherent_slave",
+	[SMCA_LS ... SMCA_LS_V2]	= "load_store",
+	[SMCA_MA_LLC]			= "ma_llc",
+	[SMCA_MP5]			= "mp5",
+	[SMCA_MPART]			= "mpart",
+	[SMCA_MPASP ... SMCA_MPASP_V2]	= "mpasp",
+	[SMCA_MPDACC]			= "mpdacc",
+	[SMCA_MPDMA]			= "mpdma",
+	[SMCA_MPM]			= "mpm",
+	[SMCA_MPRAS]			= "mpras",
+	[SMCA_NBIF]			= "nbif",
+	[SMCA_NBIO]			= "nbio",
+	[SMCA_PB]			= "param_block",
+	[SMCA_PCIE ... SMCA_PCIE_V2]	= "pcie",
+	[SMCA_PCIE_PL]			= "pcie_pl",
 	[SMCA_PIE]			= "pie",
+	[SMCA_PSP ... SMCA_PSP_V2]	= "psp",
+	[SMCA_RESERVED]			= "reserved",
+	[SMCA_SATA]			= "sata",
+	[SMCA_SHUB]			= "shub",
+	[SMCA_SMU ... SMCA_SMU_V2]	= "smu",
+	[SMCA_SSBDCI]			= "ssbdci",
 
 	/* UMC v2 is separate because both of them can exist in a single system. */
 	[SMCA_UMC]			= "umc",
 	[SMCA_UMC_V2]			= "umc_v2",
-	[SMCA_MA_LLC]			= "ma_llc",
-	[SMCA_PB]			= "param_block",
-	[SMCA_PSP ... SMCA_PSP_V2]	= "psp",
-	[SMCA_SMU ... SMCA_SMU_V2]	= "smu",
-	[SMCA_MP5]			= "mp5",
-	[SMCA_MPDMA]			= "mpdma",
-	[SMCA_NBIO]			= "nbio",
-	[SMCA_PCIE ... SMCA_PCIE_V2]	= "pcie",
-	[SMCA_XGMI_PCS]			= "xgmi_pcs",
-	[SMCA_NBIF]			= "nbif",
-	[SMCA_SHUB]			= "shub",
-	[SMCA_SATA]			= "sata",
 	[SMCA_USB]			= "usb",
-	[SMCA_USR_DP]			= "usr_dp",
 	[SMCA_USR_CP]			= "usr_cp",
-	[SMCA_GMI_PCS]			= "gmi_pcs",
-	[SMCA_XGMI_PHY]			= "xgmi_phy",
+	[SMCA_USR_DP]			= "usr_dp",
 	[SMCA_WAFL_PHY]			= "wafl_phy",
-	[SMCA_GMI_PHY]			= "gmi_phy",
+	[SMCA_XGMI_PCS]			= "xgmi_pcs",
+	[SMCA_XGMI_PHY]			= "xgmi_phy",
 };
 
 static const char *smca_get_name(enum smca_bank_types t)
@@ -153,68 +163,60 @@ enum smca_bank_types smca_get_bank_type(unsigned int cpu, unsigned int bank)
 }
 EXPORT_SYMBOL_GPL(smca_get_bank_type);
 
+/*
+ * Format:
+ * { bank_type, hwid_mcatype }
+ *
+ * alphanumerically sorted by bank type.
+ */
 static const struct smca_hwid smca_hwid_mcatypes[] = {
-	/* { bank_type, hwid_mcatype } */
-
-	/* Reserved type */
-	{ SMCA_RESERVED, HWID_MCATYPE(0x00, 0x0)	},
-
-	/* ZN Core (HWID=0xB0) MCA types */
-	{ SMCA_LS,	 HWID_MCATYPE(0xB0, 0x0)	},
-	{ SMCA_LS_V2,	 HWID_MCATYPE(0xB0, 0x10)	},
-	{ SMCA_IF,	 HWID_MCATYPE(0xB0, 0x1)	},
-	{ SMCA_L2_CACHE, HWID_MCATYPE(0xB0, 0x2)	},
+	{ SMCA_CS,	 HWID_MCATYPE(0x2E, 0x0)	},
+	{ SMCA_CS_V2,	 HWID_MCATYPE(0x2E, 0x2)	},
+	{ SMCA_DACC_BE,	 HWID_MCATYPE(0x164, 0x0)	},
+	{ SMCA_DACC_FE,	 HWID_MCATYPE(0x157, 0x0)	},
 	{ SMCA_DE,	 HWID_MCATYPE(0xB0, 0x3)	},
-	/* HWID 0xB0 MCATYPE 0x4 is Reserved */
+	{ SMCA_EDDR5CMN, HWID_MCATYPE(0x1E0, 0x0)	},
 	{ SMCA_EX,	 HWID_MCATYPE(0xB0, 0x5)	},
 	{ SMCA_FP,	 HWID_MCATYPE(0xB0, 0x6)	},
+	{ SMCA_GMI_PCS,  HWID_MCATYPE(0x241, 0x0)	},
+	{ SMCA_GMI_PHY,	 HWID_MCATYPE(0x269, 0x0)	},
+	{ SMCA_IF,	 HWID_MCATYPE(0xB0, 0x1)	},
+	{ SMCA_L2_CACHE, HWID_MCATYPE(0xB0, 0x2)	},
 	{ SMCA_L3_CACHE, HWID_MCATYPE(0xB0, 0x7)	},
-
-	/* Data Fabric MCA types */
-	{ SMCA_CS,	 HWID_MCATYPE(0x2E, 0x0)	},
-	{ SMCA_PIE,	 HWID_MCATYPE(0x2E, 0x1)	},
-	{ SMCA_CS_V2,	 HWID_MCATYPE(0x2E, 0x2)	},
+	{ SMCA_LS,	 HWID_MCATYPE(0xB0, 0x0)	},
+	{ SMCA_LS_V2,	 HWID_MCATYPE(0xB0, 0x10)	},
 	{ SMCA_MA_LLC,	 HWID_MCATYPE(0x2E, 0x4)	},
-
-	/* Unified Memory Controller MCA type */
-	{ SMCA_UMC,	 HWID_MCATYPE(0x96, 0x0)	},
-	{ SMCA_UMC_V2,	 HWID_MCATYPE(0x96, 0x1)	},
-
-	/* Parameter Block MCA type */
-	{ SMCA_PB,	 HWID_MCATYPE(0x05, 0x0)	},
-
-	/* Platform Security Processor MCA type */
-	{ SMCA_PSP,	 HWID_MCATYPE(0xFF, 0x0)	},
-	{ SMCA_PSP_V2,	 HWID_MCATYPE(0xFF, 0x1)	},
-
-	/* System Management Unit MCA type */
-	{ SMCA_SMU,	 HWID_MCATYPE(0x01, 0x0)	},
-	{ SMCA_SMU_V2,	 HWID_MCATYPE(0x01, 0x1)	},
-
-	/* Microprocessor 5 Unit MCA type */
 	{ SMCA_MP5,	 HWID_MCATYPE(0x01, 0x2)	},
-
-	/* MPDMA MCA type */
+	{ SMCA_MPART,	 HWID_MCATYPE(0xFF, 0x2)	},
+	{ SMCA_MPASP,	 HWID_MCATYPE(0xFD, 0x0)	},
+	{ SMCA_MPASP_V2, HWID_MCATYPE(0xFD, 0x1)	},
+	{ SMCA_MPDACC,	 HWID_MCATYPE(0xBE, 0x0)	},
 	{ SMCA_MPDMA,	 HWID_MCATYPE(0x01, 0x3)	},
-
-	/* Northbridge IO Unit MCA type */
+	{ SMCA_MPM,	 HWID_MCATYPE(0xF9, 0x0)	},
+	{ SMCA_MPRAS,	 HWID_MCATYPE(0x12, 0x0)	},
+	{ SMCA_NBIF,	 HWID_MCATYPE(0x6C, 0x0)	},
 	{ SMCA_NBIO,	 HWID_MCATYPE(0x18, 0x0)	},
-
-	/* PCI Express Unit MCA type */
+	{ SMCA_PB,	 HWID_MCATYPE(0x05, 0x0)	},
 	{ SMCA_PCIE,	 HWID_MCATYPE(0x46, 0x0)	},
 	{ SMCA_PCIE_V2,	 HWID_MCATYPE(0x46, 0x1)	},
-
-	{ SMCA_XGMI_PCS, HWID_MCATYPE(0x50, 0x0)	},
-	{ SMCA_NBIF,	 HWID_MCATYPE(0x6C, 0x0)	},
-	{ SMCA_SHUB,	 HWID_MCATYPE(0x80, 0x0)	},
+	{ SMCA_PCIE_PL,	 HWID_MCATYPE(0x1E1, 0x0)	},
+	{ SMCA_PIE,	 HWID_MCATYPE(0x2E, 0x1)	},
+	{ SMCA_PSP,	 HWID_MCATYPE(0xFF, 0x0)	},
+	{ SMCA_PSP_V2,	 HWID_MCATYPE(0xFF, 0x1)	},
+	{ SMCA_RESERVED, HWID_MCATYPE(0x00, 0x0)	},
 	{ SMCA_SATA,	 HWID_MCATYPE(0xA8, 0x0)	},
+	{ SMCA_SHUB,	 HWID_MCATYPE(0x80, 0x0)	},
+	{ SMCA_SMU,	 HWID_MCATYPE(0x01, 0x0)	},
+	{ SMCA_SMU_V2,	 HWID_MCATYPE(0x01, 0x1)	},
+	{ SMCA_SSBDCI,	 HWID_MCATYPE(0x5C, 0x0)	},
+	{ SMCA_UMC,	 HWID_MCATYPE(0x96, 0x0)	},
+	{ SMCA_UMC_V2,	 HWID_MCATYPE(0x96, 0x1)	},
 	{ SMCA_USB,	 HWID_MCATYPE(0xAA, 0x0)	},
-	{ SMCA_USR_DP,	 HWID_MCATYPE(0x170, 0x0)	},
 	{ SMCA_USR_CP,	 HWID_MCATYPE(0x180, 0x0)	},
-	{ SMCA_GMI_PCS,  HWID_MCATYPE(0x241, 0x0)	},
-	{ SMCA_XGMI_PHY, HWID_MCATYPE(0x259, 0x0)	},
+	{ SMCA_USR_DP,	 HWID_MCATYPE(0x170, 0x0)	},
 	{ SMCA_WAFL_PHY, HWID_MCATYPE(0x267, 0x0)	},
-	{ SMCA_GMI_PHY,	 HWID_MCATYPE(0x269, 0x0)	},
+	{ SMCA_XGMI_PCS, HWID_MCATYPE(0x50, 0x0)	},
+	{ SMCA_XGMI_PHY, HWID_MCATYPE(0x259, 0x0)	},
 };
 
 /*
@@ -278,11 +280,11 @@ static void smca_configure(unsigned int bank, unsigned int cpu)
 	u8 *bank_counts = this_cpu_ptr(smca_bank_counts);
 	const struct smca_hwid *s_hwid;
 	unsigned int i, hwid_mcatype;
-	u32 high, low;
+	struct msr val;
 	u32 smca_config = MSR_AMD64_SMCA_MCx_CONFIG(bank);
 
 	/* Set appropriate bits in MCA_CONFIG */
-	if (!rdmsr_safe(smca_config, &low, &high)) {
+	if (!rdmsrq_safe(smca_config, &val.q)) {
 		/*
 		 * OS is required to set the MCAX bit to acknowledge that it is
 		 * now using the new MSR ranges and new registers under each
@@ -292,7 +294,7 @@ static void smca_configure(unsigned int bank, unsigned int cpu)
 		 *
 		 * MCA_CONFIG[MCAX] is bit 32 (0 in the high portion of the MSR.)
 		 */
-		high |= BIT(0);
+		val.h |= BIT(0);
 
 		/*
 		 * SMCA sets the Deferred Error Interrupt type per bank.
@@ -305,9 +307,9 @@ static void smca_configure(unsigned int bank, unsigned int cpu)
 		 * APIC based interrupt. First, check that no interrupt has been
 		 * set.
 		 */
-		if ((low & BIT(5)) && !((high >> 5) & 0x3) && data->dfr_intr_en) {
+		if ((val.l & BIT(5)) && !((val.h >> 5) & 0x3) && data->dfr_intr_en) {
 			__set_bit(bank, data->dfr_intr_banks);
-			high |= BIT(5);
+			val.h |= BIT(5);
 		}
 
 		/*
@@ -322,33 +324,33 @@ static void smca_configure(unsigned int bank, unsigned int cpu)
 		 * The OS should set this to inform the platform that the OS is ready
 		 * to handle the MCA Thresholding interrupt.
 		 */
-		if ((low & BIT(10)) && data->thr_intr_en) {
+		if ((val.l & BIT(10)) && data->thr_intr_en) {
 			__set_bit(bank, data->thr_intr_banks);
-			high |= BIT(8);
+			val.h |= BIT(8);
 		}
 
-		this_cpu_ptr(mce_banks_array)[bank].lsb_in_status = !!(low & BIT(8));
+		this_cpu_ptr(mce_banks_array)[bank].lsb_in_status = !!(val.l & BIT(8));
 
-		if (low & MCI_CONFIG_PADDRV)
+		if (val.l & MCI_CONFIG_PADDRV)
 			this_cpu_ptr(smca_banks)[bank].paddrv = 1;
 
-		wrmsr(smca_config, low, high);
+		wrmsrq(smca_config, val.q);
 	}
 
-	if (rdmsr_safe(MSR_AMD64_SMCA_MCx_IPID(bank), &low, &high)) {
+	if (rdmsrq_safe(MSR_AMD64_SMCA_MCx_IPID(bank), &val.q)) {
 		pr_warn("Failed to read MCA_IPID for bank %d\n", bank);
 		return;
 	}
 
-	hwid_mcatype = HWID_MCATYPE(high & MCI_IPID_HWID,
-				    (high & MCI_IPID_MCATYPE) >> 16);
+	hwid_mcatype = HWID_MCATYPE(val.h & MCI_IPID_HWID,
+				    (val.h & MCI_IPID_MCATYPE) >> 16);
 
 	for (i = 0; i < ARRAY_SIZE(smca_hwid_mcatypes); i++) {
 		s_hwid = &smca_hwid_mcatypes[i];
 
 		if (hwid_mcatype == s_hwid->hwid_mcatype) {
 			this_cpu_ptr(smca_banks)[bank].hwid = s_hwid;
-			this_cpu_ptr(smca_banks)[bank].id = low;
+			this_cpu_ptr(smca_banks)[bank].id = val.l;
 			this_cpu_ptr(smca_banks)[bank].sysfs_id = bank_counts[s_hwid->bank_type]++;
 			break;
 		}
@@ -430,50 +432,50 @@ static bool lvt_off_valid(struct threshold_block *b, int apic, u32 lo, u32 hi)
 static void threshold_restart_block(void *_tr)
 {
 	struct thresh_restart *tr = _tr;
-	u32 hi, lo;
+	struct msr val;
 
 	/* sysfs write might race against an offline operation */
 	if (!this_cpu_read(threshold_banks) && !tr->set_lvt_off)
 		return;
 
-	rdmsr(tr->b->address, lo, hi);
+	rdmsrq(tr->b->address, val.q);
 
 	/*
 	 * Reset error count and overflow bit.
 	 * This is done during init or after handling an interrupt.
 	 */
-	if (hi & MASK_OVERFLOW_HI || tr->set_lvt_off) {
-		hi &= ~(MASK_ERR_COUNT_HI | MASK_OVERFLOW_HI);
-		hi |= THRESHOLD_MAX - tr->b->threshold_limit;
+	if (val.h & MASK_OVERFLOW_HI || tr->set_lvt_off) {
+		val.h &= ~(MASK_ERR_COUNT_HI | MASK_OVERFLOW_HI);
+		val.h |= THRESHOLD_MAX - tr->b->threshold_limit;
 	} else if (tr->old_limit) {	/* change limit w/o reset */
-		int new_count = (hi & THRESHOLD_MAX) +
+		int new_count = (val.h & THRESHOLD_MAX) +
 		    (tr->old_limit - tr->b->threshold_limit);
 
-		hi = (hi & ~MASK_ERR_COUNT_HI) |
+		val.h = (val.h & ~MASK_ERR_COUNT_HI) |
 		    (new_count & THRESHOLD_MAX);
 	}
 
 	/* clear IntType */
-	hi &= ~MASK_INT_TYPE_HI;
+	val.h &= ~MASK_INT_TYPE_HI;
 
 	if (!tr->b->interrupt_capable)
 		goto done;
 
 	if (tr->set_lvt_off) {
-		if (lvt_off_valid(tr->b, tr->lvt_off, lo, hi)) {
+		if (lvt_off_valid(tr->b, tr->lvt_off, val.l, val.h)) {
 			/* set new lvt offset */
-			hi &= ~MASK_LVTOFF_HI;
-			hi |= tr->lvt_off << 20;
+			val.h &= ~MASK_LVTOFF_HI;
+			val.h |= tr->lvt_off << 20;
 		}
 	}
 
 	if (tr->b->interrupt_enable)
-		hi |= INT_TYPE_APIC;
+		val.h |= INT_TYPE_APIC;
 
  done:
 
-	hi |= MASK_COUNT_EN_HI;
-	wrmsr(tr->b->address, lo, hi);
+	val.h |= MASK_COUNT_EN_HI;
+	wrmsrq(tr->b->address, val.q);
 }
 
 static void threshold_restart_bank(unsigned int bank, bool intr_en)
@@ -521,7 +523,7 @@ static void mce_threshold_block_init(struct threshold_block *b, int offset)
 static int setup_APIC_mce_threshold(int reserved, int new)
 {
 	if (reserved < 0 && !setup_APIC_eilvt(new, THRESHOLD_APIC_VECTOR,
-					      APIC_EILVT_MSG_FIX, 0))
+					      APIC_DELIVERY_MODE_FIXED, 0))
 		return new;
 
 	return reserved;
@@ -603,6 +605,14 @@ bool amd_filter_mce(struct mce *m)
 {
 	enum smca_bank_types bank_type = smca_get_bank_type(m->extcpu, m->bank);
 	struct cpuinfo_x86 *c = &boot_cpu_data;
+
+	/* Bogus hw errors on Cezanne A0. */
+	if (c->x86 == 0x19 &&
+	    c->x86_model == 0x50 &&
+	    c->x86_stepping == 0x0) {
+		if (!(m->status & MCI_STATUS_EN))
+			return true;
+	}
 
 	/* See Family 17h Models 10h-2Fh Erratum #1114. */
 	if (c->x86 == 0x17 &&
@@ -704,11 +714,11 @@ static void smca_enable_interrupt_vectors(void)
 		return;
 
 	offset = (mca_intr_cfg & SMCA_THR_LVT_OFF) >> 12;
-	if (!setup_APIC_eilvt(offset, THRESHOLD_APIC_VECTOR, APIC_EILVT_MSG_FIX, 0))
+	if (!setup_APIC_eilvt(offset, THRESHOLD_APIC_VECTOR, APIC_DELIVERY_MODE_FIXED, 0))
 		data->thr_intr_en = 1;
 
 	offset = (mca_intr_cfg & MASK_DEF_LVTOFF) >> 4;
-	if (!setup_APIC_eilvt(offset, DEFERRED_ERROR_VECTOR, APIC_EILVT_MSG_FIX, 0))
+	if (!setup_APIC_eilvt(offset, DEFERRED_ERROR_VECTOR, APIC_DELIVERY_MODE_FIXED, 0))
 		data->dfr_intr_en = 1;
 }
 
@@ -716,7 +726,8 @@ static void smca_enable_interrupt_vectors(void)
 void mce_amd_feature_init(struct cpuinfo_x86 *c)
 {
 	unsigned int bank, block, cpu = smp_processor_id();
-	u32 low = 0, high = 0, address = 0;
+	struct msr val = { .q = 0 };
+	u32 address = 0;
 	int offset = -1;
 
 	amd_apply_cpu_quirks(c);
@@ -736,21 +747,21 @@ void mce_amd_feature_init(struct cpuinfo_x86 *c)
 		disable_err_thresholding(c, bank);
 
 		for (block = 0; block < NR_BLOCKS; ++block) {
-			address = get_block_address(address, low, high, bank, block, cpu);
+			address = get_block_address(address, val.l, val.h, bank, block, cpu);
 			if (!address)
 				break;
 
-			if (rdmsr_safe(address, &low, &high))
+			if (rdmsrq_safe(address, &val.q))
 				break;
 
-			if (!(high & MASK_VALID_HI))
+			if (!(val.h & MASK_VALID_HI))
 				continue;
 
-			if (!(high & MASK_CNTP_HI)  ||
-			     (high & MASK_LOCKED_HI))
+			if (!(val.h & MASK_CNTP_HI)  ||
+			     (val.h & MASK_LOCKED_HI))
 				continue;
 
-			offset = prepare_threshold_block(bank, block, address, offset, high);
+			offset = prepare_threshold_block(bank, block, address, offset, val.h);
 		}
 	}
 }
@@ -840,7 +851,7 @@ bool amd_mce_usable_address(struct mce *m)
 DEFINE_IDTENTRY_SYSVEC(sysvec_deferred_error)
 {
 	trace_deferred_error_apic_entry(DEFERRED_ERROR_VECTOR);
-	inc_irq_stat(irq_deferred_error_count);
+	inc_irq_stat(DEFERRED_ERROR);
 	deferred_error_int_vector();
 	trace_deferred_error_apic_exit(DEFERRED_ERROR_VECTOR);
 	apic_eoi();
@@ -854,7 +865,7 @@ static void amd_deferred_error_interrupt(void)
 
 void mce_amd_handle_storm(unsigned int bank, bool on)
 {
-	threshold_restart_bank(bank, on);
+	threshold_restart_bank(bank, !on);
 }
 
 static void amd_reset_thr_limit(unsigned int bank)
@@ -875,13 +886,18 @@ void amd_clear_bank(struct mce *m)
 {
 	amd_reset_thr_limit(m->bank);
 
-	/* Clear MCA_DESTAT for all deferred errors even those logged in MCA_STATUS. */
-	if (m->status & MCI_STATUS_DEFERRED)
-		mce_wrmsrq(MSR_AMD64_SMCA_MCx_DESTAT(m->bank), 0);
+	if (mce_flags.smca) {
+		/*
+		 * Clear MCA_DESTAT for all deferred errors even those
+		 * logged in MCA_STATUS.
+		 */
+		if (m->status & MCI_STATUS_DEFERRED)
+			mce_wrmsrq(MSR_AMD64_SMCA_MCx_DESTAT(m->bank), 0);
 
-	/* Don't clear MCA_STATUS if MCA_DESTAT was used exclusively. */
-	if (m->kflags & MCE_CHECK_DFR_REGS)
-		return;
+		/* Don't clear MCA_STATUS if MCA_DESTAT was used exclusively. */
+		if (m->kflags & MCE_CHECK_DFR_REGS)
+			return;
+	}
 
 	mce_wrmsrq(mca_msr_reg(m->bank, MCA_STATUS), 0);
 }
@@ -954,13 +970,13 @@ store_threshold_limit(struct threshold_block *b, const char *buf, size_t size)
 
 static ssize_t show_error_count(struct threshold_block *b, char *buf)
 {
-	u32 lo, hi;
+	struct msr val;
 
 	/* CPU might be offline by now */
-	if (rdmsr_on_cpu(b->cpu, b->address, &lo, &hi))
+	if (rdmsrq_on_cpu(b->cpu, b->address, &val.q))
 		return -ENODEV;
 
-	return sprintf(buf, "%u\n", ((hi & THRESHOLD_MAX) -
+	return sprintf(buf, "%u\n", ((val.h & THRESHOLD_MAX) -
 				     (THRESHOLD_MAX - b->threshold_limit)));
 }
 
@@ -1068,24 +1084,24 @@ static int allocate_threshold_blocks(unsigned int cpu, struct threshold_bank *tb
 				     u32 address)
 {
 	struct threshold_block *b = NULL;
-	u32 low, high;
+	struct msr val;
 	int err;
 
 	if ((bank >= this_cpu_read(mce_num_banks)) || (block >= NR_BLOCKS))
 		return 0;
 
-	if (rdmsr_safe(address, &low, &high))
+	if (rdmsrq_safe(address, &val.q))
 		return 0;
 
-	if (!(high & MASK_VALID_HI)) {
+	if (!(val.h & MASK_VALID_HI)) {
 		if (block)
 			goto recurse;
 		else
 			return 0;
 	}
 
-	if (!(high & MASK_CNTP_HI)  ||
-	     (high & MASK_LOCKED_HI))
+	if (!(val.h & MASK_CNTP_HI)  ||
+	     (val.h & MASK_LOCKED_HI))
 		goto recurse;
 
 	b = kzalloc_obj(struct threshold_block);
@@ -1097,7 +1113,7 @@ static int allocate_threshold_blocks(unsigned int cpu, struct threshold_bank *tb
 	b->cpu			= cpu;
 	b->address		= address;
 	b->interrupt_enable	= 0;
-	b->interrupt_capable	= lvt_interrupt_supported(bank, high);
+	b->interrupt_capable	= lvt_interrupt_supported(bank, val.h);
 	b->threshold_limit	= get_thr_limit();
 
 	if (b->interrupt_capable) {
@@ -1109,13 +1125,13 @@ static int allocate_threshold_blocks(unsigned int cpu, struct threshold_bank *tb
 
 	list_add(&b->miscj, &tb->miscj);
 
-	mce_threshold_block_init(b, (high & MASK_LVTOFF_HI) >> 20);
+	mce_threshold_block_init(b, (val.h & MASK_LVTOFF_HI) >> 20);
 
 	err = kobject_init_and_add(&b->kobj, &threshold_ktype, tb->kobj, get_name(cpu, bank, b));
 	if (err)
 		goto out_free;
 recurse:
-	address = get_block_address(address, low, high, bank, ++block, cpu);
+	address = get_block_address(address, val.l, val.h, bank, ++block, cpu);
 	if (!address)
 		return 0;
 

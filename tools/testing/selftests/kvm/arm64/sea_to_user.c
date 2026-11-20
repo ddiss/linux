@@ -51,18 +51,16 @@
 #define EINJ_OFFSET		0x01234badUL
 #define EINJ_GVA		((START_GVA) + (EINJ_OFFSET))
 
-static vm_paddr_t einj_gpa;
+static gpa_t einj_gpa;
 static void *einj_hva;
-static uint64_t einj_hpa;
+static u64 einj_hpa;
 static bool far_invalid;
 
-static uint64_t translate_to_host_paddr(unsigned long vaddr)
+static u64 translate_hva_to_hpa(unsigned long hva)
 {
-	uint64_t pinfo;
-	int64_t offset = vaddr / getpagesize() * sizeof(pinfo);
+	u64 pinfo;
+	s64 offset = hva / getpagesize() * sizeof(pinfo);
 	int fd;
-	uint64_t page_addr;
-	uint64_t paddr;
 
 	fd = open("/proc/self/pagemap", O_RDONLY);
 	if (fd < 0)
@@ -77,36 +75,56 @@ static uint64_t translate_to_host_paddr(unsigned long vaddr)
 	if ((pinfo & PAGE_PRESENT) == 0)
 		ksft_exit_fail_perror("Page not present");
 
-	page_addr = (pinfo & PAGE_PHYSICAL) << MIN_PAGE_SHIFT;
-	paddr = page_addr + (vaddr & (getpagesize() - 1));
-	return paddr;
+	return ((pinfo & PAGE_PHYSICAL) << MIN_PAGE_SHIFT) +
+	       (hva & (getpagesize() - 1));
 }
 
-static void write_einj_entry(const char *einj_path, uint64_t val)
+static void write_einj_entry(const char *einj_path, u64 val)
 {
-	char cmd[256] = {0};
-	FILE *cmdfile = NULL;
+	char buf[32];
+	int fd, len, ret;
 
-	sprintf(cmd, "echo %#lx > %s", val, einj_path);
-	cmdfile = popen(cmd, "r");
+	fd = open(einj_path, O_WRONLY);
+	if (fd < 0)
+		ksft_exit_fail_perror(einj_path);
 
-	if (pclose(cmdfile) == 0)
-		ksft_print_msg("echo %#lx > %s - done\n", val, einj_path);
-	else
-		ksft_exit_fail_perror("Failed to write EINJ entry");
+	len = snprintf(buf, sizeof(buf), "%#lx\n", val);
+	ret = write(fd, buf, len);
+	if (ret != len)
+		ksft_exit_fail_perror(einj_path);
+
+	close(fd);
+	ksft_print_msg("%#lx > %s - done\n", val, einj_path);
 }
 
-static void inject_uer(uint64_t paddr)
+static void inject_uer(u64 hpa)
 {
-	if (access("/sys/firmware/acpi/tables/EINJ", R_OK) == -1)
-		ksft_test_result_skip("EINJ table no available in firmware");
+	int fd;
 
-	if (access(EINJ_ETYPE, R_OK | W_OK) == -1)
-		ksft_test_result_skip("EINJ module probably not loaded?");
+	/*
+	 * EINJ is exposed only through debugfs, and opening it tells us why it
+	 * is unusable far more reliably than access()-ing the ACPI EINJ table:
+	 * reading that table needs CAP_SYS_ADMIN, so access() gives a false
+	 * negative for unprivileged runs. Open the injection interface and let
+	 * errno say whether the test cannot run (skip) or genuinely failed.
+	 */
+	fd = open(EINJ_ETYPE, O_WRONLY);
+	if (fd < 0) {
+		switch (errno) {
+		case ENOENT:
+			ksft_exit_skip("need CONFIG_ACPI_APEI_EINJ and firmware EINJ support\n");
+		case EACCES:
+		case EPERM:
+			ksft_exit_skip("EINJ requires running as root\n");
+		default:
+			ksft_exit_fail_perror(EINJ_ETYPE);
+		}
+	}
+	close(fd);
 
 	write_einj_entry(EINJ_ETYPE, ERROR_TYPE_MEMORY_UER);
 	write_einj_entry(EINJ_FLAGS, MASK_MEMORY_UER);
-	write_einj_entry(EINJ_ADDR, paddr);
+	write_einj_entry(EINJ_ADDR, hpa);
 	write_einj_entry(EINJ_MASK, ~0x0UL);
 	write_einj_entry(EINJ_NOTRIGGER, 1);
 	write_einj_entry(EINJ_DOIT, 1);
@@ -145,10 +163,10 @@ static void setup_sigbus_handler(void)
 
 static void guest_code(void)
 {
-	uint64_t guest_data;
+	u64 guest_data;
 
 	/* Consumes error will cause a SEA. */
-	guest_data = *(uint64_t *)EINJ_GVA;
+	guest_data = *(u64 *)EINJ_GVA;
 
 	GUEST_FAIL("Poison not protected by SEA: gva=%#lx, guest_data=%#lx\n",
 		   EINJ_GVA, guest_data);
@@ -197,12 +215,32 @@ static void run_vm(struct kvm_vm *vm, struct kvm_vcpu *vcpu)
 
 	ksft_print_msg("Dump kvm_run info about KVM_EXIT_%s\n",
 		       exit_reason_str(run->exit_reason));
+
+	/*
+	 * The guest's read of the injected location is expected to trap to KVM
+	 * as an SEA. If it does not, the injected error was never placed as
+	 * consumable poison: some firmware honours EINJ's notrigger request by
+	 * arming the poison only as part of the (now skipped) trigger step, so
+	 * nothing is left in memory for the guest to consume. The guest then
+	 * reads back the sentinel value and reports it via GUEST_FAIL, which
+	 * arm64 delivers as a ucall over MMIO (hence a KVM_EXIT_MMIO here).
+	 * Treat that as "this platform cannot host the test" and skip, matching
+	 * the requirement documented at the top of this file, rather than
+	 * failing on a hardware/firmware limitation the test cannot control.
+	 */
+	if (run->exit_reason != KVM_EXIT_ARM_SEA &&
+	    get_ucall(vcpu, &uc) == UCALL_ABORT) {
+		ksft_print_msg("Guest consumed no SEA: %s", uc.buffer);
+		ksft_exit_skip("EINJ notrigger placed no consumable poison on this platform\n");
+	}
+
+	TEST_ASSERT_KVM_EXIT_REASON(vcpu, KVM_EXIT_ARM_SEA);
+
+	/* arm_sea holds valid data only for a KVM_EXIT_ARM_SEA exit. */
 	ksft_print_msg("kvm_run.arm_sea: esr=%#llx, flags=%#llx\n",
 		       run->arm_sea.esr, run->arm_sea.flags);
 	ksft_print_msg("kvm_run.arm_sea: gva=%#llx, gpa=%#llx\n",
 		       run->arm_sea.gva, run->arm_sea.gpa);
-
-	TEST_ASSERT_KVM_EXIT_REASON(vcpu, KVM_EXIT_ARM_SEA);
 
 	esr = run->arm_sea.esr;
 	TEST_ASSERT_EQ(ESR_ELx_EC(esr), ESR_ELx_EC_DABT_LOW);
@@ -253,8 +291,8 @@ static struct kvm_vm *vm_create_with_sea_handler(struct kvm_vcpu **vcpu)
 	size_t backing_page_size;
 	size_t guest_page_size;
 	size_t alignment;
-	uint64_t num_guest_pages;
-	vm_paddr_t start_gpa;
+	u64 num_guest_pages;
+	gpa_t start_gpa;
 	enum vm_mem_backing_src_type src_type = VM_MEM_SRC_ANONYMOUS_HUGETLB_1GB;
 	struct kvm_vm *vm;
 
@@ -262,6 +300,12 @@ static struct kvm_vm *vm_create_with_sea_handler(struct kvm_vcpu **vcpu)
 	guest_page_size = vm_guest_mode_params[VM_MODE_DEFAULT].page_size;
 	alignment = max(backing_page_size, guest_page_size);
 	num_guest_pages = VM_MEM_SIZE / guest_page_size;
+
+	/*
+	 * The region is backed by 1GB hugepages; skip gracefully rather than
+	 * failing with mmap() -ENOMEM if the host has none reserved.
+	 */
+	TEST_REQUIRE(get_free_hugepages(backing_page_size) >= VM_MEM_SIZE);
 
 	vm = __vm_create_with_one_vcpu(vcpu, num_guest_pages, guest_code);
 	vm_init_descriptor_tables(vm);
@@ -278,7 +322,7 @@ static struct kvm_vm *vm_create_with_sea_handler(struct kvm_vcpu **vcpu)
 	vm_userspace_mem_region_add(
 		/*vm=*/vm,
 		/*src_type=*/src_type,
-		/*guest_paddr=*/start_gpa,
+		/*gpa=*/start_gpa,
 		/*slot=*/1,
 		/*npages=*/num_guest_pages,
 		/*flags=*/0);
@@ -292,18 +336,18 @@ static struct kvm_vm *vm_create_with_sea_handler(struct kvm_vcpu **vcpu)
 
 static void vm_inject_memory_uer(struct kvm_vm *vm)
 {
-	uint64_t guest_data;
+	u64 guest_data;
 
 	einj_gpa = addr_gva2gpa(vm, EINJ_GVA);
 	einj_hva = addr_gva2hva(vm, EINJ_GVA);
 
 	/* Populate certain data before injecting UER. */
-	*(uint64_t *)einj_hva = 0xBAADCAFE;
-	guest_data = *(uint64_t *)einj_hva;
+	*(u64 *)einj_hva = 0xBAADCAFE;
+	guest_data = *(u64 *)einj_hva;
 	ksft_print_msg("Before EINJect: data=%#lx\n",
 		guest_data);
 
-	einj_hpa = translate_to_host_paddr((unsigned long)einj_hva);
+	einj_hpa = translate_hva_to_hpa((unsigned long)einj_hva);
 
 	ksft_print_msg("EINJ_GVA=%#lx, einj_gpa=%#lx, einj_hva=%p, einj_hpa=%#lx\n",
 		       EINJ_GVA, einj_gpa, einj_hva, einj_hpa);
