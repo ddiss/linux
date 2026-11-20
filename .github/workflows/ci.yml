@@ -81,7 +81,7 @@ jobs:
             >> rapido.conf
           cat rapido.conf
           ./rapido cut \
-            -x "./check -R xunit -g quick; cp results/result.xml /host/; exit" \
+            -x "./check -R xunit btrfs/284; cp results/result.xml /host/; exit" \
             fstests-btrfs
           popd
       - name: dump results
