@@ -67,8 +67,8 @@ jobs:
           # but we probably don't have enough memory. Use compressed qcow2:
           test_img="${HOME}/fstests_test_zstd.qcow2"
           scratch_img="${HOME}/fstests_scratch_zstd.qcow2"
-          qemu-img create -f qcow2 -o compression_type=zstd "$test_img" 8G
-          qemu-img create -f qcow2 -o compression_type=zstd "$scratch_img" 8G
+          qemu-img create -f qcow2 "$test_img" 12G
+          qemu-img create -f qcow2 "$scratch_img" 12G
           mkdir -p "${HOME}/9p"
           cat > rapido.conf <<EOF
           KERNEL_SRC=${linux_dir}
