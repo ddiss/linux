@@ -48,6 +48,7 @@ jobs:
         run: |
           cp ${HOME}/rapido/kernel/selftest.defconfig .config
           make olddefconfig
+          cat .config
           make -j$(nproc)
           make modules_install INSTALL_MOD_PATH=./mods
           # this gives us modules.dep, etc. which rapido needs.
