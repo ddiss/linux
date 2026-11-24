@@ -8,7 +8,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm]
-    # aarch64 github runners don't provide kvm, but perform well without
+    # aarch64 github runners don't provide kvm, but perform okay without
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +47,7 @@ jobs:
       - name: build mainline kernel and xfstests
         run: |
           cp ${HOME}/rapido/kernel/selftest.defconfig .config
+          ./scripts/config --disable CPU_MITIGATIONS --disable ARM64_PTR_AUTH
           make olddefconfig
           cat .config
           make -j$(nproc)
@@ -57,6 +58,8 @@ jobs:
             "$(cat include/config/kernel.release)"
           git clone --depth 1 -b master https://github.com/btrfs/fstests \
             ${HOME}/xfstests
+          # some of the btrfs "quick" tests are slooow on aarch64 (without kvm)
+          cp .github/workflows/aarch64_xfstests.exclude ${HOME}/xfstests/configs/
           pushd ${HOME}/xfstests
           make -j$(nproc)
           popd
@@ -65,7 +68,7 @@ jobs:
           linux_dir="${PWD}"
           pushd ${HOME}/rapido
           # rapido fstests-btrfs uses 5x guest-zram-dev by default (for raid),
-          # but we probably don't have enough memory. Use compressed qcow2:
+          # but we probably don't have enough memory.
           test_img="${HOME}/fstests_test_zstd.qcow2"
           scratch_img="${HOME}/fstests_scratch_zstd.qcow2"
           qemu-img create -f qcow2 "$test_img" 12G
@@ -81,8 +84,11 @@ jobs:
           printf 'QEMU_EXTRA_ARGS="-nographic -device virtio-rng-pci -drive id=test,file='"$test_img"',if=none,cache=unsafe -device virtio-blk-pci,drive=test,serial=TEST_DEV -drive id=scratch,file='"$scratch_img"',if=none,cache=unsafe -device virtio-blk-pci,drive=scratch,serial=SCRATCH_DEV"' \
             >> rapido.conf
           cat rapido.conf
+          [ "$(uname -m)" = "aarch64" ] \
+            && excl="-E configs/aarch64_xfstests.exclude" \
+            || excl=""
           ./rapido cut \
-            -x "./check -R xunit -g quick; cp results/result.xml /host/; exit" \
+            -x "./check -R xunit -g quick $excl; cp results/result.xml /host/; exit" \
             fstests-btrfs
           popd
       - name: dump results
