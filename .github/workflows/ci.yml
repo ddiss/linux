@@ -78,7 +78,7 @@ jobs:
           FSTESTS_ZRAM_SIZE=0
           VIRTFS_SHARE_PATH=${HOME}/9p
           EOF
-          printf 'QEMU_EXTRA_ARGS="-nographic -device virtio-rng-pci -drive id=test,file='"$test_img"',if=none,cache=none -device virtio-blk-pci,drive=test,serial=TEST_DEV -drive id=scratch,file='"$scratch_img"',if=none,cache=none -device virtio-blk-pci,drive=scratch,serial=SCRATCH_DEV"' \
+          printf 'QEMU_EXTRA_ARGS="-nographic -device virtio-rng-pci -drive id=test,file='"$test_img"',if=none,cache=unsafe -device virtio-blk-pci,drive=test,serial=TEST_DEV -drive id=scratch,file='"$scratch_img"',if=none,cache=unsafe -device virtio-blk-pci,drive=scratch,serial=SCRATCH_DEV"' \
             >> rapido.conf
           cat rapido.conf
           ./rapido cut \
