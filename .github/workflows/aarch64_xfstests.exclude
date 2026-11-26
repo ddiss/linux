@@ -1,0 +1,95 @@
+# long tests filtered from gh runner log via:
+# awk '/(generic|btrfs)\/[0-9]{3}/ {test=$2} /[0-9]{4}s/ {dur=substr($2, 1, length($2)-1); printf "# %ss\n%s\n", dur, test; total += dur} END {print "total: " total}' 0_test\ \(ubuntu-24.04-arm\).txt
+# 1064s
+btrfs/033
+# 1181s
+btrfs/036
+# 1004s
+btrfs/301
+# change awk [0-9]{4}s regex to [0-9]{3}s to filter for three or more digit durations
+# 136s
+btrfs/021
+# 255s
+btrfs/034
+# 374s
+btrfs/050
+# 110s
+btrfs/122
+# 148s
+btrfs/156
+# 241s
+btrfs/159
+# 117s
+btrfs/181
+# 116s
+btrfs/182
+# 681s
+btrfs/201
+# 141s
+btrfs/220
+# 222s
+btrfs/232
+# 187s
+btrfs/250
+# 267s
+btrfs/272
+# 184s
+btrfs/303
+# 116s
+btrfs/338
+# 195s
+btrfs/345
+# 130s
+generic/001
+# 168s
+generic/013
+# 272s
+generic/032
+# 305s
+generic/037
+# 243s
+generic/040
+# 326s
+generic/041
+# 467s
+generic/069
+# 129s
+generic/075
+# 118s
+generic/091
+# 141s
+generic/094
+# 129s
+generic/112
+# 284s
+generic/113
+# 104s
+generic/129
+# 107s
+generic/143
+# 193s
+generic/162
+# 197s
+generic/163
+# 134s
+generic/225
+# 137s
+generic/247
+# 360s
+generic/324
+# 216s
+generic/347
+# 228s
+generic/358
+# 107s
+generic/366
+# 346s
+generic/371
+# 104s
+generic/391
+# 182s
+generic/410
+# 144s
+generic/446
+# 1500s+ (timed out)
+generic/449

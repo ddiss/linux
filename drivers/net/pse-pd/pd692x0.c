@@ -7,6 +7,7 @@
 
 #include <linux/delay.h>
 #include <linux/firmware.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -199,7 +200,7 @@ static const struct pd692x0_msg pd692x0_msg_template_list[PD692X0_MSG_CNT] = {
 	},
 	[PD692X0_MSG_SET_USER_BYTE] = {
 		.key = PD692X0_KEY_PRG,
-		.sub = {0x41, PD692X0_USER_BYTE},
+		.sub = {0x41, PD692X0_USER_BYTE, 0x4e},
 		.data = {0x4e, 0x4e, 0x4e, 0x4e,
 			 0x4e, 0x4e, 0x4e, 0x4e},
 	},
@@ -943,12 +944,11 @@ pd692x0_register_manager_regulator(struct device *dev, char *reg_name,
 	struct regulator_desc *rdesc;
 	struct regulator_dev *rdev;
 
-	rinit_data = devm_kzalloc(dev, sizeof(*rinit_data),
-				  GFP_KERNEL);
+	rinit_data = devm_kzalloc_obj(dev, *rinit_data);
 	if (!rinit_data)
 		return ERR_PTR(-ENOMEM);
 
-	rdesc = devm_kzalloc(dev, sizeof(*rdesc), GFP_KERNEL);
+	rdesc = devm_kzalloc_obj(dev, *rdesc);
 	if (!rdesc)
 		return ERR_PTR(-ENOMEM);
 
@@ -1262,8 +1262,8 @@ static int pd692x0_setup_pi_matrix(struct pse_controller_dev *pcdev)
 	if (!manager)
 		return -ENOMEM;
 
-	port_matrix = devm_kcalloc(&priv->client->dev, PD692X0_MAX_PIS,
-				   sizeof(*port_matrix), GFP_KERNEL);
+	port_matrix = devm_kzalloc_objs(&priv->client->dev, *port_matrix,
+					PD692X0_MAX_PIS);
 	if (!port_matrix) {
 		ret = -ENOMEM;
 		goto err_free_manager;
@@ -1757,6 +1757,7 @@ static int pd692x0_i2c_probe(struct i2c_client *client)
 	static const char * const regulators[] = { "vdd", "vdda" };
 	struct pd692x0_msg msg, buf = {0}, zero = {0};
 	struct device *dev = &client->dev;
+	struct gpio_desc *disable_ports;
 	struct pd692x0_msg_ver ver;
 	struct pd692x0_priv *priv;
 	struct fw_upload *fwl;
@@ -1773,12 +1774,17 @@ static int pd692x0_i2c_probe(struct i2c_client *client)
 		return -ENXIO;
 	}
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
 	priv->client = client;
 	i2c_set_clientdata(client, priv);
+
+	disable_ports = devm_gpiod_get_optional(dev, "disable-ports", GPIOD_OUT_LOW);
+	if (IS_ERR(disable_ports))
+		return dev_err_probe(&client->dev, PTR_ERR(disable_ports),
+				     "Failed to get disable ports GPIO\n");
 
 	ret = i2c_master_recv(client, (u8 *)&buf, sizeof(buf));
 	if (ret != sizeof(buf)) {
@@ -1853,7 +1859,7 @@ static void pd692x0_i2c_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id pd692x0_id[] = {
-	{ PD692X0_PSE_NAME },
+	{ .name = PD692X0_PSE_NAME },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, pd692x0_id);

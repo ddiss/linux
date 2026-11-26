@@ -10,15 +10,16 @@
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
  */
 
-#include <linux/list.h>
-#include <linux/rbtree.h>
-#include <linux/ktime.h>
+#include <linux/bug.h>
+#include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/err.h>
-#include <linux/bug.h>
-#include <linux/lockdep.h>
-#include <linux/iopoll.h>
 #include <linux/fwnode.h>
+#include <linux/iopoll.h>
+#include <linux/ktime.h>
+#include <linux/list.h>
+#include <linux/lockdep.h>
+#include <linux/rbtree.h>
 
 struct module;
 struct clk;
@@ -586,7 +587,7 @@ typedef void (*regmap_hw_free_context)(void *context);
  *               must serialise with respect to non-async I/O.
  * @reg_write: Write a single register value to the given register address. This
  *             write operation has to complete when returning from the function.
- * @reg_write_noinc: Write multiple register value to the same register. This
+ * @reg_noinc_write: Write multiple register values to the same register. This
  *             write operation has to complete when returning from the function.
  * @reg_update_bits: Update bits operation to be used against volatile
  *                   registers, intended for devices supporting some mechanism
@@ -595,6 +596,8 @@ typedef void (*regmap_hw_free_context)(void *context);
  * @read: Read operation.  Data is returned in the buffer used to transmit
  *         data.
  * @reg_read: Read a single register value from a given register address.
+ * @reg_noinc_read: Read multiple register values from the same register. This
+ *             read operation has to complete when returning from the function.
  * @free_context: Free context.
  * @async_alloc: Allocate a regmap_async() structure.
  * @read_flag_mask: Mask to be set in the top byte of the register when doing
@@ -692,6 +695,10 @@ struct regmap *__regmap_init_sdw_mbq(struct device *dev, struct sdw_slave *sdw,
 				     const struct regmap_sdw_mbq_cfg *mbq_config,
 				     struct lock_class_key *lock_key,
 				     const char *lock_name);
+struct regmap *__regmap_init_i3c(struct i3c_device *i3c,
+				 const struct regmap_config *config,
+				 struct lock_class_key *lock_key,
+				 const char *lock_name);
 struct regmap *__regmap_init_spi_avmm(struct spi_device *spi,
 				      const struct regmap_config *config,
 				      struct lock_class_key *lock_key,
@@ -986,7 +993,8 @@ bool regmap_ac97_default_volatile(struct device *dev, unsigned int reg);
 /**
  * regmap_init_sdw_mbq_cfg() - Initialise MBQ SDW register map with config
  *
- * @sdw: Device that will be interacted with
+ * @dev: &struct device that will be interacted with
+ * @sdw: Soundwire device that will be interacted with
  * @config: Configuration for register map
  * @mbq_config: Properties for the MBQ registers
  *
@@ -997,6 +1005,19 @@ bool regmap_ac97_default_volatile(struct device *dev, unsigned int reg);
 #define regmap_init_sdw_mbq_cfg(dev, sdw, config, mbq_config)		\
 	__regmap_lockdep_wrapper(__regmap_init_sdw_mbq, #config,	\
 				dev, sdw, config, mbq_config)
+
+/**
+ * regmap_init_i3c() - Initialise register map
+ *
+ * @i3c: Device that will be interacted with
+ * @config: Configuration for register map
+ *
+ * The return value will be an ERR_PTR() on error or a valid pointer to
+ * a struct regmap.
+ */
+#define regmap_init_i3c(i3c, config)					\
+	__regmap_lockdep_wrapper(__regmap_init_i3c, #config,		\
+				i3c, config)
 
 /**
  * regmap_init_spi_avmm() - Initialize register map for Intel SPI Slave
@@ -1460,6 +1481,8 @@ struct regmap_field *regmap_field_alloc(struct regmap *regmap,
 		struct reg_field reg_field);
 void regmap_field_free(struct regmap_field *field);
 
+DEFINE_FREE(regmap_field, struct regmap_field *, if (_T) regmap_field_free(_T))
+
 struct regmap_field *devm_regmap_field_alloc(struct device *dev,
 		struct regmap *regmap, struct reg_field reg_field);
 void devm_regmap_field_free(struct device *dev,	struct regmap_field *field);
@@ -1564,6 +1587,7 @@ regmap_fields_force_update_bits(struct regmap_field *field, unsigned int id,
  * struct regmap_irq_type - IRQ type definitions.
  *
  * @type_reg_offset: Offset register for the irq type setting.
+ * @type_reg_mask: Device interrupt mask
  * @type_rising_val: Register value to configure RISING type irq.
  * @type_falling_val: Register value to configure FALLING type irq.
  * @type_level_low_val: Register value to configure LEVEL_LOW type irq.
@@ -1697,6 +1721,8 @@ struct regmap_irq_chip_data;
  *		 main status base, [0, num_config_regs[ for any config
  *		 register base, and [0, num_regs[ for any other base.
  *		 If unspecified then regmap_irq_get_irq_reg_linear() is used.
+ * @irq_reqres:	 Callback function to request IRQ resources (may be %NULL)
+ * @irq_relres:  Callback function to release IRQ resources (may be %NULL)
  * @irq_drv_data:    Driver specific IRQ data which is passed as parameter when
  *		     driver specific pre/post interrupt handler is called.
  *
@@ -1750,6 +1776,8 @@ struct regmap_irq_chip {
 			       void *irq_drv_data);
 	unsigned int (*get_irq_reg)(struct regmap_irq_chip_data *data,
 				    unsigned int base, int index);
+	int (*irq_reqres)(void *irq_drv_data, irq_hw_number_t hwirq);
+	void (*irq_relres)(void *irq_drv_data, irq_hw_number_t hwirq);
 	void *irq_drv_data;
 };
 

@@ -319,10 +319,8 @@ static int iter_intervals_update_state(struct scmi_iterator_state *st,
 		/* Direct allocation when exceeding pre-allocated */
 		if (s->intervals.count >= SCMI_MAX_PREALLOC_POOL) {
 			s->intervals.desc =
-				devm_kcalloc(dev,
-					     s->intervals.count,
-					     sizeof(*s->intervals.desc),
-					     GFP_KERNEL);
+				devm_kzalloc_objs(dev, *s->intervals.desc,
+						  s->intervals.count);
 			if (!s->intervals.desc) {
 				s->intervals.segmented = false;
 				s->intervals.count = 0;
@@ -537,8 +535,7 @@ static int scmi_sensor_axis_description(const struct scmi_protocol_handle *ph,
 		.s = s,
 	};
 
-	s->axis = devm_kcalloc(ph->dev, s->num_axis,
-			       sizeof(*s->axis), GFP_KERNEL);
+	s->axis = devm_kzalloc_objs(ph->dev, *s->axis, s->num_axis);
 	if (!s->axis)
 		return -ENOMEM;
 
@@ -793,7 +790,7 @@ static int scmi_sensor_config_get(const struct scmi_protocol_handle *ph,
 	if (!ret) {
 		struct scmi_sensor_info *s = si->sensors + sensor_id;
 
-		*sensor_config = get_unaligned_le64(t->rx.buf);
+		*sensor_config = get_unaligned_le32(t->rx.buf);
 		s->sensor_config = *sensor_config;
 	}
 
@@ -1072,12 +1069,15 @@ scmi_sensor_fill_custom_report(const struct scmi_protocol_handle *ph,
 	case SCMI_EVENT_SENSOR_UPDATE:
 	{
 		int i;
+		size_t expected_sz;
 		struct scmi_sensor_info *s;
 		const struct scmi_sensor_update_notify_payld *p = payld;
 		struct scmi_sensor_update_report *r = report;
 		struct sensors_info *sinfo = ph->get_priv(ph);
 
-		/* payld_sz is variable for this event */
+		if (payld_sz < sizeof(*p))
+			break;
+
 		r->sensor_id = le32_to_cpu(p->sensor_id);
 		if (r->sensor_id >= sinfo->num_sensors)
 			break;
@@ -1091,6 +1091,11 @@ scmi_sensor_fill_custom_report(const struct scmi_protocol_handle *ph,
 		 * readings defined for this sensor or 1 for scalar sensors.
 		 */
 		r->readings_count = s->num_axis ?: 1;
+		expected_sz = sizeof(*p) + r->readings_count *
+			      sizeof(p->readings[0]);
+		if (payld_sz < expected_sz)
+			break;
+
 		for (i = 0; i < r->readings_count; i++)
 			scmi_parse_sensor_readings(&r->readings[i],
 						   &p->readings[i]);
@@ -1152,15 +1157,15 @@ static int scmi_sensors_protocol_init(const struct scmi_protocol_handle *ph)
 	dev_dbg(ph->dev, "Sensor Version %d.%d\n",
 		PROTOCOL_REV_MAJOR(ph->version), PROTOCOL_REV_MINOR(ph->version));
 
-	sinfo = devm_kzalloc(ph->dev, sizeof(*sinfo), GFP_KERNEL);
+	sinfo = devm_kzalloc_obj(ph->dev, *sinfo);
 	if (!sinfo)
 		return -ENOMEM;
 
 	ret = scmi_sensor_attributes_get(ph, sinfo);
 	if (ret)
 		return ret;
-	sinfo->sensors = devm_kcalloc(ph->dev, sinfo->num_sensors,
-				      sizeof(*sinfo->sensors), GFP_KERNEL);
+	sinfo->sensors = devm_kzalloc_objs(ph->dev, *sinfo->sensors,
+					   sinfo->num_sensors);
 	if (!sinfo->sensors)
 		return -ENOMEM;
 

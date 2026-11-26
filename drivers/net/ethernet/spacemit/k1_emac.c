@@ -57,7 +57,6 @@
 
 struct desc_buf {
 	u64 dma_addr;
-	void *buff_addr;
 	u16 dma_len;
 	u8 map_as_page;
 };
@@ -70,7 +69,6 @@ struct emac_tx_desc_buffer {
 struct emac_rx_desc_buffer {
 	struct sk_buff *skb;
 	u64 dma_addr;
-	void *buff_addr;
 	u16 dma_len;
 	u8 map_as_page;
 };
@@ -340,7 +338,6 @@ static void emac_free_tx_buf(struct emac_priv *priv, int i)
 
 		buf->dma_addr = 0;
 		buf->map_as_page = false;
-		buf->buff_addr = NULL;
 	}
 
 	if (tx_buf->skb) {
@@ -565,7 +562,9 @@ static void emac_alloc_rx_desc_buffers(struct emac_priv *priv)
 						  DMA_FROM_DEVICE);
 		if (dma_mapping_error(&priv->pdev->dev, rx_buf->dma_addr)) {
 			dev_err_ratelimited(&ndev->dev, "Mapping skb failed\n");
-			goto err_free_skb;
+			dev_kfree_skb_any(skb);
+			rx_buf->skb = NULL;
+			break;
 		}
 
 		rx_desc_addr = &((struct emac_desc *)rx_ring->desc_addr)[i];
@@ -590,10 +589,6 @@ static void emac_alloc_rx_desc_buffers(struct emac_priv *priv)
 
 	rx_ring->head = i;
 	return;
-
-err_free_skb:
-	dev_kfree_skb_any(skb);
-	rx_buf->skb = NULL;
 }
 
 /* Returns number of packets received */
@@ -735,7 +730,7 @@ static void emac_tx_mem_map(struct emac_priv *priv, struct sk_buff *skb)
 	struct emac_desc tx_desc, *tx_desc_addr;
 	struct device *dev = &priv->pdev->dev;
 	struct emac_tx_desc_buffer *tx_buf;
-	u32 head, old_head, frag_num, f;
+	u32 head, old_head, frag_num, f, i;
 	bool buf_idx;
 
 	frag_num = skb_shinfo(skb)->nr_frags;
@@ -803,6 +798,18 @@ static void emac_tx_mem_map(struct emac_priv *priv, struct sk_buff *skb)
 
 err_free_skb:
 	dev_dstats_tx_dropped(priv->ndev);
+
+	i = old_head;
+	while (i != head) {
+		emac_free_tx_buf(priv, i);
+
+		tx_desc_addr = &((struct emac_desc *)tx_ring->desc_addr)[i];
+		memset(tx_desc_addr, 0, sizeof(*tx_desc_addr));
+
+		if (++i == tx_ring->total_cnt)
+			i = 0;
+	}
+
 	dev_kfree_skb_any(skb);
 }
 
@@ -1157,7 +1164,7 @@ static const struct ethtool_rmon_hist_range emac_rmon_hist_ranges[] = {
 	{  512, 1023 },
 	{ 1024, 1518 },
 	{ 1519, 4096 },
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 
 /* Like dev_fetch_dstats(), but we only use tx_drops */
@@ -1725,7 +1732,6 @@ static int emac_down(struct emac_priv *priv)
 	napi_disable(&priv->napi);
 
 	timer_delete_sync(&priv->txtimer);
-	cancel_work_sync(&priv->tx_timeout_task);
 
 	timer_delete_sync(&priv->stats_timer);
 
@@ -2003,8 +2009,9 @@ static void emac_remove(struct platform_device *pdev)
 {
 	struct emac_priv *priv = platform_get_drvdata(pdev);
 
+	disable_work_sync(&priv->tx_timeout_task);
+
 	timer_shutdown_sync(&priv->txtimer);
-	cancel_work_sync(&priv->tx_timeout_task);
 
 	timer_shutdown_sync(&priv->stats_timer);
 
@@ -2017,16 +2024,23 @@ static int emac_resume(struct device *dev)
 	struct net_device *ndev = priv->ndev;
 	int ret;
 
+	enable_work(&priv->tx_timeout_task);
+
 	ret = clk_prepare_enable(priv->bus_clk);
 	if (ret < 0) {
 		dev_err(dev, "Failed to enable bus clock: %d\n", ret);
 		return ret;
 	}
+	rtnl_lock();
 
-	if (!netif_running(ndev))
+	if (!netif_running(ndev)) {
+		rtnl_unlock();
 		return 0;
+	}
 
 	ret = emac_open(ndev);
+	rtnl_unlock();
+
 	if (ret) {
 		clk_disable_unprepare(priv->bus_clk);
 		return ret;
@@ -2044,12 +2058,18 @@ static int emac_suspend(struct device *dev)
 	struct emac_priv *priv = dev_get_drvdata(dev);
 	struct net_device *ndev = priv->ndev;
 
+	disable_work_sync(&priv->tx_timeout_task);
+
+	rtnl_lock();
+
 	if (!ndev || !netif_running(ndev)) {
+		rtnl_unlock();
 		clk_disable_unprepare(priv->bus_clk);
 		return 0;
 	}
 
 	emac_stop(ndev);
+	rtnl_unlock();
 
 	clk_disable_unprepare(priv->bus_clk);
 	netif_device_detach(ndev);
@@ -2062,7 +2082,7 @@ static const struct dev_pm_ops emac_pm_ops = {
 
 static const struct of_device_id emac_of_match[] = {
 	{ .compatible = "spacemit,k1-emac" },
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, emac_of_match);
 

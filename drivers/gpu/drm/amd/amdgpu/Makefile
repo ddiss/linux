@@ -27,6 +27,10 @@ FULL_AMD_PATH=$(src)/..
 DISPLAY_FOLDER_NAME=display
 FULL_AMD_DISPLAY_PATH = $(FULL_AMD_PATH)/$(DISPLAY_FOLDER_NAME)
 
+ifdef CONFIG_GCOV_PROFILE_AMDGPU
+GCOV_PROFILE := y
+endif
+
 ccflags-y := -I$(FULL_AMD_PATH)/include/asic_reg \
 	-I$(FULL_AMD_PATH)/include \
 	-I$(FULL_AMD_PATH)/amdgpu \
@@ -47,7 +51,7 @@ subdir-ccflags-$(CONFIG_DRM_AMDGPU_WERROR) += -Werror
 amdgpu-y := amdgpu_drv.o
 
 # add KMS driver
-amdgpu-y += amdgpu_device.o amdgpu_doorbell_mgr.o amdgpu_kms.o \
+amdgpu-y += amdgpu_device.o amdgpu_reg_access.o amdgpu_doorbell_mgr.o amdgpu_kms.o \
 	amdgpu_atombios.o atombios_crtc.o amdgpu_connectors.o \
 	atom.o amdgpu_fence.o amdgpu_ttm.o amdgpu_object.o amdgpu_gart.o \
 	amdgpu_encoders.o amdgpu_display.o amdgpu_i2c.o \
@@ -65,9 +69,10 @@ amdgpu-y += amdgpu_device.o amdgpu_doorbell_mgr.o amdgpu_kms.o \
 	amdgpu_vm_sdma.o amdgpu_discovery.o amdgpu_ras_eeprom.o amdgpu_nbio.o \
 	amdgpu_umc.o smu_v11_0_i2c.o amdgpu_fru_eeprom.o amdgpu_rap.o \
 	amdgpu_fw_attestation.o amdgpu_securedisplay.o \
-	amdgpu_eeprom.o amdgpu_mca.o amdgpu_psp_ta.o amdgpu_lsdma.o \
-	amdgpu_ring_mux.o amdgpu_xcp.o amdgpu_seq64.o amdgpu_aca.o amdgpu_dev_coredump.o \
-	amdgpu_cper.o amdgpu_userq_fence.o amdgpu_eviction_fence.o amdgpu_ip.o
+	amdgpu_eeprom.o amdgpu_mca.o amdgpu_psp_ta.o amdgpu_lsdma.o amdgpu_lockdep.o \
+	amdgpu_ring_mux.o amdgpu_xcp.o amdgpu_seq64.o amdgpu_dev_coredump.o \
+	amdgpu_cper.o amdgpu_userq_fence.o amdgpu_eviction_fence.o amdgpu_ip.o \
+	amdgpu_wb.o
 
 amdgpu-$(CONFIG_PROC_FS) += amdgpu_fdinfo.o
 
@@ -86,7 +91,8 @@ amdgpu-y += \
 	nbio_v7_2.o hdp_v4_0.o hdp_v5_0.o aldebaran_reg_init.o aldebaran.o soc21.o soc24.o \
 	sienna_cichlid.o smu_v13_0_10.o nbio_v4_3.o hdp_v6_0.o nbio_v7_7.o hdp_v5_2.o lsdma_v6_0.o \
 	nbio_v7_9.o aqua_vanjaram.o nbio_v7_11.o lsdma_v7_0.o hdp_v7_0.o nbif_v6_3_1.o \
-	cyan_skillfish_reg_init.o soc_v1_0.o
+	cyan_skillfish_reg_init.o soc_v1_0.o lsdma_v7_1.o nbio_v6_3_2.o nbio_v7_11_5.o \
+	nbif_v7_10.o hdp_v8_0.o lsdma_v8_0.o
 
 # add DF block
 amdgpu-y += \
@@ -105,7 +111,7 @@ amdgpu-y += \
 	mmhub_v1_7.o gfxhub_v3_0.o mmhub_v3_0.o mmhub_v3_0_2.o gmc_v11_0.o \
 	mmhub_v3_0_1.o gfxhub_v3_0_3.o gfxhub_v1_2.o mmhub_v1_8.o mmhub_v3_3.o \
 	gfxhub_v11_5_0.o mmhub_v4_1_0.o gfxhub_v12_0.o gmc_v12_0.o \
-	mmhub_v4_2_0.o gfxhub_v12_1.o gmc_v12_1.o
+	mmhub_v4_2_0.o gfxhub_v12_1.o gmc_v12_1.o mmhub_v5_0.o
 
 # add UMC block
 amdgpu-y += \
@@ -123,7 +129,8 @@ amdgpu-y += \
 	navi10_ih.o \
 	ih_v6_0.o \
 	ih_v6_1.o \
-	ih_v7_0.o
+	ih_v7_0.o \
+	ih_v8_0.o
 
 # add PSP block
 amdgpu-y += \
@@ -137,6 +144,7 @@ amdgpu-y += \
 	psp_v13_0_4.o \
 	psp_v14_0.o \
 	psp_v15_0.o \
+	psp_v15_0_3.o \
 	psp_v15_0_8.o
 
 # add DCE block
@@ -213,6 +221,7 @@ amdgpu-y += \
 	vcn_v4_0_5.o \
 	vcn_v5_0_0.o \
 	vcn_v5_0_1.o \
+	vcn_v5_0_2.o \
 	amdgpu_jpeg.o \
 	jpeg_v1_0.o \
 	jpeg_v2_0.o \
@@ -223,12 +232,15 @@ amdgpu-y += \
 	jpeg_v4_0_5.o \
 	jpeg_v5_0_0.o \
 	jpeg_v5_0_1.o \
+	jpeg_v5_0_2.o \
 	jpeg_v5_3_0.o
 
 # add VPE block
 amdgpu-y += \
 	amdgpu_vpe.o \
-	vpe_v6_1.o
+	vpe_v6_1.o \
+	vpe_v2_0.o \
+	vpe_v3_0.o
 
 # add UMSCH block
 amdgpu-y += \
@@ -254,6 +266,7 @@ amdgpu-y += \
 	smuio_v13_0_6.o \
 	smuio_v14_0_2.o \
 	smuio_v15_0_0.o \
+	smuio_v15_0_3.o \
 	smuio_v15_0_8.o
 
 # add reset block
@@ -269,6 +282,9 @@ amdgpu-y += amdgpu_amdkfd.o
 
 # add gfx usermode queue
 amdgpu-y += amdgpu_userq.o
+
+# add UALink manager support
+amdgpu-y += amdgpu_ualink.o ualink_v1_0.o
 
 ifneq ($(CONFIG_HSA_AMD),)
 AMDKFD_PATH := ../amdkfd
@@ -310,7 +326,6 @@ include $(FULL_AMD_PATH)/acp/Makefile
 amdgpu-y += $(AMD_ACP_FILES)
 endif
 
-amdgpu-$(CONFIG_COMPAT) += amdgpu_ioc32.o
 amdgpu-$(CONFIG_VGA_SWITCHEROO) += amdgpu_atpx_handler.o
 amdgpu-$(CONFIG_ACPI) += amdgpu_acpi.o
 amdgpu-$(CONFIG_HMM_MIRROR) += amdgpu_hmm.o

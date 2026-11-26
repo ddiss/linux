@@ -13,6 +13,7 @@
 
 #define _PAGE_PRESENT	0x001
 #define _PAGE_NEEDSYNC	0x002
+#define _PAGE_EXEC	0x004
 #define _PAGE_RW	0x020
 #define _PAGE_USER	0x040
 #define _PAGE_ACCESSED	0x080
@@ -33,9 +34,6 @@
 #endif
 
 extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
-
-/* zero page used for uninitialized stuff */
-extern unsigned long *empty_zero_page;
 
 /* Just any arbitrary offset to the start of the vmalloc VM area: the
  * current 8MB value just means that there will be a 8MB "hole" after the
@@ -58,14 +56,19 @@ extern unsigned long *empty_zero_page;
 #define _PAGE_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER | _PAGE_ACCESSED | _PAGE_DIRTY)
 #define _KERNPG_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_ACCESSED | _PAGE_DIRTY)
 #define _PAGE_CHG_MASK	(PAGE_MASK | _PAGE_ACCESSED | _PAGE_DIRTY)
-#define __PAGE_KERNEL_EXEC                                              \
-	 (_PAGE_PRESENT | _PAGE_RW | _PAGE_DIRTY | _PAGE_ACCESSED)
-#define PAGE_NONE	__pgprot(_PAGE_PROTNONE | _PAGE_ACCESSED)
-#define PAGE_SHARED	__pgprot(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER | _PAGE_ACCESSED)
-#define PAGE_COPY	__pgprot(_PAGE_PRESENT | _PAGE_USER | _PAGE_ACCESSED)
-#define PAGE_READONLY	__pgprot(_PAGE_PRESENT | _PAGE_USER | _PAGE_ACCESSED)
-#define PAGE_KERNEL	__pgprot(_PAGE_PRESENT | _PAGE_RW | _PAGE_DIRTY | _PAGE_ACCESSED)
-#define PAGE_KERNEL_EXEC	__pgprot(__PAGE_KERNEL_EXEC)
+
+#define _PAGE_BASE		(_PAGE_PRESENT | _PAGE_USER | _PAGE_ACCESSED)
+#define PAGE_NONE		__pgprot(_PAGE_PROTNONE | _PAGE_ACCESSED)
+#define PAGE_SHARED		__pgprot(_PAGE_BASE | _PAGE_RW)
+#define PAGE_SHARED_EXEC	__pgprot(_PAGE_BASE | _PAGE_RW | _PAGE_EXEC)
+#define PAGE_COPY		__pgprot(_PAGE_BASE)
+#define PAGE_COPY_EXEC		__pgprot(_PAGE_BASE | _PAGE_EXEC)
+#define PAGE_READONLY		__pgprot(_PAGE_BASE)
+#define PAGE_READONLY_EXEC	__pgprot(_PAGE_BASE | _PAGE_EXEC)
+
+#define _PAGE_KERNEL		(_PAGE_PRESENT | _PAGE_RW | _PAGE_DIRTY | _PAGE_ACCESSED)
+#define PAGE_KERNEL		__pgprot(_PAGE_KERNEL)
+#define PAGE_KERNEL_EXEC	__pgprot(_PAGE_KERNEL | _PAGE_EXEC)
 
 /*
  * The i386 can't do page protection for execute, and considers that the same
@@ -73,12 +76,6 @@ extern unsigned long *empty_zero_page;
  * Also, write permissions imply read permissions. This is the closest we can
  * get..
  */
-
-/*
- * ZERO_PAGE is a global shared page that is always zero: used
- * for zero-mapped memory areas etc..
- */
-#define ZERO_PAGE(vaddr) virt_to_page(empty_zero_page)
 
 #define pte_clear(mm, addr, xp) pte_set_val(*(xp), (phys_t) 0, __pgprot(_PAGE_NEEDSYNC))
 
@@ -121,13 +118,13 @@ static inline int pte_none(pte_t pte)
  */
 static inline int pte_read(pte_t pte)
 {
-	return((pte_get_bits(pte, _PAGE_USER)) &&
-	       !(pte_get_bits(pte, _PAGE_PROTNONE)));
+	return !pte_get_bits(pte, _PAGE_PROTNONE);
 }
 
-static inline int pte_exec(pte_t pte){
-	return((pte_get_bits(pte, _PAGE_USER)) &&
-	       !(pte_get_bits(pte, _PAGE_PROTNONE)));
+static inline int pte_exec(pte_t pte)
+{
+	return pte_get_bits(pte, _PAGE_EXEC) &&
+	       !pte_get_bits(pte, _PAGE_PROTNONE);
 }
 
 static inline int pte_write(pte_t pte)

@@ -101,12 +101,8 @@
 &gpmi {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_gpmi_nand>;
+	nand-on-flash-bbt;
 	status = "disabled";
-
-	nand@0 {
-		reg = <0>;
-		nand-on-flash-bbt;
-	};
 };
 
 &i2c1 {
@@ -120,7 +116,6 @@
 		reg = <0x0a>;
 		#sound-dai-cells = <0>;
 		clocks = <&clks IMX6UL_CLK_OSC>;
-		clock-names = "mclk";
 		VDDA-supply = <&reg_3p3v>;
 		VDDIO-supply = <&reg_3p3v>;
 		VDDD-supply = <&reg_1p8v>;

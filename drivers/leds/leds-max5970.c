@@ -12,7 +12,6 @@
 #include <linux/device.h>
 #include <linux/leds.h>
 #include <linux/mfd/max5970.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -71,7 +70,7 @@ static int max5970_led_probe(struct platform_device *pdev)
 			continue;
 		}
 
-		ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
+		ddata = devm_kzalloc_obj(dev, *ddata);
 		if (!ddata) {
 			fwnode_handle_put(child);
 			return -ENOMEM;

@@ -463,9 +463,9 @@ static struct attribute *max31827_attrs[] = {
 ATTRIBUTE_GROUPS(max31827);
 
 static const struct i2c_device_id max31827_i2c_ids[] = {
-	{ "max31827", max31827 },
-	{ "max31828", max31828 },
-	{ "max31829", max31829 },
+	{ .name = "max31827", .driver_data = max31827 },
+	{ .name = "max31828", .driver_data = max31828 },
+	{ .name = "max31829", .driver_data = max31829 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max31827_i2c_ids);
@@ -589,7 +589,7 @@ static int max31827_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_WORD_DATA))
 		return -EOPNOTSUPP;
 
-	st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
+	st = devm_kzalloc_obj(dev, *st);
 	if (!st)
 		return -ENOMEM;
 

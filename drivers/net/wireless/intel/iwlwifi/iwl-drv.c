@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2005-2014, 2018-2025 Intel Corporation
+ * Copyright (C) 2005-2014, 2018-2026 Intel Corporation
  * Copyright (C) 2013-2015 Intel Mobile Communications GmbH
  * Copyright (C) 2016-2017 Intel Deutschland GmbH
  */
@@ -133,6 +133,7 @@ static void iwl_dealloc_ucode(struct iwl_drv *drv)
 	kfree(drv->fw.dbg.mem_tlv);
 	kfree(drv->fw.iml);
 	kfree(drv->fw.ucode_capa.cmd_versions);
+	kfree(drv->fw.ucode_capa.cmd_bios_tables);
 	kfree(drv->fw.phy_integration_ver);
 	kfree(drv->trans->dbg.pc_data);
 	drv->trans->dbg.pc_data = NULL;
@@ -491,13 +492,16 @@ static void set_sec_offset(struct iwl_firmware_pieces *pieces,
  * Gets uCode section from tlv.
  */
 static int iwl_store_ucode_sec(struct fw_img_parsing *img,
-			       const void *data, int size)
+			       const void *data, size_t size)
 {
 	struct fw_sec *sec;
 	const struct fw_sec_parsing *sec_parse;
 	size_t alloc_size;
 
 	if (WARN_ON(!img || !data))
+		return -EINVAL;
+
+	if (size < sizeof(sec_parse->offset))
 		return -EINVAL;
 
 	sec_parse = (const struct fw_sec_parsing *)data;
@@ -803,6 +807,7 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 	u32 build, paging_mem_size;
 	int num_of_cpus;
 	bool usniffer_req = false;
+	size_t aligned_tlv_len;
 
 	if (len < sizeof(*ucode)) {
 		IWL_ERR(drv, "uCode has invalid length: %zd\n", len);
@@ -851,8 +856,16 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 				len, tlv_len);
 			return -EINVAL;
 		}
-		len -= ALIGN(tlv_len, 4);
-		data += sizeof(*tlv) + ALIGN(tlv_len, 4);
+
+		aligned_tlv_len = ALIGN(tlv_len, 4);
+		if (len < aligned_tlv_len) {
+			IWL_ERR(drv, "invalid aligned TLV len: %zd/%zu\n",
+				len, aligned_tlv_len);
+			return -EINVAL;
+		}
+
+		len -= aligned_tlv_len;
+		data += sizeof(*tlv) + aligned_tlv_len;
 
 		switch (tlv_type) {
 		case IWL_UCODE_TLV_INST:
@@ -1090,10 +1103,17 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 			const struct iwl_fw_dbg_dest_tlv_v1 *dest_v1 = NULL;
 			u8 mon_mode;
 
+			if (tlv_len < sizeof(*pieces->dbg_dest_ver))
+				goto invalid_tlv_len;
+
 			pieces->dbg_dest_ver = (const u8 *)tlv_data;
 			if (*pieces->dbg_dest_ver == 1) {
+				if (tlv_len < sizeof(*dest))
+					goto invalid_tlv_len;
 				dest = (const void *)tlv_data;
 			} else if (*pieces->dbg_dest_ver == 0) {
+				if (tlv_len < sizeof(*dest_v1))
+					goto invalid_tlv_len;
 				dest_v1 = (const void *)tlv_data;
 			} else {
 				IWL_ERR(drv,
@@ -1293,8 +1313,9 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 
 			if (tlv_len != sizeof(*fseq_ver))
 				goto invalid_tlv_len;
-			IWL_DEBUG_INFO(drv, "TLV_FW_FSEQ_VERSION: %.32s\n",
-				       fseq_ver->version);
+			IWL_DEBUG_INFO(drv,
+				       "TLV_FW_FSEQ_VERSION: %.32s (sha1: %.20s)\n",
+				       fseq_ver->version, fseq_ver->sha1);
 			}
 			break;
 		case IWL_UCODE_TLV_FW_NUM_STATIONS:
@@ -1314,7 +1335,7 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 			if (tlv_len != sizeof(u32))
 				goto invalid_tlv_len;
 			if (le32_to_cpup((const __le32 *)tlv_data) >
-			    IWL_FW_MAX_LINK_ID + 1) {
+			    IWL_FW_MAX_LINKS) {
 				IWL_ERR(drv,
 					"%d is an invalid number of links\n",
 					le32_to_cpup((const __le32 *)tlv_data));
@@ -1327,6 +1348,18 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 			if (tlv_len != sizeof(u32))
 				goto invalid_tlv_len;
 			capa->num_beacons =
+				le32_to_cpup((const __le32 *)tlv_data);
+			break;
+		case IWL_UCODE_TLV_FW_NUM_MCAST_KEY_ENTRIES:
+			if (tlv_len != sizeof(u32))
+				goto invalid_tlv_len;
+			capa->num_mcast_key_entries =
+				le32_to_cpup((const __le32 *)tlv_data);
+			break;
+		case IWL_UCODE_TLV_FW_NAN_MAX_CHAN_SWITCH_TIME:
+			if (tlv_len != sizeof(u32))
+				goto invalid_tlv_len;
+			capa->nan_max_chan_switch_time =
 				le32_to_cpup((const __le32 *)tlv_data);
 			break;
 		case IWL_UCODE_TLV_UMAC_DEBUG_ADDRS: {
@@ -1425,6 +1458,26 @@ static int iwl_parse_tlv_firmware(struct iwl_drv *drv,
 			if (!drv->fw.pnvm_data)
 				return -ENOMEM;
 			drv->fw.pnvm_size = tlv_len;
+			break;
+		case IWL_UCODE_TLV_CMD_BIOS_TABLE:
+			if (tlv_len % sizeof(struct iwl_fw_cmd_bios_table)) {
+				IWL_ERR(drv,
+					"Invalid length for command bios table: %u\n",
+					tlv_len);
+				return -EINVAL;
+			}
+
+			if (capa->cmd_bios_tables) {
+				IWL_ERR(drv, "Duplicate TLV type 0x%02X detected\n",
+					tlv_type);
+				return -EINVAL;
+			}
+			capa->cmd_bios_tables = kmemdup(tlv_data, tlv_len,
+							GFP_KERNEL);
+			if (!capa->cmd_bios_tables)
+				return -ENOMEM;
+			capa->n_cmd_bios_tables =
+				tlv_len / sizeof(struct iwl_fw_cmd_bios_table);
 			break;
 		default:
 			IWL_DEBUG_INFO(drv, "unknown TLV: %d\n", tlv_type);
@@ -1619,6 +1672,7 @@ static void iwl_req_fw_callback(const struct firmware *ucode_raw, void *context)
 	fw->ucode_capa.n_scan_channels = IWL_DEFAULT_SCAN_CHANNELS;
 	fw->ucode_capa.num_stations = IWL_STATION_COUNT_MAX;
 	fw->ucode_capa.num_beacons = 1;
+	fw->ucode_capa.num_mcast_key_entries = 2;
 	/* dump all fw memory areas by default */
 	fw->dbg.dump_mask = 0xffffffff;
 
@@ -1992,8 +2046,6 @@ void iwl_drv_stop(struct iwl_drv *drv)
 	mutex_unlock(&iwlwifi_opmode_table_mtx);
 
 #ifdef CONFIG_IWLWIFI_DEBUGFS
-	iwl_trans_debugfs_cleanup(drv->trans);
-
 	debugfs_remove_recursive(drv->dbgfs_drv);
 #endif
 

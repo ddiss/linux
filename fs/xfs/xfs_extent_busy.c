@@ -161,8 +161,8 @@ xfs_extent_busy_update_extent(
 	xfs_agblock_t		fbno,
 	xfs_extlen_t		flen,
 	bool			userdata)
-		__releases(&eb->eb_lock)
-		__acquires(&eb->eb_lock)
+		__releases(&xg->xg_busy_extents->eb_lock)
+		__acquires(&xg->xg_busy_extents->eb_lock)
 {
 	struct xfs_extent_busy_tree *eb = xg->xg_busy_extents;
 	xfs_agblock_t		fend = fbno + flen;
@@ -690,9 +690,9 @@ xfs_extent_busy_ag_cmp(
 		container_of(l2, struct xfs_extent_busy, list);
 	s32 diff;
 
-	diff = b1->group->xg_gno - b2->group->xg_gno;
+	diff = cmp_int(b1->group->xg_gno, b2->group->xg_gno);
 	if (!diff)
-		diff = b1->bno - b2->bno;
+		diff = cmp_int(b1->bno, b2->bno);
 	return diff;
 }
 

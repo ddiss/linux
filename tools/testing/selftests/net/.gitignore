@@ -6,6 +6,7 @@ busy_poller
 cmsg_sender
 epoll_busy_poll
 fin_ack_lat
+getsockopt_iter
 hwtstamp_config
 icmp_rfc4884
 io_uring_zerocopy_tx
@@ -20,6 +21,7 @@ log.txt
 msg_zerocopy
 netlink-dumps
 nettest
+nsh_gso
 proc_net_pktgen
 psock_fanout
 psock_snd
@@ -33,6 +35,7 @@ reuseport_bpf_numa
 reuseport_dualstack
 rxtimestamp
 sctp_hello
+sctp_ifwdtsn
 sk_bind_sendto_listen
 sk_connect_zero_addr
 sk_so_peek_off
@@ -40,7 +43,7 @@ skf_net_off
 socket
 so_incoming_cpu
 so_netns_cookie
-so_txtime
+so_reserve_mem
 so_rcv_listener
 stress_reuseport_listen
 tap
@@ -55,6 +58,7 @@ tools
 tun
 txring_overwrite
 txtimestamp
+udp_splice_checksum
 udpgso
 udpgso_bench_rx
 udpgso_bench_tx

@@ -304,7 +304,7 @@ xfs_dax_notify_dev_failure(
 
 			error = xfs_alloc_read_agf(pag, tp, 0, &agf_bp);
 			if (error) {
-				xfs_perag_put(pag);
+				xfs_perag_rele(pag);
 				break;
 			}
 
@@ -340,7 +340,7 @@ xfs_dax_notify_dev_failure(
 		if (rtg)
 			xfs_rtgroup_unlock(rtg, XFS_RTGLOCK_RMAP);
 		if (error) {
-			xfs_group_put(xg);
+			xfs_group_rele(xg);
 			break;
 		}
 	}
@@ -350,7 +350,7 @@ xfs_dax_notify_dev_failure(
 	/*
 	 * Shutdown fs from a force umount in pre-remove case which won't fail,
 	 * so errors can be ignored.  Otherwise, shutdown the filesystem with
-	 * CORRUPT flag if error occured or notify.want_shutdown was set during
+	 * CORRUPT flag if error occurred or notify.want_shutdown was set during
 	 * RMAP querying.
 	 */
 	if (mf_flags & MF_MEM_PRE_REMOVE)

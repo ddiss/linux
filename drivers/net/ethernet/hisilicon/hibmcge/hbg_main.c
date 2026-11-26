@@ -339,8 +339,8 @@ static int hbg_mac_filter_init(struct hbg_priv *priv)
 	struct hbg_mac_filter *filter = &priv->filter;
 	struct hbg_mac_table_entry *tmp_table;
 
-	tmp_table = devm_kcalloc(&priv->pdev->dev, dev_specs->uc_mac_num,
-				 sizeof(*tmp_table), GFP_KERNEL);
+	tmp_table = devm_kzalloc_objs(&priv->pdev->dev, *tmp_table,
+				      dev_specs->uc_mac_num);
 	if (!tmp_table)
 		return -ENOMEM;
 
@@ -420,6 +420,9 @@ static int hbg_pci_init(struct pci_dev *pdev)
 		return -ENOMEM;
 
 	pci_set_master(pdev);
+	pcie_capability_clear_word(pdev, PCI_EXP_DEVCTL,
+				   PCI_EXP_DEVCTL_RELAX_EN);
+	pci_save_state(pdev);
 	return 0;
 }
 
@@ -445,6 +448,7 @@ static int hbg_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (ret)
 		return ret;
 
+	netdev->netdev_ops = &hbg_netdev_ops;
 	ret = hbg_init(priv);
 	if (ret)
 		return ret;
@@ -457,7 +461,6 @@ static int hbg_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	netdev->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
 	netdev->max_mtu = priv->dev_specs.max_mtu;
 	netdev->min_mtu = priv->dev_specs.min_mtu;
-	netdev->netdev_ops = &hbg_netdev_ops;
 	netdev->watchdog_timeo = 5 * HZ;
 
 	hbg_hw_set_mtu(priv, ETH_DATA_LEN);
@@ -489,7 +492,7 @@ static void hbg_shutdown(struct pci_dev *pdev)
 }
 
 static const struct pci_device_id hbg_pci_tbl[] = {
-	{PCI_VDEVICE(HUAWEI, 0x3730), 0},
+	{ PCI_VDEVICE(HUAWEI, 0x3730) },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, hbg_pci_tbl);

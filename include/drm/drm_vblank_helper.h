@@ -6,7 +6,7 @@
 #include <linux/hrtimer_types.h>
 #include <linux/types.h>
 
-struct drm_atomic_state;
+struct drm_atomic_commit;
 struct drm_crtc;
 
 /*
@@ -14,11 +14,11 @@ struct drm_crtc;
  */
 
 void drm_crtc_vblank_atomic_flush(struct drm_crtc *crtc,
-				  struct drm_atomic_state *state);
+				  struct drm_atomic_commit *state);
 void drm_crtc_vblank_atomic_enable(struct drm_crtc *crtc,
-				   struct drm_atomic_state *state);
+				   struct drm_atomic_commit *state);
 void drm_crtc_vblank_atomic_disable(struct drm_crtc *crtc,
-				    struct drm_atomic_state *crtc_state);
+				    struct drm_atomic_commit *crtc_state);
 
 /**
  * DRM_CRTC_HELPER_VBLANK_FUNCS - Default implementation for VBLANK helpers
@@ -37,6 +37,7 @@ void drm_crtc_vblank_atomic_disable(struct drm_crtc *crtc,
 
 int drm_crtc_vblank_helper_enable_vblank_timer(struct drm_crtc *crtc);
 void drm_crtc_vblank_helper_disable_vblank_timer(struct drm_crtc *crtc);
+void drm_crtc_vblank_helper_sync_vblank_timer(struct drm_crtc *crtc);
 bool drm_crtc_vblank_helper_get_vblank_timestamp_from_timer(struct drm_crtc *crtc,
 							    int *max_error,
 							    ktime_t *vblank_time,
@@ -51,6 +52,7 @@ bool drm_crtc_vblank_helper_get_vblank_timestamp_from_timer(struct drm_crtc *crt
 #define DRM_CRTC_VBLANK_TIMER_FUNCS \
 	.enable_vblank = drm_crtc_vblank_helper_enable_vblank_timer, \
 	.disable_vblank = drm_crtc_vblank_helper_disable_vblank_timer, \
+	.sync_vblank = drm_crtc_vblank_helper_sync_vblank_timer, \
 	.get_vblank_timestamp = drm_crtc_vblank_helper_get_vblank_timestamp_from_timer
 
 #endif

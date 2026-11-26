@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 
+include ../../scripts/Makefile.include
 include ../../scripts/Makefile.arch
 
 INSTALL	?= install
@@ -14,15 +15,15 @@ includedir ?= $(prefix)/include
 
 SPECDIR=../../../Documentation/netlink/specs
 
-SUBDIRS = lib generated samples ynltool tests
+SUBDIRS = lib generated ynltool tests
 
 all: $(SUBDIRS) libynl.a
 
+tests: | lib generated libynl.a
 ynltool: | lib generated libynl.a
-samples: | lib generated
 libynl.a: | lib generated
 	@echo -e "\tAR $@"
-	@ar rcs $@ lib/ynl.o generated/*-user.o
+	@$(AR) rcs $@ lib/ynl.o generated/*-user.o
 
 $(SUBDIRS):
 	@if [ -f "$@/Makefile" ] ; then \

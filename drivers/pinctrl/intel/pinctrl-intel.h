@@ -150,6 +150,7 @@ struct intel_community {
 #define PINCTRL_FEATURE_PWM		BIT(3)
 #define PINCTRL_FEATURE_BLINK		BIT(4)
 #define PINCTRL_FEATURE_EXP		BIT(5)
+#define PINCTRL_FEATURE_3BIT_PAD_OWN	BIT(6)
 
 #define __INTEL_COMMUNITY(b, s, e, g, n, gs, gn, soc)		\
 	{							\
@@ -224,7 +225,7 @@ struct intel_pinctrl_soc_data {
 	size_t ncommunities;
 };
 
-const struct intel_pinctrl_soc_data *intel_pinctrl_get_soc_data(struct platform_device *pdev);
+const struct intel_pinctrl_soc_data *intel_pinctrl_get_soc_data(const struct platform_device *pdev);
 
 struct intel_pad_context;
 struct intel_community_context;

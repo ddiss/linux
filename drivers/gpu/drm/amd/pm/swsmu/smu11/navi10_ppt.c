@@ -58,6 +58,8 @@
 #undef pr_info
 #undef pr_debug
 
+static int navi10_init_ppt_limits(struct smu_context *smu);
+
 static const struct smu_feature_bits navi10_dpm_features = {
 	.bits = {
 		SMU_FEATURE_BIT_INIT(FEATURE_DPM_PREFETCHER_BIT),
@@ -72,6 +74,10 @@ static const struct smu_feature_bits navi10_dpm_features = {
 };
 
 #define SMU_11_0_GFX_BUSY_THRESHOLD 15
+
+#define SMU11_DRIVER_IF_VERSION_NV10  0x37
+#define SMU11_DRIVER_IF_VERSION_NV12  0x38
+#define SMU11_DRIVER_IF_VERSION_NV14  0x38
 
 static struct cmn2asic_msg_mapping navi10_message_map[SMU_MSG_MAX_COUNT] = {
 	MSG_MAP(TestMessage,			PPSMC_MSG_TestMessage,			1),
@@ -484,7 +490,7 @@ static int navi10_setup_pptable(struct smu_context *smu)
 	if (ret)
 		return ret;
 
-	return ret;
+	return navi10_init_ppt_limits(smu);
 }
 
 static int navi10_tables_init(struct smu_context *smu)
@@ -598,7 +604,7 @@ static int navi10_get_legacy_smu_metrics_data(struct smu_context *smu,
 		*value = metrics->AverageUclkActivity;
 		break;
 	case METRICS_AVERAGE_SOCKETPOWER:
-		*value = metrics->AverageSocketPower << 8;
+		*value = metrics->AverageSocketPower * MILLIWATT_PER_WATT;
 		break;
 	case METRICS_TEMPERATURE_EDGE:
 		*value = metrics->TemperatureEdge *
@@ -687,7 +693,7 @@ static int navi10_get_smu_metrics_data(struct smu_context *smu,
 		*value = metrics->AverageUclkActivity;
 		break;
 	case METRICS_AVERAGE_SOCKETPOWER:
-		*value = metrics->AverageSocketPower << 8;
+		*value = metrics->AverageSocketPower * MILLIWATT_PER_WATT;
 		break;
 	case METRICS_TEMPERATURE_EDGE:
 		*value = metrics->TemperatureEdge *
@@ -773,7 +779,7 @@ static int navi12_get_legacy_smu_metrics_data(struct smu_context *smu,
 		*value = metrics->AverageUclkActivity;
 		break;
 	case METRICS_AVERAGE_SOCKETPOWER:
-		*value = metrics->AverageSocketPower << 8;
+		*value = metrics->AverageSocketPower * MILLIWATT_PER_WATT;
 		break;
 	case METRICS_TEMPERATURE_EDGE:
 		*value = metrics->TemperatureEdge *
@@ -862,7 +868,7 @@ static int navi12_get_smu_metrics_data(struct smu_context *smu,
 		*value = metrics->AverageUclkActivity;
 		break;
 	case METRICS_AVERAGE_SOCKETPOWER:
-		*value = metrics->AverageSocketPower << 8;
+		*value = metrics->AverageSocketPower * MILLIWATT_PER_WATT;
 		break;
 	case METRICS_TEMPERATURE_EDGE:
 		*value = metrics->TemperatureEdge *
@@ -1839,9 +1845,10 @@ static int navi10_set_power_profile_mode(struct smu_context *smu,
 				return -ENOMEM;
 		}
 		if (custom_params && custom_params_max_idx) {
-			if (custom_params_max_idx != NAVI10_CUSTOM_PARAMS_COUNT)
-				return -EINVAL;
-			if (custom_params[0] >= NAVI10_CUSTOM_PARAMS_CLOCKS_COUNT)
+			if (!smu_cmn_custom_params_count_valid(custom_params_max_idx,
+							       NAVI10_CUSTOM_PARAMS_COUNT) ||
+			    !smu_cmn_custom_params_clock_valid(custom_params[0],
+							       NAVI10_CUSTOM_PARAMS_CLOCKS_COUNT))
 				return -EINVAL;
 			idx = custom_params[0] * NAVI10_CUSTOM_PARAMS_COUNT;
 			smu->custom_profile_params[idx] = 1;
@@ -2129,56 +2136,60 @@ static int navi10_display_disable_memory_clock_switch(struct smu_context *smu,
 	return ret;
 }
 
-static int navi10_get_power_limit(struct smu_context *smu,
-					uint32_t *current_power_limit,
-					uint32_t *default_power_limit,
-					uint32_t *max_power_limit,
-					uint32_t *min_power_limit)
+static int navi10_get_ppt_limit(struct smu_context *smu,
+				enum smu_ppt_limit_type limit_type,
+				uint32_t *ppt_limit)
+{
+	if (limit_type != SMU_PPT_LIMIT_PPT0)
+		return -EOPNOTSUPP;
+
+	return smu_v11_0_get_ppt_limit(smu, limit_type, ppt_limit);
+}
+
+static int navi10_init_ppt_limits(struct smu_context *smu)
 {
 	struct smu_11_0_powerplay_table *powerplay_table =
 		(struct smu_11_0_powerplay_table *)smu->smu_table.power_play_table;
 	struct smu_11_0_overdrive_table *od_settings = smu->od_settings;
 	PPTable_t *pptable = smu->smu_table.driver_pptable;
-	uint32_t power_limit, od_percent_upper = 0, od_percent_lower = 0;
+	uint32_t default_limit[SMU_POWER_SOURCE_COUNT];
+	uint32_t od_percent_upper = 0, od_percent_lower = 0;
+	int i;
 
-	if (smu_v11_0_get_current_power_limit(smu, &power_limit)) {
-		/* the last hope to figure out the ppt limit */
-		if (!pptable) {
-			dev_err(smu->adev->dev, "Cannot get PPT limit due to pptable missing!");
-			return -EINVAL;
-		}
-		power_limit =
-			pptable->SocketPowerLimitAc[PPT_THROTTLER_PPT0];
+	if (!pptable) {
+		dev_err(smu->adev->dev,
+			"Cannot get PPT limit due to pptable missing!");
+		return -EINVAL;
 	}
 
-	if (current_power_limit)
-		*current_power_limit = power_limit;
-	if (default_power_limit)
-		*default_power_limit = power_limit;
+	default_limit[SMU_POWER_SOURCE_AC] =
+		pptable->SocketPowerLimitAc[PPT_THROTTLER_PPT0];
+	default_limit[SMU_POWER_SOURCE_DC] =
+		pptable->SocketPowerLimitDc[PPT_THROTTLER_PPT0];
 
-	if (powerplay_table) {
-		if (smu->od_enabled &&
-			    navi10_od_feature_is_supported(od_settings, SMU_11_0_ODCAP_POWER_LIMIT)) {
-			od_percent_upper = le32_to_cpu(powerplay_table->overdrive_table.max[SMU_11_0_ODSETTING_POWERPERCENTAGE]);
-			od_percent_lower = le32_to_cpu(powerplay_table->overdrive_table.min[SMU_11_0_ODSETTING_POWERPERCENTAGE]);
-		} else if (navi10_od_feature_is_supported(od_settings, SMU_11_0_ODCAP_POWER_LIMIT)) {
-			od_percent_upper = 0;
-			od_percent_lower = le32_to_cpu(powerplay_table->overdrive_table.min[SMU_11_0_ODSETTING_POWERPERCENTAGE]);
-		}
+	if (powerplay_table &&
+	    navi10_od_feature_is_supported(od_settings,
+					   SMU_11_0_ODCAP_POWER_LIMIT)) {
+		od_percent_upper = le32_to_cpu(powerplay_table->overdrive_table.max[
+			SMU_11_0_ODSETTING_POWERPERCENTAGE]);
+		od_percent_lower = le32_to_cpu(powerplay_table->overdrive_table.min[
+			SMU_11_0_ODSETTING_POWERPERCENTAGE]);
 	}
 
-	dev_dbg(smu->adev->dev, "od percent upper:%d, od percent lower:%d (default power: %d)\n",
-					od_percent_upper, od_percent_lower, power_limit);
-
-	if (max_power_limit) {
-		*max_power_limit = power_limit * (100 + od_percent_upper);
-		*max_power_limit /= 100;
+	for (i = SMU_POWER_SOURCE_AC; i < SMU_POWER_SOURCE_COUNT; i++) {
+		smu->ppt_limits.range[i][SMU_PPT_LIMIT_PPT0].default_value =
+			default_limit[i];
+		smu->ppt_limits.range[i][SMU_PPT_LIMIT_PPT0].max =
+			default_limit[i];
+		smu->ppt_limits.range[i][SMU_PPT_LIMIT_PPT0].min =
+			default_limit[i] * (100 - od_percent_lower) / 100;
+		smu->ppt_limits.range[i][SMU_PPT_LIMIT_PPT0].od_max =
+			default_limit[i] * (100 + od_percent_upper) / 100;
+		smu->ppt_limits.range[i][SMU_PPT_LIMIT_PPT0].od_min =
+			smu->ppt_limits.range[i][SMU_PPT_LIMIT_PPT0].min;
 	}
 
-	if (min_power_limit) {
-		*min_power_limit = power_limit * (100 - od_percent_lower);
-		*min_power_limit /= 100;
-	}
+	smu->ppt_limits.supported_mask |= BIT(SMU_PPT_LIMIT_PPT0);
 
 	return 0;
 }
@@ -3296,7 +3307,7 @@ static const struct pptable_funcs navi10_ppt_funcs = {
 	.set_performance_level = smu_v11_0_set_performance_level,
 	.get_thermal_temperature_range = navi10_get_thermal_temperature_range,
 	.display_disable_memory_clock_switch = navi10_display_disable_memory_clock_switch,
-	.get_power_limit = navi10_get_power_limit,
+	.get_ppt_limit = navi10_get_ppt_limit,
 	.update_pcie_parameters = navi10_update_pcie_parameters,
 	.init_microcode = smu_v11_0_init_microcode,
 	.load_microcode = smu_v11_0_load_microcode,
@@ -3308,7 +3319,7 @@ static const struct pptable_funcs navi10_ppt_funcs = {
 	.check_fw_status = smu_v11_0_check_fw_status,
 	.setup_pptable = navi10_setup_pptable,
 	.get_vbios_bootup_values = smu_v11_0_get_vbios_bootup_values,
-	.check_fw_version = smu_v11_0_check_fw_version,
+	.check_fw_version = smu_cmn_check_fw_version,
 	.write_pptable = smu_cmn_write_pptable,
 	.set_driver_table_location = smu_v11_0_set_driver_table_location,
 	.set_tool_table_location = smu_v11_0_set_tool_table_location,
@@ -3320,7 +3331,7 @@ static const struct pptable_funcs navi10_ppt_funcs = {
 	.feature_is_enabled = smu_cmn_feature_is_enabled,
 	.disable_all_features_with_exception = smu_cmn_disable_all_features_with_exception,
 	.notify_display_change = smu_v11_0_notify_display_change,
-	.set_power_limit = smu_v11_0_set_power_limit,
+	.set_ppt_limit = smu_v11_0_set_ppt_limit,
 	.init_max_sustainable_clocks = smu_v11_0_init_max_sustainable_clocks,
 	.enable_thermal_alert = smu_v11_0_enable_thermal_alert,
 	.disable_thermal_alert = smu_v11_0_disable_thermal_alert,
@@ -3333,7 +3344,6 @@ static const struct pptable_funcs navi10_ppt_funcs = {
 	.set_xgmi_pstate = smu_v11_0_set_xgmi_pstate,
 	.gfx_off_control = smu_v11_0_gfx_off_control,
 	.register_irq_handler = smu_v11_0_register_irq_handler,
-	.set_azalia_d3_pme = smu_v11_0_set_azalia_d3_pme,
 	.get_max_sustainable_clocks_by_dc = smu_v11_0_get_max_sustainable_clocks_by_dc,
 	.get_bamaco_support = smu_v11_0_get_bamaco_support,
 	.baco_enter = navi10_baco_enter,
@@ -3361,11 +3371,26 @@ static const struct pptable_funcs navi10_ppt_funcs = {
 
 void navi10_set_ppt_funcs(struct smu_context *smu)
 {
+	struct amdgpu_device *adev = smu->adev;
+
 	smu->ppt_funcs = &navi10_ppt_funcs;
 	smu->clock_map = navi10_clk_map;
 	smu->feature_map = navi10_feature_mask_map;
 	smu->table_map = navi10_table_map;
 	smu->pwr_src_map = navi10_pwr_src_map;
 	smu->workload_map = navi10_workload_map;
+
+	switch (amdgpu_ip_version(adev, MP1_HWIP, 0)) {
+	case IP_VERSION(11, 0, 0):
+		smu->smc_driver_if_version = SMU11_DRIVER_IF_VERSION_NV10;
+		break;
+	case IP_VERSION(11, 0, 9):
+		smu->smc_driver_if_version = SMU11_DRIVER_IF_VERSION_NV12;
+		break;
+	case IP_VERSION(11, 0, 5):
+		smu->smc_driver_if_version = SMU11_DRIVER_IF_VERSION_NV14;
+		break;
+	}
+
 	smu_v11_0_init_msg_ctl(smu, navi10_message_map);
 }

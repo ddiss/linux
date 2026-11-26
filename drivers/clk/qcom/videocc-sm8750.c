@@ -4,10 +4,8 @@
  */
 
 #include <linux/clk-provider.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 
 #include <dt-bindings/clock/qcom,sm8750-videocc.h>
@@ -393,7 +391,7 @@ static struct clk_alpha_pll *video_cc_sm8750_plls[] = {
 	&video_cc_pll0,
 };
 
-static u32 video_cc_sm8750_critical_cbcrs[] = {
+static const u32 video_cc_sm8750_critical_cbcrs[] = {
 	0x80a4, /* VIDEO_CC_AHB_CLK */
 	0x80f8, /* VIDEO_CC_SLEEP_CLK */
 	0x80d4, /* VIDEO_CC_XO_CLK */
@@ -408,7 +406,7 @@ static void clk_sm8750_regs_configure(struct device *dev, struct regmap *regmap)
 	regmap_update_bits(regmap, 0x9f24, BIT(0), BIT(0));
 }
 
-static struct qcom_cc_driver_data video_cc_sm8750_driver_data = {
+static const struct qcom_cc_driver_data video_cc_sm8750_driver_data = {
 	.alpha_plls = video_cc_sm8750_plls,
 	.num_alpha_plls = ARRAY_SIZE(video_cc_sm8750_plls),
 	.clk_cbcrs = video_cc_sm8750_critical_cbcrs,
@@ -447,17 +445,7 @@ static struct platform_driver video_cc_sm8750_driver = {
 	},
 };
 
-static int __init video_cc_sm8750_init(void)
-{
-	return platform_driver_register(&video_cc_sm8750_driver);
-}
-subsys_initcall(video_cc_sm8750_init);
-
-static void __exit video_cc_sm8750_exit(void)
-{
-	platform_driver_unregister(&video_cc_sm8750_driver);
-}
-module_exit(video_cc_sm8750_exit);
+subsys_platform_driver(video_cc_sm8750_driver);
 
 MODULE_DESCRIPTION("QTI VIDEO_CC SM8750 Driver");
 MODULE_LICENSE("GPL");

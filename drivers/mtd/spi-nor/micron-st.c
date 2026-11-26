@@ -131,7 +131,7 @@ static int micron_st_nor_four_die_late_init(struct spi_nor *nor)
 {
 	struct spi_nor_flash_parameter *params = nor->params;
 
-	params->die_erase_opcode = SPINOR_OP_MT_DIE_ERASE;
+	params->opcodes.die_erase = SPINOR_OP_MT_DIE_ERASE;
 	params->n_dice = 4;
 
 	/*
@@ -147,7 +147,7 @@ static int micron_st_nor_two_die_late_init(struct spi_nor *nor)
 {
 	struct spi_nor_flash_parameter *params = nor->params;
 
-	params->die_erase_opcode = SPINOR_OP_MT_DIE_ERASE;
+	params->opcodes.die_erase = SPINOR_OP_MT_DIE_ERASE;
 	params->n_dice = 2;
 
 	/*
@@ -167,7 +167,17 @@ static int mt35xu512aba_post_sfdp_fixup(struct spi_nor *nor)
 				  0, 20, SPINOR_OP_MT_DTR_RD,
 				  SNOR_PROTO_8_8_8_DTR);
 
-	nor->cmd_ext_type = SPI_NOR_EXT_REPEAT;
+	/*
+	 * Some batches of mt35xu512aba do not contain the OCT DTR command
+	 * information, but do support OCT DTR mode. Add the settings for
+	 * SNOR_CMD_PP_8_8_8_DTR here. This also makes sure the flash can switch
+	 * to OCT DTR mode.
+	 */
+	nor->params->hwcaps.mask |= SNOR_HWCAPS_PP_8_8_8_DTR;
+	spi_nor_set_pp_settings(&nor->params->page_programs[SNOR_CMD_PP_8_8_8_DTR],
+				SPINOR_OP_PP_4B, SNOR_PROTO_8_8_8_DTR);
+
+	nor->params->cmd_ext_type = SPI_NOR_EXT_REPEAT;
 	nor->params->rdsr_dummy = 8;
 	nor->params->rdsr_addr_nbytes = 0;
 
@@ -185,7 +195,7 @@ static const struct spi_nor_fixups mt35xu512aba_fixups = {
 	.post_sfdp = mt35xu512aba_post_sfdp_fixup,
 };
 
-static const struct spi_nor_fixups mt35xu01gbba_fixups = {
+static const struct spi_nor_fixups mt35_two_die_fixups = {
 	.post_sfdp = mt35xu512aba_post_sfdp_fixup,
 	.late_init = micron_st_nor_two_die_late_init,
 };
@@ -195,32 +205,17 @@ static const struct flash_info micron_nor_parts[] = {
 		/* MT35XU512ABA */
 		.id = SNOR_ID(0x2c, 0x5b, 0x1a),
 		.mfr_flags = USE_FSR,
-		.fixup_flags = SPI_NOR_IO_MODE_EN_VOLATILE,
-		.fixups = &mt35xu512aba_fixups,
 	}, {
 		/* MT35XU01GBBA */
 		.id = SNOR_ID(0x2c, 0x5b, 0x1b),
 		.mfr_flags = USE_FSR,
-		.fixup_flags = SPI_NOR_IO_MODE_EN_VOLATILE,
-		.fixups = &mt35xu01gbba_fixups,
 	}, {
-		/*
-		 * The MT35XU02GCBA flash device does not support chip erase,
-		 * according to its datasheet. It supports die erase, which
-		 * means the current driver implementation will likely need to
-		 * be converted to use die erase. Furthermore, similar to the
-		 * MT35XU01GBBA, the SPI_NOR_IO_MODE_EN_VOLATILE flag probably
-		 * needs to be enabled.
-		 *
-		 * TODO: Fix these and test on real hardware.
-		 */
 		.id = SNOR_ID(0x2c, 0x5b, 0x1c),
 		.name = "mt35xu02g",
 		.sector_size = SZ_128K,
 		.size = SZ_256M,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_OCTAL_READ,
 		.mfr_flags = USE_FSR,
-		.fixup_flags = SPI_NOR_4B_OPCODES,
 	},
 };
 
@@ -228,8 +223,19 @@ static int mt25qu512a_post_bfpt_fixup(struct spi_nor *nor,
 				      const struct sfdp_parameter_header *bfpt_header,
 				      const struct sfdp_bfpt *bfpt)
 {
-	nor->flags &= ~SNOR_F_HAS_16BIT_SR;
+	nor->params->opcodes.write_sr1 = 0;
 	return 0;
+}
+
+/*
+ * n25q00a parts share the first same 3 ID bytes with mt25qu01g.
+ * In order to not mix the fixups, further filter out using the part name.
+ */
+static bool n25q00a_match(const struct spi_nor *nor)
+{
+	const char *name = nor->info ? nor->info->name : NULL;
+
+	return name && !strncmp(name, "n25q00a", 7);
 }
 
 static const struct spi_nor_fixups mt25qu512a_fixups = {
@@ -394,7 +400,6 @@ static const struct flash_info st_nor_parts[] = {
 		.name = "mt25ql256a",
 		.size = SZ_32M,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
-		.fixup_flags = SPI_NOR_4B_OPCODES,
 		.mfr_flags = USE_FSR,
 	}, {
 		.id = SNOR_ID(0x20, 0xba, 0x19),
@@ -407,7 +412,6 @@ static const struct flash_info st_nor_parts[] = {
 		.name = "mt25ql512a",
 		.size = SZ_64M,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
-		.fixup_flags = SPI_NOR_4B_OPCODES,
 		.mfr_flags = USE_FSR,
 	}, {
 		.id = SNOR_ID(0x20, 0xba, 0x20),
@@ -425,14 +429,12 @@ static const struct flash_info st_nor_parts[] = {
 			 SPI_NOR_BP3_SR_BIT6,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_QUAD_READ,
 		.mfr_flags = USE_FSR,
-		.fixups = &n25q00_fixups,
 	}, {
 		.id = SNOR_ID(0x20, 0xba, 0x22),
 		.name = "mt25ql02g",
 		.size = SZ_256M,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_QUAD_READ,
 		.mfr_flags = USE_FSR,
-		.fixups = &mt25q02_fixups,
 	}, {
 		.id = SNOR_ID(0x20, 0xbb, 0x15),
 		.name = "n25q016a",
@@ -465,7 +467,6 @@ static const struct flash_info st_nor_parts[] = {
 		.flags = SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB | SPI_NOR_4BIT_BP |
 			 SPI_NOR_BP3_SR_BIT6,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
-		.fixup_flags = SPI_NOR_4B_OPCODES,
 		.mfr_flags = USE_FSR,
 	}, {
 		.id = SNOR_ID(0x20, 0xbb, 0x19),
@@ -479,7 +480,6 @@ static const struct flash_info st_nor_parts[] = {
 		.flags = SPI_NOR_HAS_LOCK | SPI_NOR_HAS_TB | SPI_NOR_4BIT_BP |
 			 SPI_NOR_BP3_SR_BIT6,
 		.mfr_flags = USE_FSR,
-		.fixups = &mt25qu512a_fixups,
 	}, {
 		.id = SNOR_ID(0x20, 0xbb, 0x20),
 		.name = "n25q512a",
@@ -492,21 +492,18 @@ static const struct flash_info st_nor_parts[] = {
 		.id = SNOR_ID(0x20, 0xbb, 0x21, 0x10, 0x44, 0x00),
 		.name = "mt25qu01g",
 		.mfr_flags = USE_FSR,
-		.fixups = &mt25q01_fixups,
 	}, {
 		.id = SNOR_ID(0x20, 0xbb, 0x21),
 		.name = "n25q00a",
 		.size = SZ_128M,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_QUAD_READ,
 		.mfr_flags = USE_FSR,
-		.fixups = &n25q00_fixups,
 	}, {
 		.id = SNOR_ID(0x20, 0xbb, 0x22),
 		.name = "mt25qu02g",
 		.size = SZ_256M,
 		.no_sfdp_flags = SECT_4K | SPI_NOR_DUAL_READ | SPI_NOR_QUAD_READ,
 		.mfr_flags = USE_FSR,
-		.fixups = &mt25q02_fixups,
 	}
 };
 
@@ -631,8 +628,8 @@ static int micron_st_nor_ready(struct spi_nor *nor)
 
 static void micron_st_nor_default_init(struct spi_nor *nor)
 {
-	nor->flags |= SNOR_F_HAS_LOCK;
-	nor->flags &= ~SNOR_F_HAS_16BIT_SR;
+	nor->params->flags |= SNOR_F_HAS_LOCK;
+	nor->params->opcodes.write_sr1 = 0;
 	nor->params->quad_enable = NULL;
 }
 
@@ -656,16 +653,44 @@ static const struct spi_nor_fixups micron_st_nor_fixups = {
 	.late_init = micron_st_nor_late_init,
 };
 
+static const struct spi_nor_fixup micron_fixups[] = {
+	{ .fixups = &micron_st_nor_fixups },
+	{ .id = SNOR_ID(0x2c, 0x5b, 0x1a), .fixups = &mt35xu512aba_fixups,
+	  .fixup_flags = SPI_NOR_IO_MODE_EN_VOLATILE },
+	{ .id = SNOR_ID(0x2c, 0x5b, 0x1b), .fixups = &mt35_two_die_fixups,
+	  .fixup_flags = SPI_NOR_IO_MODE_EN_VOLATILE },
+	{ .id = SNOR_ID(0x2c, 0x5b, 0x1c), .fixups = &mt35_two_die_fixups,
+	  .fixup_flags = SPI_NOR_4B_OPCODES | SPI_NOR_IO_MODE_EN_VOLATILE },
+};
+
+static const struct spi_nor_fixup st_fixups[] = {
+	{ .fixups = &micron_st_nor_fixups },
+	{ .id = SNOR_ID(0x20, 0xba, 0x19, 0x10, 0x44, 0x00),
+	  .fixup_flags = SPI_NOR_4B_OPCODES },
+	{ .id = SNOR_ID(0x20, 0xba, 0x20, 0x10, 0x44, 0x00),
+	  .fixup_flags = SPI_NOR_4B_OPCODES },
+	{ .id = SNOR_ID(0x20, 0xbb, 0x19, 0x10, 0x44, 0x00),
+	  .fixup_flags = SPI_NOR_4B_OPCODES },
+	{ .id = SNOR_ID(0x20, 0xba, 0x21), .fixups = &n25q00_fixups },
+	{ .id = SNOR_ID(0x20, 0xba, 0x22), .fixups = &mt25q02_fixups },
+	{ .id = SNOR_ID(0x20, 0xbb, 0x20, 0x10, 0x44, 0x00), .fixups = &mt25qu512a_fixups },
+	{ .id = SNOR_ID(0x20, 0xbb, 0x21, 0x10, 0x44, 0x00), .fixups = &mt25q01_fixups },
+	{ .id = SNOR_ID(0x20, 0xbb, 0x21), .match = n25q00a_match, .fixups = &n25q00_fixups },
+	{ .id = SNOR_ID(0x20, 0xbb, 0x22), .fixups = &mt25q02_fixups },
+};
+
 const struct spi_nor_manufacturer spi_nor_micron = {
 	.name = "micron",
 	.parts = micron_nor_parts,
 	.nparts = ARRAY_SIZE(micron_nor_parts),
-	.fixups = &micron_st_nor_fixups,
+	.fixups = micron_fixups,
+	.nfixups = ARRAY_SIZE(micron_fixups),
 };
 
 const struct spi_nor_manufacturer spi_nor_st = {
 	.name = "st",
 	.parts = st_nor_parts,
 	.nparts = ARRAY_SIZE(st_nor_parts),
-	.fixups = &micron_st_nor_fixups,
+	.fixups = st_fixups,
+	.nfixups = ARRAY_SIZE(st_fixups),
 };

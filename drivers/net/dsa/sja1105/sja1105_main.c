@@ -2278,6 +2278,12 @@ int sja1105_static_config_reload(struct sja1105_private *priv,
 	 * change it through the dynamic interface later.
 	 */
 	dsa_switch_for_each_available_port(dp, ds) {
+		/* May be called during unbind when we unoffload a VLAN-aware
+		 * bridge from port 1 while port 0 was already torn down
+		 */
+		if (!dp->pl)
+			continue;
+
 		phylink_replay_link_begin(dp->pl);
 		mac[dp->index].speed = priv->info->port_speed[SJA1105_SPEED_AUTO];
 	}
@@ -2304,10 +2310,10 @@ int sja1105_static_config_reload(struct sja1105_private *priv,
 		goto out;
 	}
 
-	t1 = timespec64_to_ns(&ptp_sts_before.pre_ts);
-	t2 = timespec64_to_ns(&ptp_sts_before.post_ts);
-	t3 = timespec64_to_ns(&ptp_sts_after.pre_ts);
-	t4 = timespec64_to_ns(&ptp_sts_after.post_ts);
+	t1 = ktime_to_ns(ptp_sts_before.pre_sts.systime);
+	t2 = ktime_to_ns(ptp_sts_before.post_sts.systime);
+	t3 = ktime_to_ns(ptp_sts_after.pre_sts.systime);
+	t4 = ktime_to_ns(ptp_sts_after.post_sts.systime);
 	/* Mid point, corresponds to pre-reset PTPCLKVAL */
 	t12 = t1 + (t2 - t1) / 2;
 	/* Mid point, corresponds to post-reset PTPCLKVAL, aka 0 */
@@ -2333,13 +2339,13 @@ int sja1105_static_config_reload(struct sja1105_private *priv,
 			goto out;
 	}
 
-	dsa_switch_for_each_available_port(dp, ds)
-		phylink_replay_link_end(dp->pl);
-
 	rc = sja1105_reload_cbs(priv);
-	if (rc < 0)
-		goto out;
+
 out:
+	dsa_switch_for_each_available_port(dp, ds)
+		if (dp->pl)
+			phylink_replay_link_end(dp->pl);
+
 	mutex_unlock(&priv->mgmt_lock);
 	mutex_unlock(&priv->fdb_lock);
 
@@ -2841,7 +2847,8 @@ static void sja1105_mirror_del(struct dsa_switch *ds, int port,
 }
 
 static int sja1105_port_policer_add(struct dsa_switch *ds, int port,
-				    const struct flow_action_police *policer)
+				    const struct flow_action_police *policer,
+				    struct netlink_ext_ack *extack)
 {
 	struct sja1105_l2_policing_entry *policing;
 	struct sja1105_private *priv = ds->priv;
@@ -3244,7 +3251,7 @@ static int sja1105_probe(struct spi_device *spi)
 	if (rc)
 		return rc;
 
-	priv = devm_kzalloc(dev, sizeof(struct sja1105_private), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, struct sja1105_private);
 	if (!priv)
 		return -ENOMEM;
 
@@ -3300,7 +3307,7 @@ static int sja1105_probe(struct spi_device *spi)
 
 	dev_info(dev, "Probed switch chip: %s\n", priv->info->name);
 
-	ds = devm_kzalloc(dev, sizeof(*ds), GFP_KERNEL);
+	ds = devm_kzalloc_obj(dev, *ds);
 	if (!ds)
 		return -ENOMEM;
 
@@ -3324,9 +3331,8 @@ static int sja1105_probe(struct spi_device *spi)
 	}
 
 	if (IS_ENABLED(CONFIG_NET_SCH_CBS)) {
-		priv->cbs = devm_kcalloc(dev, priv->info->num_cbs_shapers,
-					 sizeof(struct sja1105_cbs_entry),
-					 GFP_KERNEL);
+		priv->cbs = devm_kzalloc_objs(dev, struct sja1105_cbs_entry,
+					      priv->info->num_cbs_shapers);
 		if (!priv->cbs)
 			return -ENOMEM;
 	}
@@ -3367,7 +3373,7 @@ static const struct of_device_id sja1105_dt_ids[] = {
 	{ .compatible = "nxp,sja1110b", .data = &sja1110b_info },
 	{ .compatible = "nxp,sja1110c", .data = &sja1110c_info },
 	{ .compatible = "nxp,sja1110d", .data = &sja1110d_info },
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, sja1105_dt_ids);
 

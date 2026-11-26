@@ -884,6 +884,7 @@ void mpc32_set_3dlut_mode(
 		bool is_lut_size17x17x17,
 		uint32_t mpcc_id)
 {
+	(void)is_color_channel_12bits;
 	uint32_t lut_mode;
 	struct dcn30_mpc *mpc30 = TO_DCN30_MPC(mpc);
 
@@ -1035,6 +1036,7 @@ void dcn32_mpc_construct(struct dcn30_mpc *mpc30,
 	int i;
 
 	mpc30->base.ctx = ctx;
+	mpc30->base.inst = 0;
 
 	mpc30->base.funcs = &dcn32_mpc_funcs;
 

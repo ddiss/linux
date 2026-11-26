@@ -25,18 +25,6 @@
 
 #include "amdgpu_smu.h"
 
-#define SMU11_DRIVER_IF_VERSION_INV 0xFFFFFFFF
-#define SMU11_DRIVER_IF_VERSION_ARCT 0x17
-#define SMU11_DRIVER_IF_VERSION_NV10 0x37
-#define SMU11_DRIVER_IF_VERSION_NV12 0x38
-#define SMU11_DRIVER_IF_VERSION_NV14 0x38
-#define SMU11_DRIVER_IF_VERSION_Sienna_Cichlid 0x40
-#define SMU11_DRIVER_IF_VERSION_Navy_Flounder 0xE
-#define SMU11_DRIVER_IF_VERSION_VANGOGH 0x03
-#define SMU11_DRIVER_IF_VERSION_Dimgrey_Cavefish 0xF
-#define SMU11_DRIVER_IF_VERSION_Beige_Goby 0xD
-#define SMU11_DRIVER_IF_VERSION_Cyan_Skillfish 0x8
-
 /* MP Apertures */
 #define MP0_Public			0x03800000
 #define MP0_SRAM			0x03900000
@@ -120,10 +108,6 @@ struct smu_11_5_power_context {
 	uint32_t	power_source;
 	uint8_t		in_power_limit_boost_mode;
 	enum smu_11_0_power_state power_state;
-
-	uint32_t	current_fast_ppt_limit;
-	uint32_t	default_fast_ppt_limit;
-	uint32_t	max_fast_ppt_limit;
 };
 
 #if defined(SWSMU_CODE_LAYER_L2) || defined(SWSMU_CODE_LAYER_L3)
@@ -148,8 +132,6 @@ int smu_v11_0_setup_pptable(struct smu_context *smu);
 
 int smu_v11_0_get_vbios_bootup_values(struct smu_context *smu);
 
-int smu_v11_0_check_fw_version(struct smu_context *smu);
-
 int smu_v11_0_set_driver_table_location(struct smu_context *smu);
 
 int smu_v11_0_set_tool_table_location(struct smu_context *smu);
@@ -165,12 +147,13 @@ int smu_v11_0_set_allowed_mask(struct smu_context *smu);
 
 int smu_v11_0_notify_display_change(struct smu_context *smu);
 
-int smu_v11_0_get_current_power_limit(struct smu_context *smu,
-				      uint32_t *power_limit);
+int smu_v11_0_get_ppt_limit(struct smu_context *smu,
+			    enum smu_ppt_limit_type limit_type,
+			    uint32_t *ppt_limit);
 
-int smu_v11_0_set_power_limit(struct smu_context *smu,
-			      enum smu_ppt_limit_type limit_type,
-			      uint32_t limit);
+int smu_v11_0_set_ppt_limit(struct smu_context *smu,
+			    enum smu_ppt_limit_type limit_type,
+			    uint32_t limit);
 
 int smu_v11_0_init_max_sustainable_clocks(struct smu_context *smu);
 
@@ -212,8 +195,6 @@ int smu_v11_0_set_xgmi_pstate(struct smu_context *smu,
 int smu_v11_0_gfx_off_control(struct smu_context *smu, bool enable);
 
 int smu_v11_0_register_irq_handler(struct smu_context *smu);
-
-int smu_v11_0_set_azalia_d3_pme(struct smu_context *smu);
 
 int smu_v11_0_get_max_sustainable_clocks_by_dc(struct smu_context *smu,
 		struct pp_smu_nv_clock_table *max_clocks);

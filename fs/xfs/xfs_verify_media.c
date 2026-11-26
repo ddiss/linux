@@ -84,11 +84,14 @@ out_rele:
 	return 0;
 }
 
-/* Walk reverse mappings to look for all file data loss */
-static int
+/*
+ * Report data loss on the physical sectors, and if possible, walk the reverse
+ * mappings to also report the loss to the files mapped to these sectors.
+ */
+static void
 xfs_verify_report_losses(
 	struct xfs_mount	*mp,
-	enum xfs_group_type	type,
+	enum xfs_device		dev,
 	xfs_daddr_t		daddr,
 	u64			bblen)
 {
@@ -97,13 +100,25 @@ xfs_verify_report_losses(
 	xfs_fsblock_t		start_bno, end_bno;
 	uint32_t		start_gno, end_gno;
 	int			error;
+	enum xfs_group_type	type;
 
-	if (type == XG_TYPE_RTG) {
+	xfs_healthmon_report_media(mp, dev, daddr, bblen);
+	if (!xfs_has_rmapbt(mp))
+		return;
+
+	switch (dev) {
+	case XFS_DEV_RT:
 		start_bno = xfs_daddr_to_rtb(mp, daddr);
 		end_bno = xfs_daddr_to_rtb(mp, daddr + bblen - 1);
-	} else {
+		type = XG_TYPE_RTG;
+		break;
+	case XFS_DEV_DATA:
 		start_bno = XFS_DADDR_TO_FSB(mp, daddr);
 		end_bno = XFS_DADDR_TO_FSB(mp, daddr + bblen - 1);
+		type = XG_TYPE_AG;
+		break;
+	default:
+		return;
 	}
 
 	tp = xfs_trans_alloc_empty(mp);
@@ -122,7 +137,7 @@ xfs_verify_report_losses(
 
 			error = xfs_alloc_read_agf(pag, tp, 0, &agf_bp);
 			if (error) {
-				xfs_perag_put(pag);
+				xfs_perag_rele(pag);
 				break;
 			}
 
@@ -158,13 +173,12 @@ xfs_verify_report_losses(
 		if (rtg)
 			xfs_rtgroup_unlock(rtg, XFS_RTGLOCK_RMAP);
 		if (error) {
-			xfs_group_put(xg);
+			xfs_group_rele(xg);
 			break;
 		}
 	}
 
 	xfs_trans_cancel(tp);
-	return 0;
 }
 
 /*
@@ -183,10 +197,9 @@ xfs_verify_iosize(
 			min_not_zero(SZ_1M, me->me_max_io_size);
 
 	BUILD_BUG_ON(BBSHIFT != SECTOR_SHIFT);
-	ASSERT(BBTOB(bbcount) >= bdev_logical_block_size(btp->bt_bdev));
+	ASSERT(BBTOB(bbcount) >= btp->bt_logical_sectorsize);
 
-	return clamp(iosize, bdev_logical_block_size(btp->bt_bdev),
-			BBTOB(bbcount));
+	return clamp(iosize, btp->bt_logical_sectorsize, BBTOB(bbcount));
 }
 
 /* Allocate as much memory as we can get for verification buffer. */
@@ -216,17 +229,19 @@ xfs_verify_media_error(
 	struct xfs_buftarg	*btp,
 	xfs_daddr_t		daddr,
 	unsigned int		bio_bbcount,
-	blk_status_t		bio_status)
+	int			error)
 {
-	trace_xfs_verify_media_error(mp, me, btp->bt_bdev->bd_dev, daddr,
-			bio_bbcount, bio_status);
+	blk_status_t		bio_status = errno_to_blk_status(error);
+
+	trace_xfs_verify_media_error(mp, me, btp->bt_dev, daddr, bio_bbcount,
+			bio_status);
 
 	/*
 	 * Pass any error, I/O or otherwise, up to the caller if we didn't
 	 * successfully verify any bytes at all.
 	 */
 	if (me->me_start_daddr == daddr)
-		me->me_ioerror = -blk_status_to_errno(bio_status);
+		me->me_ioerror = -error;
 
 	/*
 	 * PI validation failures, medium errors, or general IO errors are
@@ -237,25 +252,11 @@ xfs_verify_media_error(
 	case BLK_STS_PROTECTION:
 	case BLK_STS_IOERR:
 	case BLK_STS_MEDIUM:
+		if (me->me_flags & XFS_VERIFY_MEDIA_REPORT)
+			xfs_verify_report_losses(mp, me->me_dev, daddr,
+					bio_bbcount);
 		break;
 	default:
-		return;
-	}
-
-	if (!(me->me_flags & XFS_VERIFY_MEDIA_REPORT))
-		return;
-
-	xfs_healthmon_report_media(mp, me->me_dev, daddr, bio_bbcount);
-
-	if (!xfs_has_rmapbt(mp))
-		return;
-
-	switch (me->me_dev) {
-	case XFS_DEV_DATA:
-		xfs_verify_report_losses(mp, XG_TYPE_AG, daddr, bio_bbcount);
-		break;
-	case XFS_DEV_RT:
-		xfs_verify_report_losses(mp, XG_TYPE_RTG, daddr, bio_bbcount);
 		break;
 	}
 }
@@ -267,8 +268,9 @@ xfs_verify_media(
 	struct xfs_verify_media	*me)
 {
 	struct xfs_buftarg	*btp = NULL;
-	struct bio		*bio;
 	struct folio		*folio;
+	xfs_daddr_t		dev_start = 0;
+	xfs_daddr_t		dev_end = 0;
 	xfs_daddr_t		daddr;
 	uint64_t		bbcount;
 	int			error = 0;
@@ -278,28 +280,37 @@ xfs_verify_media(
 	switch (me->me_dev) {
 	case XFS_DEV_DATA:
 		btp = mp->m_ddev_targp;
+		dev_end = XFS_FSB_TO_BB(mp, mp->m_sb.sb_dblocks);
 		break;
 	case XFS_DEV_LOG:
-		if (mp->m_logdev_targp->bt_bdev != mp->m_ddev_targp->bt_bdev)
+		if (mp->m_logdev_targp != mp->m_ddev_targp) {
 			btp = mp->m_logdev_targp;
+			dev_end = XFS_FSB_TO_BB(mp, mp->m_sb.sb_logblocks);
+		}
 		break;
 	case XFS_DEV_RT:
 		btp = mp->m_rtdev_targp;
+		dev_start = XFS_FSB_TO_BB(mp, mp->m_sb.sb_rtstart);
+		dev_end = XFS_FSB_TO_BB(mp, mp->m_sb.sb_rtstart +
+					    mp->m_sb.sb_rblocks);
 		break;
 	}
 	if (!btp)
 		return -ENODEV;
 
 	/*
-	 * If the caller told us to verify beyond the end of the disk, tell the
-	 * user exactly where that was.
+	 * If the caller told us to verify before the start or beyond the end
+	 * of the disk volume, tell the user exactly where the volume starts
+	 * and ends.
 	 */
-	if (me->me_end_daddr > btp->bt_nr_sectors)
-		me->me_end_daddr = btp->bt_nr_sectors;
+	if (me->me_end_daddr > dev_end)
+		me->me_end_daddr = dev_end;
+	if (me->me_start_daddr < dev_start)
+		me->me_start_daddr = dev_start;
 
 	/* start and end have to be aligned to the lba size */
 	if (!IS_ALIGNED(BBTOB(me->me_start_daddr | me->me_end_daddr),
-			bdev_logical_block_size(btp->bt_bdev)))
+			btp->bt_logical_sectorsize))
 		return -EINVAL;
 
 	/*
@@ -324,43 +335,24 @@ xfs_verify_media(
 	 *    verifying.
 	 */
 	daddr = me->me_start_daddr;
-	bbcount = min_t(sector_t, me->me_end_daddr, btp->bt_nr_sectors) -
-			  me->me_start_daddr;
+	bbcount = me->me_end_daddr - me->me_start_daddr;
 
 	folio = xfs_verify_alloc_folio(xfs_verify_iosize(me, btp, bbcount));
 	if (!folio)
 		return -ENOMEM;
 
-	trace_xfs_verify_media(mp, me, btp->bt_bdev->bd_dev, daddr, bbcount,
-			folio);
+	trace_xfs_verify_media(mp, me, btp->bt_dev, daddr, bbcount, folio);
 
-	bio = bio_alloc(btp->bt_bdev, 1, REQ_OP_READ, GFP_KERNEL);
-	if (!bio) {
-		error = -ENOMEM;
-		goto out_folio;
-	}
-
-	while (bbcount > 0) {
+	for (;;) {
 		unsigned int	bio_bbcount;
-		blk_status_t	bio_status;
 
-		bio_reset(bio, btp->bt_bdev, REQ_OP_READ);
-		bio->bi_iter.bi_sector = daddr;
-		bio_add_folio_nofail(bio, folio,
-				min(bbcount << SECTOR_SHIFT, folio_size(folio)),
-				0);
-
-		/*
-		 * Save the length of the bio before we submit it, because we
-		 * need the original daddr and length for reporting IO errors
-		 * if the bio fails.
-		 */
-		bio_bbcount = bio->bi_iter.bi_size >> SECTOR_SHIFT;
-		submit_bio_wait(bio);
-		bio_status = bio->bi_status;
-		if (bio_status != BLK_STS_OK) {
+		bio_bbcount = min(bbcount, folio_size(folio) >> SECTOR_SHIFT);
+		error = bdev_rw_virt(btp->bt_bdev, daddr, folio_address(folio),
+				bio_bbcount << SECTOR_SHIFT,
+				REQ_OP_READ);
+		if (error) {
 			xfs_verify_media_error(mp, me, btp, daddr, bio_bbcount,
-					bio_status);
+					error);
 			error = 0;
 			break;
 		}
@@ -388,10 +380,7 @@ xfs_verify_media(
 		cond_resched();
 	}
 
-	bio_put(bio);
-out_folio:
 	folio_put(folio);
-
 	if (error)
 		return error;
 
@@ -400,7 +389,7 @@ out_folio:
 	 * an operational error.
 	 */
 	me->me_start_daddr = daddr;
-	trace_xfs_verify_media_end(mp, me, btp->bt_bdev->bd_dev);
+	trace_xfs_verify_media_end(mp, me, btp->bt_dev);
 	return 0;
 }
 

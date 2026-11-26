@@ -573,7 +573,7 @@ static void cpsw_init_host_port(struct cpsw_priv *priv)
 	u32 control_reg;
 
 	/* soft reset the controller and initialize ale */
-	soft_reset("cpsw", &cpsw->regs->soft_reset);
+	cpsw_soft_reset("cpsw", &cpsw->regs->soft_reset);
 	cpsw_ale_start(cpsw->ale);
 
 	/* switch to vlan aware mode */
@@ -1266,9 +1266,8 @@ static int cpsw_probe_dt(struct cpsw_common *cpsw)
 	data->bd_ram_size = CPSW_BD_RAM_SIZE;
 	data->mac_control = 0;
 
-	data->slave_data = devm_kcalloc(dev, CPSW_SLAVE_PORTS_NUM,
-					sizeof(struct cpsw_slave_data),
-					GFP_KERNEL);
+	data->slave_data = devm_kzalloc_objs(dev, struct cpsw_slave_data,
+					     CPSW_SLAVE_PORTS_NUM);
 	if (!data->slave_data) {
 		of_node_put(tmp_node);
 		return -ENOMEM;
@@ -1875,7 +1874,7 @@ static const struct of_device_id cpsw_of_mtable[] = {
 	{ .compatible = "ti,am335x-cpsw-switch"},
 	{ .compatible = "ti,am4372-cpsw-switch"},
 	{ .compatible = "ti,dra7-cpsw-switch"},
-	{ /* sentinel */ },
+	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, cpsw_of_mtable);
 
@@ -1896,7 +1895,7 @@ static int cpsw_probe(struct platform_device *pdev)
 	struct clk *clk;
 	int irq;
 
-	cpsw = devm_kzalloc(dev, sizeof(struct cpsw_common), GFP_KERNEL);
+	cpsw = devm_kzalloc_obj(dev, struct cpsw_common);
 	if (!cpsw)
 		return -ENOMEM;
 
@@ -1904,10 +1903,8 @@ static int cpsw_probe(struct platform_device *pdev)
 
 	cpsw->dev = dev;
 
-	cpsw->slaves = devm_kcalloc(dev,
-				    CPSW_SLAVE_PORTS_NUM,
-				    sizeof(struct cpsw_slave),
-				    GFP_KERNEL);
+	cpsw->slaves = devm_kzalloc_objs(dev, struct cpsw_slave,
+					 CPSW_SLAVE_PORTS_NUM);
 	if (!cpsw->slaves)
 		return -ENOMEM;
 
@@ -2050,7 +2047,7 @@ skip_cpts:
 
 	ret = cpsw_register_ports(cpsw);
 	if (ret)
-		goto clean_unregister_notifiers;
+		goto clean_unregister_devlink;
 
 	dev_notice(dev, "initialized (regs %pa, pool size %d) hw_ver:%08X %d.%d (%d)\n",
 		   &ss_res->start, descs_pool_size,
@@ -2062,6 +2059,8 @@ skip_cpts:
 
 	return 0;
 
+clean_unregister_devlink:
+	cpsw_unregister_devlink(cpsw);
 clean_unregister_notifiers:
 	cpsw_unregister_notifiers(cpsw);
 clean_cpts:

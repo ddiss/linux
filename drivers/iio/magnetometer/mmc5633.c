@@ -24,7 +24,6 @@
 #include <linux/init.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
 #include <linux/pm.h>
 #include <linux/regmap.h>
@@ -500,12 +499,11 @@ static int mmc5633_resume(struct device *dev)
 	struct regmap *regmap = dev_get_regmap(dev, NULL);
 	int ret;
 
+	regcache_cache_only(regmap, false);
 	regcache_mark_dirty(regmap);
 	ret = regcache_sync_region(regmap, MMC5633_REG_CTRL0, MMC5633_REG_CTRL1);
 	if (ret)
 		dev_err(dev, "Failed to restore control registers\n");
-
-	regcache_cache_only(regmap, false);
 
 	return 0;
 }
@@ -532,8 +530,8 @@ static const struct of_device_id mmc5633_of_match[] = {
 MODULE_DEVICE_TABLE(of, mmc5633_of_match);
 
 static const struct i2c_device_id mmc5633_i2c_id[] = {
-	{ "mmc5603" },
-	{ "mmc5633" },
+	{ .name = "mmc5603" },
+	{ .name = "mmc5633" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, mmc5633_i2c_id);

@@ -400,8 +400,8 @@ xfs_blkdev_get(
 	blk_mode_t		mode;
 
 	mode = sb_open_mode(mp->m_super->s_flags);
-	*bdev_filep = bdev_file_open_by_path(name, mode,
-			mp->m_super, &fs_holder_ops);
+	*bdev_filep = fs_bdev_file_open_by_path(name, mode,
+			mp->m_super, mp->m_super);
 	if (IS_ERR(*bdev_filep)) {
 		error = PTR_ERR(*bdev_filep);
 		*bdev_filep = NULL;
@@ -445,7 +445,7 @@ xfs_shutdown_devices(
 		blkdev_issue_flush(mp->m_logdev_targp->bt_bdev);
 		invalidate_bdev(mp->m_logdev_targp->bt_bdev);
 	}
-	if (mp->m_rtdev_targp) {
+	if (mp->m_rtdev_targp && mp->m_rtdev_targp != mp->m_ddev_targp) {
 		blkdev_issue_flush(mp->m_rtdev_targp->bt_bdev);
 		invalidate_bdev(mp->m_rtdev_targp->bt_bdev);
 	}
@@ -526,7 +526,7 @@ xfs_open_devices(
 		mp->m_logdev_targp = mp->m_ddev_targp;
 		/* Handle won't be used, drop it */
 		if (logdev_file)
-			bdev_fput(logdev_file);
+			fs_bdev_file_release(logdev_file, mp->m_super);
 	}
 
 	return 0;
@@ -534,15 +534,64 @@ xfs_open_devices(
  out_free_rtdev_targ:
 	if (mp->m_rtdev_targp)
 		xfs_free_buftarg(mp->m_rtdev_targp);
+	mp->m_rtdev_targp = NULL;
+	rtdev_file = NULL;	/* released by xfs_free_buftarg() */
  out_free_ddev_targ:
 	xfs_free_buftarg(mp->m_ddev_targp);
+	mp->m_ddev_targp = NULL;
  out_close_rtdev:
 	 if (rtdev_file)
-		bdev_fput(rtdev_file);
+		fs_bdev_file_release(rtdev_file, mp->m_super);
  out_close_logdev:
 	if (logdev_file)
-		bdev_fput(logdev_file);
+		fs_bdev_file_release(logdev_file, mp->m_super);
 	return error;
+}
+
+/*
+ * When using a RT device some or all data I/O is using the RT device, but
+ * the BDI is inherited from the main data device.  When the underlying block
+ * device for the RT device has larger I/O sizes, the BDI settings might be
+ * incorrect, which is especially bad if the main device is a SSD and the
+ * RT device is a HDD, as the io_opt fixup in blk_apply_bdi_limits is missing
+ * for this case.
+ *
+ * Update the BDI values to the max of the data and RT device to cover our
+ * bases.
+ */
+static void
+xfs_update_bdi_rahead(
+	struct xfs_mount	*mp)
+{
+	struct backing_dev_info	*rt_bdi =
+		mp->m_rtdev_targp->bt_bdev->bd_disk->bdi;
+	struct backing_dev_info	*sb_bdi = mp->m_super->s_bdi;
+
+	mp->m_old_io_pages = sb_bdi->io_pages;
+	mp->m_old_ra_pages = sb_bdi->ra_pages;
+
+	sb_bdi->io_pages = mp->m_initial_io_pages =
+		max(sb_bdi->io_pages, rt_bdi->io_pages);
+	sb_bdi->ra_pages = mp->m_initial_ra_pages =
+		max(sb_bdi->ra_pages, rt_bdi->ra_pages);
+}
+
+static void
+xfs_restore_bdi_rahead(
+	struct xfs_mount	*mp)
+{
+	struct backing_dev_info	*sb_bdi = mp->m_super->s_bdi;
+
+	if (sb_bdi->io_pages == mp->m_initial_io_pages)
+		sb_bdi->io_pages = mp->m_old_io_pages;
+	else
+		xfs_info(mp, "io_pages changed from %lu to %lu, not restoring.",
+				mp->m_initial_io_pages, sb_bdi->io_pages);
+	if (sb_bdi->ra_pages == mp->m_initial_ra_pages)
+		sb_bdi->ra_pages = mp->m_old_ra_pages;
+	else
+		xfs_info(mp, "ra_pages changed from %lu to %lu, not restoring.",
+				mp->m_initial_ra_pages, sb_bdi->ra_pages);
 }
 
 /*
@@ -582,6 +631,7 @@ xfs_setup_devices(
 				mp->m_sb.sb_sectsize, mp->m_sb.sb_rblocks);
 		if (error)
 			return error;
+		xfs_update_bdi_rahead(mp);
 	}
 
 	return 0;
@@ -712,8 +762,8 @@ xfs_fs_destroy_inode(
 	trace_xfs_destroy_inode(ip);
 
 	ASSERT(!rwsem_is_locked(&inode->i_rwsem));
-	XFS_STATS_INC(ip->i_mount, vn_rele);
-	XFS_STATS_INC(ip->i_mount, vn_remove);
+	XFS_STATS_INC(ip->i_mount, xs_inode_destroy);
+	XFS_STATS_INC(ip->i_mount, xs_inode_destroy2);
 	xfs_inode_mark_reclaimable(ip);
 }
 
@@ -866,7 +916,7 @@ xfs_statfs_data(
 		xfs_sum_freecounter(mp, XC_FREE_BLOCKS);
 
 	/* make sure st->f_bfree does not underflow */
-	st->f_bfree = max(0LL,
+	st->f_bfree = max_t(int64_t, 0,
 		fdblocks - xfs_freecounter_unavailable(mp, XC_FREE_BLOCKS));
 
 	/*
@@ -1839,7 +1889,7 @@ xfs_fs_fill_super(
 	 * Avoid integer overflow by comparing the maximum bmbt offset to the
 	 * maximum pagecache offset in units of fs blocks.
 	 */
-	if (!xfs_verify_fileoff(mp, XFS_B_TO_FSBT(mp, MAX_LFS_FILESIZE))) {
+	if (!xfs_verify_fileoff(XFS_B_TO_FSBT(mp, MAX_LFS_FILESIZE))) {
 		xfs_warn(mp,
 "MAX_LFS_FILESIZE block offset (%llu) exceeds extent map maximum (%llu)!",
 			 XFS_B_TO_FSBT(mp, MAX_LFS_FILESIZE),
@@ -1901,7 +1951,6 @@ xfs_fs_fill_super(
 			error = -EINVAL;
 			goto out_filestream_unmount;
 		}
-		xfs_warn_experimental(mp, XFS_EXPERIMENTAL_ZONED);
 	}
 
 	if (xfs_has_reflink(mp)) {
@@ -2268,6 +2317,7 @@ xfs_init_fs_context(
 	mp->m_logbufs = -1;
 	mp->m_logbsize = -1;
 	mp->m_allocsize_log = 16; /* 64k */
+	mp->m_read_bounce = XFS_READ_BOUNCE_LAZY;
 
 	xfs_hooks_init(&mp->m_dir_update_hooks);
 
@@ -2281,8 +2331,12 @@ static void
 xfs_kill_sb(
 	struct super_block		*sb)
 {
+	struct xfs_mount		*mp = XFS_M(sb);
+
+	if (mp->m_rtdev_targp && mp->m_rtdev_targp != mp->m_ddev_targp)
+		xfs_restore_bdi_rahead(mp);
 	kill_block_super(sb);
-	xfs_mount_free(XFS_M(sb));
+	xfs_mount_free(mp);
 }
 
 static struct file_system_type xfs_fs_type = {
@@ -2614,9 +2668,15 @@ init_xfs_fs(void)
 	if (error)
 		goto out_destroy_wq;
 
+	xfsstats.xs_stats = alloc_percpu(struct xfsstats);
+	if (!xfsstats.xs_stats) {
+		error = -ENOMEM;
+		goto out_mru_cache_uninit;
+	}
+
 	error = xfs_init_procfs();
 	if (error)
-		goto out_mru_cache_uninit;
+		goto out_free_stats;
 
 	error = xfs_sysctl_register();
 	if (error)
@@ -2632,16 +2692,10 @@ init_xfs_fs(void)
 
 	xfsstats.xs_kobj.kobject.kset = xfs_kset;
 
-	xfsstats.xs_stats = alloc_percpu(struct xfsstats);
-	if (!xfsstats.xs_stats) {
-		error = -ENOMEM;
-		goto out_kset_unregister;
-	}
-
 	error = xfs_sysfs_init(&xfsstats.xs_kobj, &xfs_stats_ktype, NULL,
 			       "stats");
 	if (error)
-		goto out_free_stats;
+		goto out_kset_unregister;
 
 	error = xchk_global_stats_setup(xfs_debugfs);
 	if (error)
@@ -2673,8 +2727,6 @@ init_xfs_fs(void)
 	xchk_global_stats_teardown();
  out_remove_stats_kobj:
 	xfs_sysfs_del(&xfsstats.xs_kobj);
- out_free_stats:
-	free_percpu(xfsstats.xs_stats);
  out_kset_unregister:
 	kset_unregister(xfs_kset);
  out_debugfs_unregister:
@@ -2682,6 +2734,8 @@ init_xfs_fs(void)
 	xfs_sysctl_unregister();
  out_cleanup_procfs:
 	xfs_cleanup_procfs();
+ out_free_stats:
+	free_percpu(xfsstats.xs_stats);
  out_mru_cache_uninit:
 	xfs_mru_cache_uninit();
  out_destroy_wq:
@@ -2702,11 +2756,11 @@ exit_xfs_fs(void)
 #endif
 	xchk_global_stats_teardown();
 	xfs_sysfs_del(&xfsstats.xs_kobj);
-	free_percpu(xfsstats.xs_stats);
 	kset_unregister(xfs_kset);
 	debugfs_remove(xfs_debugfs);
 	xfs_sysctl_unregister();
 	xfs_cleanup_procfs();
+	free_percpu(xfsstats.xs_stats);
 	xfs_mru_cache_uninit();
 	xfs_destroy_workqueues();
 	xfs_destroy_caches();

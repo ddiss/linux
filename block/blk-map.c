@@ -236,6 +236,7 @@ static int bio_copy_user_iov(struct request *rq, struct rq_map_data *map_data,
 		ret = bio_copy_from_iter(bio, &iter2);
 		if (ret)
 			goto cleanup;
+		iov_iter_advance(iter, bio->bi_iter.bi_size);
 	} else {
 		if (bmd->is_our_pages)
 			zero_fill_bio(bio);
@@ -274,7 +275,7 @@ static int bio_map_user_iov(struct request *rq, struct iov_iter *iter,
 	 * No alignment requirements on our part to support arbitrary
 	 * passthrough commands.
 	 */
-	ret = bio_iov_iter_get_pages(bio, iter, 0);
+	ret = bio_iov_iter_get_pages(bio, iter, BIO_MAX_SIZE, 0, 0);
 	if (ret)
 		goto out_put;
 	ret = blk_rq_append_bio(rq, bio);
@@ -356,7 +357,6 @@ static void bio_copy_kern_endio_read(struct bio *bio)
  *	@rq: request to fill
  *	@data: pointer to buffer to copy
  *	@len: length in bytes
- *	@op: bio/request operation
  *	@gfp_mask: allocation flags for bio and page allocation
  *
  *	copy the kernel address into a bio suitable for io to a block
@@ -398,8 +398,7 @@ static struct bio *bio_copy_kern(struct request *rq, void *data, unsigned int le
 		if (op_is_write(op))
 			memcpy(page_address(page), p, bytes);
 
-		if (bio_add_page(bio, page, bytes, 0) < bytes)
-			break;
+		__bio_add_page(bio, page, bytes, 0);
 
 		len -= bytes;
 		p += bytes;
@@ -474,7 +473,7 @@ static int blk_rq_map_user_bvec(struct request *rq, const struct iov_iter *iter)
 	bio = blk_rq_map_bio_alloc(rq, 0, GFP_KERNEL);
 	if (!bio)
 		return -ENOMEM;
-	bio_iov_bvec_set(bio, iter);
+	bio_iov_iter_set(bio, iter);
 
 	ret = blk_rq_append_bio(rq, bio);
 	if (ret)
@@ -654,6 +653,7 @@ int blk_rq_map_kern(struct request *rq, void *kbuf, unsigned int len,
 		gfp_t gfp_mask)
 {
 	unsigned long addr = (unsigned long) kbuf;
+	bool do_copy;
 	struct bio *bio;
 	int ret;
 
@@ -662,7 +662,8 @@ int blk_rq_map_kern(struct request *rq, void *kbuf, unsigned int len,
 	if (!len || !kbuf)
 		return -EINVAL;
 
-	if (!blk_rq_aligned(rq->q, addr, len) || object_is_on_stack(kbuf))
+	do_copy = !blk_rq_aligned(rq->q, addr, len) || object_is_on_stack(kbuf);
+	if (do_copy)
 		bio = bio_copy_kern(rq, kbuf, len, gfp_mask);
 	else
 		bio = bio_map_kern(rq, kbuf, len, gfp_mask);
@@ -671,8 +672,11 @@ int blk_rq_map_kern(struct request *rq, void *kbuf, unsigned int len,
 		return PTR_ERR(bio);
 
 	ret = blk_rq_append_bio(rq, bio);
-	if (unlikely(ret))
+	if (unlikely(ret)) {
+		if (do_copy)
+			bio_free_pages(bio);
 		blk_mq_map_bio_put(bio);
+	}
 	return ret;
 }
 EXPORT_SYMBOL(blk_rq_map_kern);

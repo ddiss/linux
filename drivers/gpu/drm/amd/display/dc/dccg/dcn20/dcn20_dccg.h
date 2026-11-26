@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Advanced Micro Devices, Inc.
+ * Copyright 2018-2026 Advanced Micro Devices, Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -38,7 +38,11 @@
 	DCCG_SRII(PIXEL_RATE_CNTL, OTG, 0),\
 	DCCG_SRII(PIXEL_RATE_CNTL, OTG, 1),\
 	SR(DISPCLK_FREQ_CHANGE_CNTL),\
-	SR(DC_MEM_GLOBAL_PWR_REQ_CNTL)
+	SR(DC_MEM_GLOBAL_PWR_REQ_CNTL),\
+	SR(MICROSECOND_TIME_BASE_DIV),\
+	SR(MILLISECOND_TIME_BASE_DIV),\
+	SR(DCCG_GATE_DISABLE_CNTL),\
+	SR(DCCG_GATE_DISABLE_CNTL2)
 
 #define DCCG_REG_LIST_DCN2() \
 	DCCG_COMMON_REG_LIST_DCN_BASE(),\
@@ -252,6 +256,10 @@
 	type DSCCLK1_EN;\
 	type DSCCLK2_EN;\
 	type DSCCLK3_EN;\
+	type DSCCLK0_DTO_DB_EN;\
+	type DSCCLK1_DTO_DB_EN;\
+	type DSCCLK2_DTO_DB_EN;\
+	type DSCCLK3_DTO_DB_EN;\
 	type DISPCLK_DCCG_GATE_DISABLE;\
 	type DCCG_GLOBAL_FGCG_REP_DIS; \
 	type PHYASYMCLK_EN;\
@@ -362,6 +370,24 @@
 	type SYMCLK32_LE3_EN;\
 	type DP_DTO_ENABLE[MAX_PIPES];
 
+#define DCCG42_REG_FIELD_LIST(type) \
+	type OTG0_ADD_PIXEL;\
+	type OTG1_ADD_PIXEL;\
+	type OTG2_ADD_PIXEL;\
+	type OTG0_DROP_PIXEL;\
+	type OTG1_DROP_PIXEL;\
+	type OTG2_DROP_PIXEL;\
+	type OTG3_ADD_PIXEL;\
+	type OTG3_DROP_PIXEL;\
+	type RESYNC_FIFO_LEVEL_ADJUST_EN;
+
+#define DCCG60_REG_FIELD_LIST(type) \
+	type OTG_ADD_DROP_PIXEL_DONE;\
+	type DSCCLK0_SRC_SEL;\
+	type DSCCLK1_SRC_SEL;\
+	type DSCCLK2_SRC_SEL;\
+	type DSCCLK3_SRC_SEL;
+
 struct dccg_shift {
 	DCCG_REG_FIELD_LIST(uint8_t)
 	DCCG3_REG_FIELD_LIST(uint8_t)
@@ -370,6 +396,8 @@ struct dccg_shift {
 	DCCG32_REG_FIELD_LIST(uint8_t)
 	DCCG35_REG_FIELD_LIST(uint8_t)
 	DCCG401_REG_FIELD_LIST(uint8_t)
+	DCCG42_REG_FIELD_LIST(uint8_t)
+	DCCG60_REG_FIELD_LIST(uint8_t)
 };
 
 struct dccg_mask {
@@ -380,6 +408,8 @@ struct dccg_mask {
 	DCCG32_REG_FIELD_LIST(uint32_t)
 	DCCG35_REG_FIELD_LIST(uint32_t)
 	DCCG401_REG_FIELD_LIST(uint32_t)
+	DCCG42_REG_FIELD_LIST(uint32_t)
+	DCCG60_REG_FIELD_LIST(uint32_t)
 };
 
 #define DCCG_REG_VARIABLE_LIST \
@@ -493,6 +523,8 @@ struct dccg_mask {
 
 struct dccg_registers {
 	DCCG_REG_VARIABLE_LIST;
+	uint32_t OTG_ADD_DROP_PIXEL_CNTL;
+	uint32_t DSCCLK_SRC_SEL;
 };
 
 struct dcn_dccg {

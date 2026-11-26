@@ -10,6 +10,10 @@
 /dts-v1/;
 /plugin/;
 
+&gpu_zap_shader {
+	status = "disabled";
+};
+
 &iris {
 	status = "disabled";
 };
@@ -27,9 +31,9 @@
 };
 
 &remoteproc_gpdsp0 {
-       iommus = <&apps_smmu 0x38a0 0x0>;
+	iommus = <&apps_smmu 0x38a0 0x0>;
 };
 
 &remoteproc_gpdsp1 {
-       iommus = <&apps_smmu 0x38c0 0x0>;
+	iommus = <&apps_smmu 0x38c0 0x0>;
 };

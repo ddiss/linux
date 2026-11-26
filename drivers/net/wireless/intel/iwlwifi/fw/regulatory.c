@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 /*
- * Copyright (C) 2023, 2025 Intel Corporation
+ * Copyright (C) 2023, 2025-2026 Intel Corporation
  */
 #include <linux/dmi.h>
 #include "iwl-drv.h"
@@ -11,9 +11,7 @@
 
 #define GET_BIOS_TABLE(__name, ...)					\
 do {									\
-	int ret = -ENOENT;						\
-	if (fwrt->uefi_tables_lock_status > UEFI_WIFI_GUID_UNLOCKED)	\
-		ret = iwl_uefi_get_ ## __name(__VA_ARGS__);		\
+	int ret = iwl_uefi_get_ ## __name(__VA_ARGS__);			\
 	if (ret < 0)							\
 		ret = iwl_acpi_get_ ## __name(__VA_ARGS__);		\
 	return ret;							\
@@ -32,6 +30,8 @@ IWL_EXPORT_SYMBOL(iwl_bios_get_ ## __name)
 
 IWL_BIOS_TABLE_LOADER(wrds_table);
 IWL_BIOS_TABLE_LOADER(ewrd_table);
+IWL_BIOS_TABLE_LOADER(wsss_table);
+IWL_BIOS_TABLE_LOADER(ewss_table);
 IWL_BIOS_TABLE_LOADER(wgds_table);
 IWL_BIOS_TABLE_LOADER(ppag_table);
 IWL_BIOS_TABLE_LOADER(phy_filters);
@@ -49,9 +49,14 @@ static const struct dmi_system_id dmi_ppag_approved_list[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
 		},
 	},
-	{ .ident = "SAMSUNG",
+	{ .ident = "SAMSUNG_ELECTRONICS",
 	  .matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD"),
+		},
+	},
+	{ .ident = "SAMSUNG",
+	  .matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Samsung"),
 		},
 	},
 	{ .ident = "MSFT",
@@ -112,6 +117,11 @@ static const struct dmi_system_id dmi_ppag_approved_list[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "WIKO"),
 		},
 	},
+	{ .ident = "XIAOMI",
+	  .matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "XIAOMI"),
+		},
+	},
 	{}
 };
 
@@ -121,9 +131,14 @@ static const struct dmi_system_id dmi_tas_approved_list[] = {
 			DMI_MATCH(DMI_SYS_VENDOR, "HP"),
 		},
 	},
-	{ .ident = "SAMSUNG",
+	{ .ident = "SAMSUNG_ELECTRONICS",
 	  .matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD"),
+		},
+	},
+	{ .ident = "SAMSUNG",
+	  .matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Samsung"),
 		},
 	},
 		{ .ident = "LENOVO",
@@ -162,6 +177,12 @@ static const struct dmi_system_id dmi_tas_approved_list[] = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "HP"),
 		},
 	},
+	{ .ident = "GOOGLE-ASUS",
+	  .matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Google"),
+			DMI_MATCH(DMI_BOARD_VENDOR, "ASUS"),
+		},
+	},
 	{ .ident = "MSI",
 	  .matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Micro-Star International Co., Ltd."),
@@ -178,21 +199,22 @@ static const struct dmi_system_id dmi_tas_approved_list[] = {
 
 bool iwl_sar_geo_support(struct iwl_fw_runtime *fwrt)
 {
+	u32 ucode_ver = fwrt->fw->ucode_ver;
+
 	/*
 	 * The PER_CHAIN_LIMIT_OFFSET_CMD command is not supported on
 	 * earlier firmware versions.  Unfortunately, we don't have a
-	 * TLV API flag to rely on, so rely on the major version which
-	 * is in the first byte of ucode_ver.  This was implemented
-	 * initially on version 38 and then backported to 17.  It was
-	 * also backported to 29, but only for 7265D devices.  The
-	 * intention was to have it in 36 as well, but not all 8000
-	 * family got this feature enabled.  The 8000 family is the
-	 * only one using version 36, so skip this version entirely.
+	 * TLV API flag to rely on, so rely on the ucode version.  This
+	 * was implemented initially on version 38 and then backported
+	 * to 17.  It was also backported to 29, but only for 7265D
+	 * devices.  The intention was to have it in 36 as well, but not
+	 * all 8000 family got this feature enabled.  The 8000 family is
+	 * the only one using version 36, so skip this version entirely.
 	 */
-	return IWL_UCODE_SERIAL(fwrt->fw->ucode_ver) >= 38 ||
-		(IWL_UCODE_SERIAL(fwrt->fw->ucode_ver) == 17 &&
+	return ucode_ver >= 38 ||
+		(ucode_ver == 17 &&
 		 fwrt->trans->info.hw_rev != CSR_HW_REV_TYPE_3160) ||
-		(IWL_UCODE_SERIAL(fwrt->fw->ucode_ver) == 29 &&
+		(ucode_ver == 29 &&
 		 ((fwrt->trans->info.hw_rev & CSR_HW_REV_TYPE_MSK) ==
 		  CSR_HW_REV_TYPE_7265D));
 }
@@ -236,13 +258,22 @@ IWL_EXPORT_SYMBOL(iwl_sar_geo_fill_table);
 
 static int iwl_sar_fill_table(struct iwl_fw_runtime *fwrt,
 			      __le16 *per_chain, u32 n_subbands,
-			      int prof_a, int prof_b)
+			      int prof_a, int prof_b,
+			      const struct iwl_sar_profile *profiles,
+			      bool is_standalone)
 {
 	int profs[BIOS_SAR_NUM_CHAINS] = { prof_a, prof_b };
 	int i, j;
 
+	BUILD_BUG_ON(ARRAY_SIZE(fwrt->sar_standalone_profiles[0].chains[0].subbands) !=
+		     ARRAY_SIZE(fwrt->sar_profiles[0].chains[0].subbands));
+
+	if (WARN_ON_ONCE(n_subbands >
+			 ARRAY_SIZE(fwrt->sar_profiles[0].chains[0].subbands)))
+		return -EINVAL;
+
 	for (i = 0; i < BIOS_SAR_NUM_CHAINS; i++) {
-		struct iwl_sar_profile *prof;
+		const struct iwl_sar_profile *prof;
 
 		/* don't allow SAR to be disabled (profile 0 means disable) */
 		if (profs[i] == 0)
@@ -253,11 +284,13 @@ static int iwl_sar_fill_table(struct iwl_fw_runtime *fwrt,
 			return -EINVAL;
 
 		/* profiles go from 1 to 4, so decrement to access the array */
-		prof = &fwrt->sar_profiles[profs[i] - 1];
+		prof = &profiles[profs[i] - 1];
 
 		/* if the profile is disabled, do nothing */
 		if (!prof->enabled) {
-			IWL_DEBUG_RADIO(fwrt, "SAR profile %d is disabled.\n",
+			IWL_DEBUG_RADIO(fwrt,
+					"SAR %sprofile %d is disabled.\n",
+					is_standalone ? "standalone " : "",
 					profs[i]);
 			/*
 			 * if one of the profiles is disabled, we
@@ -267,8 +300,8 @@ static int iwl_sar_fill_table(struct iwl_fw_runtime *fwrt,
 			return 1;
 		}
 
-		IWL_DEBUG_INFO(fwrt,
-			       "SAR EWRD: chain %d profile index %d\n",
+		IWL_DEBUG_INFO(fwrt, "SAR %s: chain %d profile index %d\n",
+			       is_standalone ? "standalone" : "EWRD",
 			       i, profs[i]);
 		IWL_DEBUG_RADIO(fwrt, "  Chain[%d]:\n", i);
 		for (j = 0; j < n_subbands; j++) {
@@ -284,14 +317,17 @@ static int iwl_sar_fill_table(struct iwl_fw_runtime *fwrt,
 
 int iwl_sar_fill_profile(struct iwl_fw_runtime *fwrt,
 			 __le16 *per_chain, u32 n_tables, u32 n_subbands,
-			 int prof_a, int prof_b)
+			 int prof_a, int prof_b,
+			 const struct iwl_sar_profile *profiles,
+			 bool is_standalone)
 {
 	int i, ret = 0;
 
 	for (i = 0; i < n_tables; i++) {
 		ret = iwl_sar_fill_table(fwrt,
 			&per_chain[i * n_subbands * BIOS_SAR_NUM_CHAINS],
-			n_subbands, prof_a, prof_b);
+			n_subbands, prof_a, prof_b, profiles,
+			is_standalone);
 		if (ret)
 			break;
 	}
@@ -299,132 +335,6 @@ int iwl_sar_fill_profile(struct iwl_fw_runtime *fwrt,
 	return ret;
 }
 IWL_EXPORT_SYMBOL(iwl_sar_fill_profile);
-
-static bool iwl_ppag_value_valid(struct iwl_fw_runtime *fwrt, int chain,
-				 int subband)
-{
-	s8 ppag_val = fwrt->ppag_chains[chain].subbands[subband];
-
-	if ((subband == 0 &&
-	     (ppag_val > IWL_PPAG_MAX_LB || ppag_val < IWL_PPAG_MIN_LB)) ||
-	    (subband != 0 &&
-	     (ppag_val > IWL_PPAG_MAX_HB || ppag_val < IWL_PPAG_MIN_HB))) {
-		IWL_DEBUG_RADIO(fwrt, "Invalid PPAG value: %d\n", ppag_val);
-		return false;
-	}
-	return true;
-}
-
-/* Utility function for iwlmvm and iwlxvt */
-int iwl_fill_ppag_table(struct iwl_fw_runtime *fwrt,
-			union iwl_ppag_table_cmd *cmd, int *cmd_size)
-{
-	u8 cmd_ver;
-	int i, j, num_sub_bands;
-	s8 *gain;
-	bool send_ppag_always;
-
-	/* many firmware images for JF lie about this */
-	if (CSR_HW_RFID_TYPE(fwrt->trans->info.hw_rf_id) ==
-	    CSR_HW_RFID_TYPE(CSR_HW_RF_ID_TYPE_JF))
-		return -EOPNOTSUPP;
-
-	if (!fw_has_capa(&fwrt->fw->ucode_capa, IWL_UCODE_TLV_CAPA_SET_PPAG)) {
-		IWL_DEBUG_RADIO(fwrt,
-				"PPAG capability not supported by FW, command not sent.\n");
-		return -EINVAL;
-	}
-
-	cmd_ver = iwl_fw_lookup_cmd_ver(fwrt->fw,
-					WIDE_ID(PHY_OPS_GROUP,
-						PER_PLATFORM_ANT_GAIN_CMD), 1);
-	/*
-	 * Starting from ver 4, driver needs to send the PPAG CMD regardless
-	 * if PPAG is enabled/disabled or valid/invalid.
-	 */
-	send_ppag_always = cmd_ver > 3;
-
-	/* Don't send PPAG if it is disabled */
-	if (!send_ppag_always && !fwrt->ppag_flags) {
-		IWL_DEBUG_RADIO(fwrt, "PPAG not enabled, command not sent.\n");
-		return -EINVAL;
-	}
-
-	IWL_DEBUG_RADIO(fwrt, "PPAG cmd ver is %d\n", cmd_ver);
-	if (cmd_ver == 1) {
-		num_sub_bands = IWL_NUM_SUB_BANDS_V1;
-		gain = cmd->v1.gain[0];
-		*cmd_size = sizeof(cmd->v1);
-		cmd->v1.flags = cpu_to_le32(fwrt->ppag_flags & IWL_PPAG_CMD_V1_MASK);
-		if (fwrt->ppag_bios_rev >= 1) {
-			/* in this case FW supports revision 0 */
-			IWL_DEBUG_RADIO(fwrt,
-					"PPAG table rev is %d, send truncated table\n",
-					fwrt->ppag_bios_rev);
-		}
-	} else if (cmd_ver == 5) {
-		num_sub_bands = IWL_NUM_SUB_BANDS_V2;
-		gain = cmd->v5.gain[0];
-		*cmd_size = sizeof(cmd->v5);
-		cmd->v5.flags = cpu_to_le32(fwrt->ppag_flags & IWL_PPAG_CMD_V5_MASK);
-		if (fwrt->ppag_bios_rev == 0) {
-			/* in this case FW supports revisions 1,2 or 3 */
-			IWL_DEBUG_RADIO(fwrt,
-					"PPAG table rev is 0, send padded table\n");
-		}
-	} else if (cmd_ver == 7) {
-		num_sub_bands = IWL_NUM_SUB_BANDS_V2;
-		gain = cmd->v7.gain[0];
-		*cmd_size = sizeof(cmd->v7);
-		cmd->v7.ppag_config_info.hdr.table_source =
-			fwrt->ppag_bios_source;
-		cmd->v7.ppag_config_info.hdr.table_revision =
-			fwrt->ppag_bios_rev;
-		cmd->v7.ppag_config_info.value = cpu_to_le32(fwrt->ppag_flags);
-	} else {
-		IWL_DEBUG_RADIO(fwrt, "Unsupported PPAG command version\n");
-		return -EINVAL;
-	}
-
-	/* ppag mode */
-	IWL_DEBUG_RADIO(fwrt,
-			"PPAG MODE bits were read from bios: %d\n",
-			fwrt->ppag_flags);
-
-	if (cmd_ver == 1 &&
-	    !fw_has_capa(&fwrt->fw->ucode_capa,
-			 IWL_UCODE_TLV_CAPA_PPAG_CHINA_BIOS_SUPPORT)) {
-		cmd->v1.flags &= cpu_to_le32(IWL_PPAG_ETSI_MASK);
-		IWL_DEBUG_RADIO(fwrt, "masking ppag China bit\n");
-	} else {
-		IWL_DEBUG_RADIO(fwrt, "isn't masking ppag China bit\n");
-	}
-
-	/* The 'flags' field is the same in v1 and v5 so we can just
-	 * use v1 to access it.
-	 */
-	IWL_DEBUG_RADIO(fwrt,
-			"PPAG MODE bits going to be sent: %d\n",
-			(cmd_ver < 7) ? le32_to_cpu(cmd->v1.flags) :
-					le32_to_cpu(cmd->v7.ppag_config_info.value));
-
-	for (i = 0; i < IWL_NUM_CHAIN_LIMITS; i++) {
-		for (j = 0; j < num_sub_bands; j++) {
-			if (!send_ppag_always &&
-			    !iwl_ppag_value_valid(fwrt, i, j))
-				return -EINVAL;
-
-			gain[i * num_sub_bands + j] =
-				fwrt->ppag_chains[i].subbands[j];
-			IWL_DEBUG_RADIO(fwrt,
-					"PPAG table: chain[%d] band[%d]: gain = %d\n",
-					i, j, gain[i * num_sub_bands + j]);
-		}
-	}
-
-	return 0;
-}
-IWL_EXPORT_SYMBOL(iwl_fill_ppag_table);
 
 bool iwl_is_ppag_approved(struct iwl_fw_runtime *fwrt)
 {
@@ -439,6 +349,27 @@ bool iwl_is_ppag_approved(struct iwl_fw_runtime *fwrt)
 	return true;
 }
 IWL_EXPORT_SYMBOL(iwl_is_ppag_approved);
+
+/* Print the PPAG table as read from BIOS */
+void iwl_bios_print_ppag(struct iwl_fw_runtime *fwrt, int n_subbands)
+{
+	int i, j;
+
+	IWL_DEBUG_RADIO(fwrt, "PPAG table as read from BIOS:\n");
+	IWL_DEBUG_RADIO(fwrt, "PPAG revision = %d\n", fwrt->ppag_bios_rev);
+	IWL_DEBUG_RADIO(fwrt, "PPAG flags = 0x%x\n", fwrt->ppag_flags);
+
+	if (WARN_ON_ONCE(n_subbands >
+			 ARRAY_SIZE(fwrt->ppag_chains[0].subbands)))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(fwrt->ppag_chains); i++)
+		for (j = 0; j < n_subbands; j++)
+			IWL_DEBUG_RADIO(fwrt,
+					"ppag_chains[%d].subbands[%d] = %d\n",
+					i, j,
+					fwrt->ppag_chains[i].subbands[j]);
+}
 
 bool iwl_is_tas_approved(void)
 {
@@ -485,7 +416,7 @@ bool iwl_add_mcc_to_tas_block_list(u16 *list, u8 *size, u16 mcc)
 	if (*size >= IWL_WTAS_BLACK_LIST_MAX)
 		return false;
 
-	list[*size++] = mcc;
+	list[(*size)++] = mcc;
 	return true;
 }
 IWL_EXPORT_SYMBOL(iwl_add_mcc_to_tas_block_list);
@@ -543,3 +474,27 @@ bool iwl_rfi_is_enabled_in_bios(struct iwl_fw_runtime *fwrt)
 	return false;
 }
 IWL_EXPORT_SYMBOL(iwl_rfi_is_enabled_in_bios);
+
+/**
+ * iwl_bios_get_guid_lock_status - resolve connectivity variables lock status
+ * @fwrt: the firmware runtime context
+ *
+ * Determine the root-of-trust for the connectivity UEFI variables. The UEFI
+ * GUID Lock Indicator (GLUI) is preferred: if it attests the tables as locked
+ * or in test mode, that result is used. Otherwise (GLUI is missing, invalid or
+ * reports unlocked) the ACPI GUID Lock Indicator is consulted and can override
+ * the GLUI result.
+ *
+ * This only caches the result in &fwrt->uefi_tables_lock_status
+ * (see &enum iwl_uefi_cnv_guid_status).
+ */
+void iwl_bios_get_guid_lock_status(struct iwl_fw_runtime *fwrt)
+{
+	iwl_uefi_get_guid_lock_status(fwrt);
+	if (fwrt->uefi_tables_lock_status == UEFI_CNV_GUID_LOCKED ||
+	    fwrt->uefi_tables_lock_status == UEFI_CNV_GUID_TEST_MODE)
+		return;
+
+	iwl_acpi_get_guid_lock_status(fwrt);
+}
+IWL_EXPORT_SYMBOL(iwl_bios_get_guid_lock_status);

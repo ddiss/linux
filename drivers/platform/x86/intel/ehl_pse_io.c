@@ -12,7 +12,6 @@
 #include <linux/errno.h>
 #include <linux/gfp_types.h>
 #include <linux/ioport.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/sizes.h>
@@ -30,7 +29,7 @@ static int ehl_pse_io_dev_create(struct pci_dev *pci, const char *name, int idx)
 	resource_size_t start, offset;
 	u32 id;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 

@@ -9,7 +9,6 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/math.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -126,7 +125,7 @@ static int spi_offload_trigger_pwm_probe(struct platform_device *pdev)
 	struct pwm_state state;
 	int ret;
 
-	st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
+	st = devm_kzalloc_obj(dev, *st);
 	if (!st)
 		return -ENOMEM;
 

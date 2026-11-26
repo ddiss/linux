@@ -774,7 +774,7 @@ static int adm9240_probe(struct i2c_client *client)
 	struct adm9240_data *data;
 	int err;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -794,9 +794,9 @@ static int adm9240_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id adm9240_id[] = {
-	{ "adm9240", adm9240 },
-	{ "ds1780", ds1780 },
-	{ "lm81", lm81 },
+	{ .name = "adm9240", .driver_data = adm9240 },
+	{ .name = "ds1780", .driver_data = ds1780 },
+	{ .name = "lm81", .driver_data = lm81 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, adm9240_id);

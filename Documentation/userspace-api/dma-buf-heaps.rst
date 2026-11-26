@@ -16,6 +16,13 @@ following heaps:
 
  - The ``system`` heap allocates virtually contiguous, cacheable, buffers.
 
+ - The ``system_cc_shared`` heap allocates virtually contiguous, cacheable,
+   buffers using shared (decrypted) memory. It is only present on
+   confidential computing (CoCo) VMs where memory encryption is active
+   (e.g., AMD SEV, Intel TDX). The allocated pages have the encryption
+   bit cleared, making them accessible for device DMA without TDISP
+   support. On non-CoCo VM configurations, this heap is not registered.
+
  - The ``default_cma_region`` heap allocates physically contiguous,
    cacheable, buffers. Only present if a CMA region is present. Such a
    region is usually created either through the kernel commandline
@@ -29,7 +36,7 @@ following heaps:
  - A heap will be created for each reusable region in the device tree
    with the ``shared-dma-pool`` compatible, using the full device tree
    node name as its name. The buffer semantics are identical to
-   ``default-cma-region``.
+   ``default_cma_region``.
 
 Naming Convention
 =================

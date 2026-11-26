@@ -172,8 +172,7 @@ static int smbalert_probe(struct i2c_client *ara)
 	struct gpio_desc *gpiod;
 	int res, irq;
 
-	alert = devm_kzalloc(&ara->dev, sizeof(struct i2c_smbus_alert),
-			     GFP_KERNEL);
+	alert = devm_kzalloc_obj(&ara->dev, struct i2c_smbus_alert);
 	if (!alert)
 		return -ENOMEM;
 
@@ -220,7 +219,7 @@ static void smbalert_remove(struct i2c_client *ara)
 }
 
 static const struct i2c_device_id smbalert_ids[] = {
-	{ "smbus_alert" },
+	{ .name = "smbus_alert" },
 	{ /* LIST END */ }
 };
 MODULE_DEVICE_TABLE(i2c, smbalert_ids);

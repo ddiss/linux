@@ -94,6 +94,10 @@ enum amdgpu_memory_partition {
 #define AMDGPU_GMC9_FAULT_SOURCE_DATA_WRITE 0x20
 #define AMDGPU_GMC9_FAULT_SOURCE_DATA_EXE   0x10
 
+#define AMDGPU_GMC121_FAULT_SOURCE_DATA_READ  0x400000
+#define AMDGPU_GMC121_FAULT_SOURCE_DATA_WRITE 0x200000
+#define AMDGPU_GMC121_FAULT_SOURCE_DATA_EXE   0x100000
+
 /*
  * GMC page fault information
  */
@@ -110,6 +114,8 @@ struct amdgpu_gmc_fault {
 struct amdgpu_vmhub_funcs {
 	void (*print_l2_protection_fault_status)(struct amdgpu_device *adev,
 						 uint32_t status);
+	void (*print_l2_protection_fault_status_hi)(struct amdgpu_device *adev,
+						    uint32_t status);
 	uint32_t (*get_invalidate_req)(unsigned int vmid, uint32_t flush_type);
 };
 
@@ -121,6 +127,7 @@ struct amdgpu_vmhub {
 	uint32_t	vm_inv_eng0_ack;
 	uint32_t	vm_context0_cntl;
 	uint32_t	vm_l2_pro_fault_status;
+	uint32_t	vm_l2_pro_fault_status_hi;
 	uint32_t	vm_l2_pro_fault_cntl;
 
 	/*
@@ -276,12 +283,12 @@ struct amdgpu_gmc {
 	u64			real_vram_size;
 	int			vram_mtrr;
 	u64                     mc_mask;
+	uint64_t		pte_addr_mask;
 	const struct firmware   *fw;	/* MC firmware */
 	uint32_t                fw_version;
 	struct amdgpu_irq_src	vm_fault;
 	uint32_t		vram_type;
 	uint8_t			vram_vendor;
-	uint32_t                srbm_soft_reset;
 	bool			prt_warning;
 	uint32_t		sdpif_register;
 	/* apertures */
@@ -361,6 +368,8 @@ struct amdgpu_gmc {
 	bool flush_tlb_needs_extra_type_0;
 	bool flush_tlb_needs_extra_type_2;
 	bool flush_pasid_uses_kiq;
+
+	bool override_pte;
 };
 
 #define amdgpu_gmc_emit_flush_gpu_tlb(r, vmid, addr) (r)->adev->gmc.gmc_funcs->emit_flush_gpu_tlb((r), (vmid), (addr))
@@ -432,14 +441,14 @@ int amdgpu_gmc_handle_retry_fault(struct amdgpu_device *adev,
 				  u32 node_id,
 				  bool write_fault);
 int amdgpu_gmc_ras_sw_init(struct amdgpu_device *adev);
-int amdgpu_gmc_ras_late_init(struct amdgpu_device *adev);
-void amdgpu_gmc_ras_fini(struct amdgpu_device *adev);
 int amdgpu_gmc_allocate_vm_inv_eng(struct amdgpu_device *adev);
 void amdgpu_gmc_flush_gpu_tlb(struct amdgpu_device *adev, uint32_t vmid,
 			      uint32_t vmhub, uint32_t flush_type);
-int amdgpu_gmc_flush_gpu_tlb_pasid(struct amdgpu_device *adev, uint16_t pasid,
-				   uint32_t flush_type, bool all_hub,
-				   uint32_t inst);
+int amdgpu_gmc_flush_gpu_tlb_pasid(struct amdgpu_device *adev, u16 pasid,
+				   u32 flush_type, bool all_hub, u32 inst);
+int amdgpu_gmc_flush_gpu_tlb_pasid_xccs(struct amdgpu_device *adev, u16 pasid,
+					u32 flush_type, bool all_hub,
+					u32 xcc_mask);
 void amdgpu_gmc_fw_reg_write_reg_wait(struct amdgpu_device *adev,
 				      uint32_t reg0, uint32_t reg1,
 				      uint32_t ref, uint32_t mask,
@@ -452,7 +461,7 @@ extern void
 amdgpu_gmc_set_vm_fault_masks(struct amdgpu_device *adev, int hub_type,
 			      bool enable);
 
-void amdgpu_gmc_get_vbios_allocations(struct amdgpu_device *adev);
+void amdgpu_gmc_init_vga_resv_regions(struct amdgpu_device *adev);
 
 void amdgpu_gmc_init_pdb0(struct amdgpu_device *adev);
 uint64_t amdgpu_gmc_vram_mc2pa(struct amdgpu_device *adev, uint64_t mc_addr);
@@ -475,7 +484,15 @@ enum amdgpu_memory_partition
 amdgpu_gmc_get_memory_partition(struct amdgpu_device *adev, u32 *supp_modes);
 enum amdgpu_memory_partition
 amdgpu_gmc_query_memory_partition(struct amdgpu_device *adev);
+void amdgpu_gmc_set_requested_nps_mode(struct amdgpu_device *adev,
+				       enum amdgpu_memory_partition mode);
+enum amdgpu_memory_partition
+amdgpu_gmc_get_requested_nps_mode(struct amdgpu_device *adev);
 int amdgpu_gmc_init_mem_ranges(struct amdgpu_device *adev);
 void amdgpu_gmc_init_sw_mem_ranges(struct amdgpu_device *adev,
 				   struct amdgpu_mem_partition_info *mem_ranges);
+int amdgpu_gmc_get_vram_info(struct amdgpu_device *adev,
+		int *vram_width, int *vram_type, int *vram_vendor);
+
+void amdgpu_gmc_set_gart_size(struct amdgpu_device *adev, u64 default_size);
 #endif

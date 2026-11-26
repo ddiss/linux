@@ -17,10 +17,13 @@
 #include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/spinlock.h>
+#include <linux/string.h>
 #include <linux/srcu.h>
 #include <linux/workqueue.h>
 
 #define GPIOCHIP_NAME	"gpiochip"
+
+struct fwnode_handle;
 
 /**
  * struct gpio_device - internal state container for GPIO devices
@@ -34,6 +37,7 @@
  * @valid_mask: If not %NULL, holds bitmask of GPIOs which are valid to be
  * used from the chip.
  * @desc_srcu: ensures consistent state of GPIO descriptors exposed to users
+ * @desc_lock: synchronizes the updates to descriptor labels
  * @ngpio: the number of GPIO lines on this GPIO device, equal to the size
  * of the @descs array.
  * @can_sleep: indicate whether the GPIO chip driver's callbacks can sleep
@@ -68,6 +72,7 @@ struct gpio_device {
 	struct gpio_desc	*descs;
 	unsigned long		*valid_mask;
 	struct srcu_struct	desc_srcu;
+	spinlock_t		desc_lock;
 	unsigned int		base;
 	u16			ngpio;
 	bool			can_sleep;
@@ -107,7 +112,7 @@ extern const char *const gpio_suffixes[];
 		if (con_id)								\
 			snprintf(propname, sizeof(propname), "%s-%s", con_id, __gs);	\
 		else									\
-			snprintf(propname, sizeof(propname), "%s", __gs);		\
+			strscpy(propname, __gs);					\
 		1;									\
 	     });									\
 	     __suffixes++)
@@ -241,7 +246,7 @@ DEFINE_CLASS(gpio_chip_guard,
 
 		_guard;
 	     }),
-	     struct gpio_desc *desc)
+	     const struct gpio_desc *desc)
 
 int gpiod_request(struct gpio_desc *desc, const char *label);
 int gpiod_request_commit(struct gpio_desc *desc, const char *label);
@@ -273,6 +278,7 @@ int gpiod_configure_flags(struct gpio_desc *desc, const char *con_id,
 int gpio_set_debounce_timeout(struct gpio_desc *desc, unsigned int debounce);
 int gpiod_hog(struct gpio_desc *desc, const char *name,
 		unsigned long lflags, enum gpiod_flags dflags);
+int gpiochip_add_hog(struct gpio_chip *gc, struct fwnode_handle *fwnode);
 int gpiochip_get_ngpios(struct gpio_chip *gc, struct device *dev);
 struct gpio_desc *gpiochip_get_desc(struct gpio_chip *gc, unsigned int hwnum);
 const char *gpiod_get_label(struct gpio_desc *desc);

@@ -169,8 +169,8 @@ static const struct hwmon_chip_info hs3001_chip_info = {
 
 /* device ID table */
 static const struct i2c_device_id hs3001_ids[] = {
-	{ "hs3001" },
-	{ },
+	{ .name = "hs3001" },
+	{ }
 };
 
 MODULE_DEVICE_TABLE(i2c, hs3001_ids);
@@ -191,7 +191,7 @@ static int hs3001_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 		return -EOPNOTSUPP;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 

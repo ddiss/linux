@@ -11,7 +11,6 @@
 
 #include <linux/bitops.h>
 #include <linux/bitfield.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -479,7 +478,7 @@ static int jc42_probe(struct i2c_client *client)
 	struct jc42_data *data;
 	int ret;
 
-	data = devm_kzalloc(dev, sizeof(struct jc42_data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, struct jc42_data);
 	if (!data)
 		return -ENOMEM;
 
@@ -579,7 +578,7 @@ static const struct dev_pm_ops jc42_dev_pm_ops = {
 #endif /* CONFIG_PM */
 
 static const struct i2c_device_id jc42_id[] = {
-	{ "jc42" },
+	{ .name = "jc42" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, jc42_id);

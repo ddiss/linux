@@ -294,7 +294,7 @@ static int max127_probe(struct i2c_client *client)
 	struct max127_data *data;
 	struct device *dev = &client->dev;
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -312,7 +312,7 @@ static int max127_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id max127_id[] = {
-	{ "max127" },
+	{ .name = "max127" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, max127_id);

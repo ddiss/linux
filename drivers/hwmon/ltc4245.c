@@ -442,7 +442,7 @@ static int ltc4245_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -ENODEV;
 
-	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&client->dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -461,7 +461,7 @@ static int ltc4245_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id ltc4245_id[] = {
-	{ "ltc4245" },
+	{ .name = "ltc4245" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, ltc4245_id);

@@ -59,7 +59,6 @@ static inline void syscall_set_return_value(struct task_struct *task,
 					    struct pt_regs *regs,
 					    int error, long val)
 {
-	set_pt_regs_flag(regs, PIF_SYSCALL_RET_SET);
 	regs->gprs[2] = error ? error : val;
 }
 
@@ -87,11 +86,6 @@ static inline void syscall_set_arguments(struct task_struct *task,
 static inline int syscall_get_arch(struct task_struct *task)
 {
 	return AUDIT_ARCH_S390X;
-}
-
-static inline bool arch_syscall_is_vdso_sigreturn(struct pt_regs *regs)
-{
-	return false;
 }
 
 #define SYSCALL_FMT_0

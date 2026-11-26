@@ -1053,7 +1053,7 @@ static int initialize_pmic_data(struct platform_device *pdev,
 		template = pdata->regulator_data[r].irq_desc.irqinfo;
 		num_infos = pdata->regulator_data[r].irq_desc.num_irqs;
 
-		new = devm_kcalloc(dev, num_infos, sizeof(*new), GFP_KERNEL);
+		new = devm_kzalloc_objs(dev, *new, num_infos);
 		if (!new)
 			return -ENOMEM;
 
@@ -1329,11 +1329,11 @@ static int bd96801_probe(struct platform_device *pdev)
 }
 
 static const struct platform_device_id bd96801_pmic_id[] = {
-	{ "bd96801-regulator", (kernel_ulong_t)&bd96801_data },
-	{ "bd96802-regulator", (kernel_ulong_t)&bd96802_data },
-	{ "bd96805-regulator", (kernel_ulong_t)&bd96805_data },
-	{ "bd96806-regulator", (kernel_ulong_t)&bd96806_data },
-	{ },
+	{ .name = "bd96801-regulator", .driver_data = (kernel_ulong_t)&bd96801_data },
+	{ .name = "bd96802-regulator", .driver_data = (kernel_ulong_t)&bd96802_data },
+	{ .name = "bd96805-regulator", .driver_data = (kernel_ulong_t)&bd96805_data },
+	{ .name = "bd96806-regulator", .driver_data = (kernel_ulong_t)&bd96806_data },
+	{ }
 };
 MODULE_DEVICE_TABLE(platform, bd96801_pmic_id);
 

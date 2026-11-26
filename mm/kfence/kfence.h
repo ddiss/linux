@@ -16,6 +16,8 @@
 
 #include "../slab.h" /* for struct kmem_cache */
 
+extern bool kfence_enabled;
+
 /*
  * Get the canary byte pattern for @addr. Use a pattern that varies based on the
  * lower 3 bits of the address, to detect memory corruptions with higher
@@ -100,9 +102,6 @@ struct kfence_metadata {
 	struct kfence_track free_track __guarded_by(&lock);
 	/* For updating alloc_covered on frees. */
 	u32 alloc_stack_hash __guarded_by(&lock);
-#ifdef CONFIG_MEMCG
-	struct slabobj_ext obj_exts;
-#endif
 };
 
 #define KFENCE_METADATA_SIZE PAGE_ALIGN(sizeof(struct kfence_metadata) * \
@@ -140,8 +139,18 @@ enum kfence_error_type {
 	KFENCE_ERROR_INVALID_FREE,	/* Invalid free. */
 };
 
-void kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
-			 const struct kfence_metadata *meta, enum kfence_error_type type);
+enum kfence_fault {
+	KFENCE_FAULT_NONE,
+	KFENCE_FAULT_REPORT,
+	KFENCE_FAULT_OOPS,
+	KFENCE_FAULT_PANIC,
+};
+
+enum kfence_fault
+kfence_report_error(unsigned long address, bool is_write, struct pt_regs *regs,
+		    const struct kfence_metadata *meta, enum kfence_error_type type);
+
+void kfence_handle_fault(enum kfence_fault fault);
 
 void kfence_print_object(struct seq_file *seq, const struct kfence_metadata *meta) __must_hold(&meta->lock);
 

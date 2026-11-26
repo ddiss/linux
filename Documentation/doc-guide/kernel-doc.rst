@@ -213,6 +213,10 @@ The ``private:`` and ``public:`` tags must begin immediately following a
 ``/*`` comment marker. They may optionally include comments between the
 ``:`` and the ending ``*/`` marker.
 
+When ``private:`` is used on nested structs, it propagates only to inner
+structs/unions.
+
+
 Example::
 
   /**
@@ -256,8 +260,10 @@ It is possible to document nested structs and unions, like::
         union {
           struct {
             int memb1;
+            /* private: hides memb2 from documentation */
             int memb2;
           };
+          /* Everything here is public again, as private scope finished */
           struct {
             void *memb3;
             int memb4;
@@ -416,7 +422,8 @@ Domain`_ references.
   Function reference.
 
 ``@parameter``
-  Name of a function parameter. (No cross-referencing, just formatting.)
+  Name of a function parameter, struct member, union member, or
+  enum value. (No cross-referencing, just formatting.)
 
 ``%CONST``
   Name of a constant. (No cross-referencing, just formatting.)
@@ -557,8 +564,8 @@ identifiers: *[ function/type ...]*
   Include documentation for each *function* and *type* in *source*.
   If no *function* is specified, the documentation for all functions
   and types in the *source* will be included.
-  *type* can be a ``struct``, ``union``, ``enum``, ``typedef`` or ``var``
-  identifier.
+  *type* can be a ``struct``, ``union``, ``enum``, ``typedef``, ``var``,
+  or ``define`` identifier.
 
   Examples::
 

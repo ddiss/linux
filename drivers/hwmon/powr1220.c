@@ -280,7 +280,7 @@ static int powr1220_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -ENODEV;
 
-	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(&client->dev, *data);
 	if (!data)
 		return -ENOMEM;
 
@@ -306,8 +306,8 @@ static int powr1220_probe(struct i2c_client *client)
 }
 
 static const struct i2c_device_id powr1220_ids[] = {
-	{ "powr1014", powr1014, },
-	{ "powr1220", powr1220, },
+	{ .name = "powr1014", .driver_data = powr1014 },
+	{ .name = "powr1220", .driver_data = powr1220 },
 	{ }
 };
 

@@ -134,6 +134,11 @@ void idpf_xsk_clear_queue(void *q, enum virtchnl2_queue_type type)
 		if (!idpf_queue_has_clear(XSK, rxq))
 			return;
 
+		if (rxq->xsk) {
+			libeth_xsk_buff_free_slow(rxq->xsk);
+			rxq->xsk = NULL;
+		}
+
 		rxq->pool = NULL;
 		break;
 	case VIRTCHNL2_QUEUE_TYPE_RX_BUFFER:
@@ -403,6 +408,7 @@ int idpf_xskfq_init(struct idpf_buf_queue *bufq)
 	bufq->pending = fq.pending;
 	bufq->thresh = fq.thresh;
 	bufq->rx_buf_size = fq.buf_len;
+	bufq->truesize = fq.truesize;
 
 	if (!idpf_xskfq_refill(bufq))
 		netdev_err(bufq->pool->netdev,

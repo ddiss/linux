@@ -285,10 +285,12 @@ static int platform_clock_control(struct snd_soc_dapm_widget *w,
 	if (SND_SOC_DAPM_EVENT_ON(event)) {
 		ret = clk_prepare_enable(priv->mclk);
 		if (ret < 0) {
-			dev_err(card->dev, "could not configure MCLK state\n");
+			dev_err(card->dev, "could not configure MCLK state: %d\n", ret);
 			return ret;
 		}
 		ret = byt_rt5640_prepare_and_enable_pll1(codec_dai, 48000);
+		if (ret < 0)
+			clk_disable_unprepare(priv->mclk);
 	} else {
 		/*
 		 * Set codec clock source to internal clock before
@@ -1713,7 +1715,7 @@ static int snd_byt_rt5640_mc_probe(struct platform_device *pdev)
 	int i, aif;
 
 	is_bytcr = false;
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 
@@ -1742,11 +1744,11 @@ static int snd_byt_rt5640_mc_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	codec_dev = acpi_get_first_physical_node(adev);
+	codec_dev = acpi_bus_get_primary_device(adev);
 	acpi_dev_put(adev);
 
 	if (codec_dev) {
-		priv->codec_dev = get_device(codec_dev);
+		priv->codec_dev = codec_dev;
 	} else {
 		/*
 		 * Special case for Android tablets where the codec i2c_client

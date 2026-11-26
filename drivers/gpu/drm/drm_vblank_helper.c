@@ -49,7 +49,7 @@
  * See also struct &drm_crtc_helper_funcs.atomic_flush.
  */
 void drm_crtc_vblank_atomic_flush(struct drm_crtc *crtc,
-				  struct drm_atomic_state *state)
+				  struct drm_atomic_commit *state)
 {
 	struct drm_device *dev = crtc->dev;
 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
@@ -82,7 +82,7 @@ EXPORT_SYMBOL(drm_crtc_vblank_atomic_flush);
  * See also struct &drm_crtc_helper_funcs.atomic_enable.
  */
 void drm_crtc_vblank_atomic_enable(struct drm_crtc *crtc,
-				   struct drm_atomic_state *state)
+				   struct drm_atomic_commit *state)
 {
 	drm_crtc_vblank_on(crtc);
 }
@@ -99,7 +99,7 @@ EXPORT_SYMBOL(drm_crtc_vblank_atomic_enable);
  * See also struct &drm_crtc_funcs.atomic_disable.
  */
 void drm_crtc_vblank_atomic_disable(struct drm_crtc *crtc,
-				    struct drm_atomic_state *state)
+				    struct drm_atomic_commit *state)
 {
 	drm_crtc_vblank_off(crtc);
 }
@@ -145,6 +145,22 @@ void drm_crtc_vblank_helper_disable_vblank_timer(struct drm_crtc *crtc)
 	drm_crtc_vblank_cancel_timer(crtc);
 }
 EXPORT_SYMBOL(drm_crtc_vblank_helper_disable_vblank_timer);
+
+/**
+ * drm_crtc_vblank_helper_sync_vblank_timer - Implements struct &drm_crtc_funcs.sync_vblank
+ * @crtc: The CRTC
+ *
+ * The helper drm_crtc_vblank_helper_sync_vblank_timer() implements
+ * sync_vblank of struct drm_crtc_funcs for CRTCs that require a
+ * VBLANK timer.
+ *
+ * See also struct &drm_crtc_funcs.sync_vblank.
+ */
+void drm_crtc_vblank_helper_sync_vblank_timer(struct drm_crtc *crtc)
+{
+	drm_crtc_vblank_stop_canceled_timer(crtc);
+}
+EXPORT_SYMBOL(drm_crtc_vblank_helper_sync_vblank_timer);
 
 /**
  * drm_crtc_vblank_helper_get_vblank_timestamp_from_timer -

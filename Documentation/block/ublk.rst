@@ -118,13 +118,24 @@ managing and controlling ublk devices with help of several control commands:
   After the server prepares userspace resources (such as creating I/O handler
   threads & io_uring for handling ublk IO), this command is sent to the
   driver for allocating & exposing ``/dev/ublkb*``. Parameters set via
-  ``UBLK_CMD_SET_PARAMS`` are applied for creating the device.
+  ``UBLK_CMD_SET_PARAMS`` are applied for creating the device. The command
+  fails with ``-EBUSY`` if an I/O command fetched by the current server
+  was canceled, because its io_uring is gone. The server can't fetch it
+  again, and the device can be started again once the server has closed
+  ``/dev/ublkc*``.
 
 - ``UBLK_CMD_STOP_DEV``
 
   Halt IO on ``/dev/ublkb*`` and remove the device. When this command returns,
   ublk server will release resources (such as destroying I/O handler threads &
   io_uring).
+
+  If a server has ``/dev/ublkc*`` open, its fetched I/O commands complete with
+  ``UBLK_IO_RES_ABORT``. Until it closes ``/dev/ublkc*``, new
+  ``UBLK_IO_FETCH_REQ`` and ``UBLK_U_IO_PREP_IO_CMDS`` commands complete with
+  ``UBLK_IO_RES_ABORT`` too, and ``UBLK_CMD_START_DEV`` fails with ``-EBUSY``,
+  even if the server hadn't fetched anything. The device can be started again
+  by a server that opens ``/dev/ublkc*`` after that.
 
 - ``UBLK_CMD_DEL_DEV``
 
@@ -195,7 +206,9 @@ managing and controlling ublk devices with help of several control commands:
   command is accepted after ublk device is quiesced and a new process has
   opened ``/dev/ublkc*`` and get all ublk queues be ready. When this command
   returns, ublk device is unquiesced and new I/O requests are passed to the
-  new process.
+  new process. It fails with ``-EBUSY`` if an I/O command of the new
+  process was canceled already. The recovery can be started over once the
+  new process has closed ``/dev/ublkc*``.
 
 - user recovery feature description
 
@@ -382,17 +395,17 @@ Zero copy
 ---------
 
 ublk zero copy relies on io_uring's fixed kernel buffer, which provides
-two APIs: `io_buffer_register_bvec()` and `io_buffer_unregister_bvec`.
+two APIs: `io_buffer_register_request()` and `io_buffer_unregister`.
 
 ublk adds IO command of `UBLK_IO_REGISTER_IO_BUF` to call
-`io_buffer_register_bvec()` for ublk server to register client request
+`io_buffer_register_request()` for ublk server to register client request
 buffer into io_uring buffer table, then ublk server can submit io_uring
 IOs with the registered buffer index. IO command of `UBLK_IO_UNREGISTER_IO_BUF`
-calls `io_buffer_unregister_bvec()` to unregister the buffer, which is
-guaranteed to be live between calling `io_buffer_register_bvec()` and
-`io_buffer_unregister_bvec()`. Any io_uring operation which supports this
-kind of kernel buffer will grab one reference of the buffer until the
-operation is completed.
+calls `io_buffer_unregister()` to unregister the buffer, which is guaranteed
+to be live between calling `io_buffer_register_request()` and
+`io_buffer_unregister()`. Any io_uring operation which supports this kind of
+kernel buffer will grab one reference of the buffer until the operation is
+completed.
 
 ublk server implementing zero copy or user copy has to be CAP_SYS_ADMIN and
 be trusted, because it is ublk server's responsibility to make sure IO buffer
@@ -484,6 +497,125 @@ Limitations
 - io_ring_ctx buffer table has a max size of 16K, which may not be enough
   in case that too many ublk devices are handled by this single io_ring_ctx
   and each one has very large queue depth
+
+Shared Memory Zero Copy (UBLK_F_SHMEM_ZC)
+------------------------------------------
+
+The ``UBLK_F_SHMEM_ZC`` feature provides an alternative zero-copy path
+that works by sharing physical memory pages between the client application
+and the ublk server. Unlike the io_uring fixed buffer approach above,
+shared memory zero copy does not require io_uring buffer registration
+per I/O — instead, it relies on the kernel matching physical pages
+at I/O time. This allows the ublk server to access the shared
+buffer directly, which is unlikely for the io_uring fixed buffer
+approach.
+
+Motivation
+~~~~~~~~~~
+
+Shared memory zero copy takes a different approach: if the client
+application and the ublk server both map the same physical memory, there is
+nothing to copy. The kernel detects the shared pages automatically and
+tells the server where the data already lives.
+
+``UBLK_F_SHMEM_ZC`` can be thought of as a supplement for optimized client
+applications — when the client is willing to allocate I/O buffers from
+shared memory, the entire data path becomes zero-copy.
+
+Use Cases
+~~~~~~~~~
+
+This feature is useful when the client application can be configured to
+use a specific shared memory region for its I/O buffers:
+
+- **Custom storage clients** that allocate I/O buffers from shared memory
+  (memfd, hugetlbfs) and issue direct I/O to the ublk device
+- **Database engines** that use pre-allocated buffer pools with O_DIRECT
+
+How It Works
+~~~~~~~~~~~~
+
+1. The ublk server and client both ``mmap()`` the same file (memfd or
+   hugetlbfs) with ``MAP_SHARED``. This gives both processes access to the
+   same physical pages.
+
+2. The ublk server registers its mapping with the kernel::
+
+     struct ublk_shmem_buf_reg buf = { .addr = mmap_va, .len = size };
+     ublk_ctrl_cmd(UBLK_U_CMD_REG_BUF, .addr = &buf);
+
+   The kernel pins the pages and builds a PFN lookup tree.
+
+3. When the client issues direct I/O (``O_DIRECT``) to ``/dev/ublkb*``,
+   the kernel checks whether the I/O buffer pages match any registered
+   pages by comparing PFNs.
+
+4. On a match, the kernel sets ``UBLK_IO_F_SHMEM_ZC`` in the I/O
+   descriptor and encodes the buffer index and offset in ``addr``::
+
+     if (iod->op_flags & UBLK_IO_F_SHMEM_ZC) {
+         /* Data is already in our shared mapping — zero copy */
+         index  = ublk_shmem_zc_index(iod->addr);
+         offset = ublk_shmem_zc_offset(iod->addr);
+         buf = shmem_table[index].mmap_base + offset;
+     }
+
+5. If pages do not match (e.g., the client used a non-shared buffer),
+   the I/O falls back to the normal copy path silently.
+
+The shared memory can be set up via two methods:
+
+- **Socket-based**: the client sends a memfd to the ublk server via
+  ``SCM_RIGHTS`` on a unix socket. The server mmaps and registers it.
+- **Hugetlbfs-based**: both processes ``mmap(MAP_SHARED)`` the same
+  hugetlbfs file. No IPC needed — same file gives same physical pages.
+
+Advantages
+~~~~~~~~~~
+
+- **Simple**: no per-I/O buffer registration or unregistration commands.
+  Once the shared buffer is registered, all matching I/O is zero-copy
+  automatically.
+- **Direct buffer access**: the ublk server can read and write the shared
+  buffer directly via its own mmap, without going through io_uring fixed
+  buffer operations. This is more friendly for server implementations.
+- **Fast**: PFN matching is a single maple tree lookup per bvec. No
+  io_uring command round-trips for buffer management.
+- **Compatible**: non-matching I/O silently falls back to the copy path.
+  The device works normally for any client, with zero-copy as an
+  optimization when shared memory is available.
+
+Limitations
+~~~~~~~~~~~
+
+- **Requires client cooperation**: the client must allocate its I/O
+  buffers from the shared memory region. This requires a custom or
+  configured client — standard applications using their own buffers
+  will not benefit.
+- **Direct I/O only**: buffered I/O (without ``O_DIRECT``) goes through
+  the page cache, which allocates its own pages. These kernel-allocated
+  pages will never match the registered shared buffer. Only ``O_DIRECT``
+  puts the client's buffer pages directly into the block I/O.
+- **Contiguous data only**: each I/O request's data must be contiguous
+  within a single registered buffer. Scatter/gather I/O that spans
+  multiple non-adjacent registered buffers cannot use the zero-copy path.
+
+Control Commands
+~~~~~~~~~~~~~~~~
+
+- ``UBLK_U_CMD_REG_BUF``
+
+  Register a shared memory buffer. ``ctrl_cmd.addr`` points to a
+  ``struct ublk_shmem_buf_reg`` containing the buffer virtual address and size.
+  Returns the assigned buffer index (>= 0) on success. The kernel pins
+  pages and builds the PFN lookup tree. Queue freeze is handled
+  internally.
+
+- ``UBLK_U_CMD_UNREG_BUF``
+
+  Unregister a previously registered buffer. ``ctrl_cmd.data[0]`` is the
+  buffer index. Unpins pages and removes PFN entries from the lookup
+  tree.
 
 References
 ==========

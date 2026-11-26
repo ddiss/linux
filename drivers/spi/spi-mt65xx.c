@@ -1221,8 +1221,7 @@ static int mtk_spi_probe(struct platform_device *pdev)
 			return dev_err_probe(dev, -EINVAL,
 				"No 'mediatek,pad-select' property\n");
 
-		mdata->pad_sel = devm_kmalloc_array(dev, mdata->pad_num,
-						    sizeof(u32), GFP_KERNEL);
+		mdata->pad_sel = devm_kmalloc_objs(dev, u32, mdata->pad_num);
 		if (!mdata->pad_sel)
 			return -ENOMEM;
 
@@ -1325,7 +1324,7 @@ static int mtk_spi_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(dev);
 
-	ret = devm_spi_register_controller(dev, host);
+	ret = spi_register_controller(host);
 	if (ret) {
 		pm_runtime_disable(dev);
 		return dev_err_probe(dev, ret, "failed to register host\n");
@@ -1339,6 +1338,8 @@ static void mtk_spi_remove(struct platform_device *pdev)
 	struct spi_controller *host = platform_get_drvdata(pdev);
 	struct mtk_spi *mdata = spi_controller_get_devdata(host);
 	int ret;
+
+	spi_unregister_controller(host);
 
 	cpu_latency_qos_remove_request(&mdata->qos_request);
 	if (mdata->use_spimem && !completion_done(&mdata->spimem_done))
@@ -1365,7 +1366,6 @@ static void mtk_spi_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int mtk_spi_suspend(struct device *dev)
 {
 	int ret;
@@ -1417,9 +1417,7 @@ static int mtk_spi_resume(struct device *dev)
 
 	return ret;
 }
-#endif /* CONFIG_PM_SLEEP */
 
-#ifdef CONFIG_PM
 static int mtk_spi_runtime_suspend(struct device *dev)
 {
 	struct spi_controller *host = dev_get_drvdata(dev);
@@ -1471,18 +1469,16 @@ static int mtk_spi_runtime_resume(struct device *dev)
 
 	return 0;
 }
-#endif /* CONFIG_PM */
 
 static const struct dev_pm_ops mtk_spi_pm = {
-	SET_SYSTEM_SLEEP_PM_OPS(mtk_spi_suspend, mtk_spi_resume)
-	SET_RUNTIME_PM_OPS(mtk_spi_runtime_suspend,
-			   mtk_spi_runtime_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(mtk_spi_suspend, mtk_spi_resume)
+	RUNTIME_PM_OPS(mtk_spi_runtime_suspend, mtk_spi_runtime_resume, NULL)
 };
 
 static struct platform_driver mtk_spi_driver = {
 	.driver = {
 		.name = "mtk-spi",
-		.pm	= &mtk_spi_pm,
+		.pm	= pm_ptr(&mtk_spi_pm),
 		.of_match_table = mtk_spi_of_match,
 	},
 	.probe = mtk_spi_probe,

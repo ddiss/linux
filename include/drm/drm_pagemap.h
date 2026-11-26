@@ -2,8 +2,10 @@
 #ifndef _DRM_PAGEMAP_H_
 #define _DRM_PAGEMAP_H_
 
+#include <linux/bits.h>
 #include <linux/dma-direction.h>
 #include <linux/hmm.h>
+#include <linux/memremap.h>
 #include <linux/types.h>
 
 #define NR_PAGES(order) (1U << (order))
@@ -256,11 +258,18 @@ struct drm_pagemap *drm_pagemap_create(struct drm_device *drm,
 
 struct drm_pagemap *drm_pagemap_page_to_dpagemap(struct page *page);
 
+struct drm_pagemap_devmem *drm_pagemap_page_to_devmem(struct page *page);
+
 void drm_pagemap_put(struct drm_pagemap *dpagemap);
 
 #else
 
 static inline struct drm_pagemap *drm_pagemap_page_to_dpagemap(struct page *page)
+{
+	return NULL;
+}
+
+static inline struct drm_pagemap_devmem *drm_pagemap_page_to_devmem(struct page *page)
 {
 	return NULL;
 }
@@ -328,20 +337,18 @@ struct drm_pagemap_devmem {
  * struct drm_pagemap_migrate_details - Details to govern migration.
  * @timeslice_ms: The time requested for the migrated pagemap pages to
  * be present in @mm before being allowed to be migrated back.
- * @can_migrate_same_pagemap: Whether the copy function as indicated by
- * the @source_peer_migrates flag, can migrate device pages within a
- * single drm_pagemap.
- * @source_peer_migrates: Whether on p2p migration, The source drm_pagemap
- * should use the copy_to_ram() callback rather than the destination
- * drm_pagemap should use the copy_to_devmem() callback.
+ * @can_migrate_same_pagemap: Whether the copy function can migrate
+ * device pages within a single drm_pagemap.
  */
 struct drm_pagemap_migrate_details {
 	unsigned long timeslice_ms;
 	u32 can_migrate_same_pagemap : 1;
-	u32 source_peer_migrates : 1;
 };
 
 #if IS_ENABLED(CONFIG_ZONE_DEVICE)
+
+#define DRM_PAGEMAP_ZDD_FLAG_MIGRATED	BIT(0)
+#define DRM_PAGEMAP_ZDD_FLAG_MASK	DRM_PAGEMAP_ZDD_FLAG_MIGRATED
 
 int drm_pagemap_migrate_to_devmem(struct drm_pagemap_devmem *devmem_allocation,
 				  struct mm_struct *mm,
@@ -366,6 +373,28 @@ int drm_pagemap_populate_mm(struct drm_pagemap *dpagemap,
 void drm_pagemap_destroy(struct drm_pagemap *dpagemap, bool is_atomic_or_reclaim);
 
 int drm_pagemap_reinit(struct drm_pagemap *dpagemap);
+
+/**
+ * drm_pagemap_page_zone_device_data() - Page to zone_device_data
+ * @page: Pointer to the page
+ *
+ * Return: Page's zone_device_data
+ */
+static inline struct drm_pagemap_zdd *drm_pagemap_page_zone_device_data(struct page *page)
+{
+	struct folio *folio = page_folio(page);
+
+	return (struct drm_pagemap_zdd *)
+		((unsigned long)folio_zone_device_data(folio) &
+		 ~DRM_PAGEMAP_ZDD_FLAG_MASK);
+}
+
+#else
+
+static inline struct drm_pagemap_zdd *drm_pagemap_page_zone_device_data(struct page *page)
+{
+	return NULL;
+}
 
 #endif /* IS_ENABLED(CONFIG_ZONE_DEVICE) */
 

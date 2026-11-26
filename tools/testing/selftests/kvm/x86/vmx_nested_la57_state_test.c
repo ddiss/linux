@@ -27,10 +27,8 @@ static void l2_guest_code(void)
 
 static void l1_guest_code(struct vmx_pages *vmx_pages)
 {
-#define L2_GUEST_STACK_SIZE 64
-	unsigned long l2_guest_stack[L2_GUEST_STACK_SIZE];
 	u64 guest_cr4;
-	vm_paddr_t pml5_pa, pml4_pa;
+	gpa_t pml5_pa, pml4_pa;
 	u64 *pml5;
 	u64 exit_reason;
 
@@ -39,11 +37,10 @@ static void l1_guest_code(struct vmx_pages *vmx_pages)
 	GUEST_ASSERT(rdmsr(MSR_GS_BASE) == LA57_GS_BASE);
 
 	GUEST_ASSERT(vmx_pages->vmcs_gpa);
-	GUEST_ASSERT(prepare_for_vmx_operation(vmx_pages));
-	GUEST_ASSERT(load_vmcs(vmx_pages));
+	prepare_for_vmx_operation(vmx_pages);
+	load_vmcs(vmx_pages);
 
-	prepare_vmcs(vmx_pages, l2_guest_code,
-		     &l2_guest_stack[L2_GUEST_STACK_SIZE]);
+	prepare_vmcs(vmx_pages, l2_guest_code);
 
 	/*
 	 * Set up L2 with a 4-level page table by pointing its CR3 to
@@ -55,13 +52,13 @@ static void l1_guest_code(struct vmx_pages *vmx_pages)
 	pml4_pa = pml5[0] & PHYSICAL_PAGE_MASK;
 	vmwrite(GUEST_CR3, pml4_pa);
 
-	guest_cr4 = vmreadz(GUEST_CR4);
+	guest_cr4 = vmread(GUEST_CR4);
 	guest_cr4 &= ~X86_CR4_LA57;
 	vmwrite(GUEST_CR4, guest_cr4);
 
-	GUEST_ASSERT(!vmlaunch());
+	vmlaunch();
 
-	exit_reason = vmreadz(VM_EXIT_REASON);
+	exit_reason = vmread(VM_EXIT_REASON);
 	GUEST_ASSERT(exit_reason == EXIT_REASON_VMCALL);
 }
 
@@ -73,7 +70,7 @@ void guest_code(struct vmx_pages *vmx_pages)
 
 int main(int argc, char *argv[])
 {
-	vm_vaddr_t vmx_pages_gva = 0;
+	gva_t vmx_pages_gva = 0;
 	struct kvm_vm *vm;
 	struct kvm_vcpu *vcpu;
 	struct kvm_x86_state *state;
@@ -112,7 +109,7 @@ int main(int argc, char *argv[])
 		}
 
 		TEST_ASSERT(uc.args[1] == stage,
-			    "Expected stage %d, got stage %lu", stage, (ulong)uc.args[1]);
+			    "Expected stage %d, got stage %lu", stage, (unsigned long)uc.args[1]);
 		if (stage == 1) {
 			pr_info("L2 is active; performing save/restore.\n");
 			state = vcpu_save_state(vcpu);

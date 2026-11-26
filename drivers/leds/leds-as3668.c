@@ -140,7 +140,7 @@ static int as3668_probe(struct i2c_client *client)
 				     "expected chip ID 0x%02x, got 0x%02x\n",
 				     AS3668_CHIP_ID, chip_id);
 
-	as3668 = devm_kzalloc(&client->dev, sizeof(*as3668), GFP_KERNEL);
+	as3668 = devm_kzalloc_obj(&client->dev, *as3668);
 	if (!as3668)
 		return -ENOMEM;
 
@@ -175,7 +175,7 @@ static void as3668_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id as3668_idtable[] = {
-	{ "as3668" },
+	{ .name = "as3668" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, as3668_idtable);

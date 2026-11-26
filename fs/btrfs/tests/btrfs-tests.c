@@ -145,6 +145,7 @@ struct btrfs_fs_info *btrfs_alloc_dummy_fs_info(u32 nodesize, u32 sectorsize)
 	fs_info->csum_size = 4;
 	fs_info->csums_per_leaf = BTRFS_MAX_ITEM_SIZE(fs_info) /
 		fs_info->csum_size;
+	fs_info->use_bitmap = btrfs_use_bitmap;
 	set_bit(BTRFS_FS_STATE_DUMMY_FS_INFO, &fs_info->fs_state);
 
 	test_mnt->mnt_sb->s_fs_info = fs_info;
@@ -246,15 +247,6 @@ void btrfs_init_dummy_transaction(struct btrfs_transaction *trans, struct btrfs_
 	spin_lock_init(&trans->delayed_refs.lock);
 }
 
-void btrfs_init_dummy_trans(struct btrfs_trans_handle *trans,
-			    struct btrfs_fs_info *fs_info)
-{
-	memset(trans, 0, sizeof(*trans));
-	trans->transid = 1;
-	trans->type = __TRANS_DUMMY;
-	trans->fs_info = fs_info;
-}
-
 int btrfs_run_sanity_tests(void)
 {
 	int ret, i;
@@ -303,6 +295,9 @@ int btrfs_run_sanity_tests(void)
 		}
 	}
 	ret = btrfs_test_extent_map();
+	if (ret)
+		goto out;
+	ret = btrfs_test_zoned();
 
 out:
 	btrfs_destroy_test_fs();

@@ -115,6 +115,14 @@ static void nmi_check_duration(struct nmiaction *action, u64 duration)
 {
 	int remainder_ns, decimal_msecs;
 
+	/* sched_clock() went backwards? */
+	if ((s64)duration < 0) {
+		pr_warn_once("NMI handler (%ps): sched_clock() went backwards by %lld ns on CPU%d\n",
+			     action->handler, -(s64)duration,
+			     smp_processor_id());
+		return;
+	}
+
 	if (duration < nmi_longest_ns || duration < action->max_duration)
 		return;
 
@@ -576,7 +584,7 @@ nmi_restart:
 
 	irq_state = irqentry_nmi_enter(regs);
 
-	inc_irq_stat(__nmi_count);
+	inc_irq_stat(NMI);
 
 	if (IS_ENABLED(CONFIG_NMI_CHECK_CPU) && ignore_nmis) {
 		WRITE_ONCE(nsp->idt_ignored, nsp->idt_ignored + 1);
@@ -614,7 +622,6 @@ DEFINE_IDTENTRY_RAW(exc_nmi_kvm_vmx)
 {
 	exc_nmi(regs);
 }
-EXPORT_SYMBOL_FOR_KVM(asm_exc_nmi_kvm_vmx);
 #endif
 
 #ifdef CONFIG_NMI_CHECK_CPU
@@ -725,7 +732,7 @@ DEFINE_FREDENTRY_NMI(exc_nmi)
 
 	irq_state = irqentry_nmi_enter(regs);
 
-	inc_irq_stat(__nmi_count);
+	inc_irq_stat(NMI);
 	default_do_nmi(regs);
 
 	irqentry_nmi_exit(regs, irq_state);

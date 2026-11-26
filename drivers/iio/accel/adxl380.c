@@ -31,7 +31,7 @@
 #define ADXL319_ID_VAL				382
 
 #define ADXL380_DEVID_AD_REG			0x00
-#define ADLX380_PART_ID_REG			0x02
+#define ADXL380_PART_ID_REG			0x02
 
 #define ADXL380_X_DATA_H_REG			0x15
 #define ADXL380_Y_DATA_H_REG			0x17
@@ -334,8 +334,11 @@ static int adxl380_set_act_inact_threshold(struct iio_dev *indio_dev,
 		return ret;
 
 	ret = adxl380_write_act_inact_threshold(st, act, th);
-	if (ret)
+	if (ret) {
+		/* Leave standby also if the value was refused */
+		adxl380_set_measure_en(st, true);
 		return ret;
+	}
 
 	return adxl380_set_measure_en(st, true);
 }
@@ -698,6 +701,12 @@ static int adxl380_set_range(struct adxl380_state *st, u8 range)
 
 	guard(mutex)(&st->lock);
 
+	/* The thresholds are rescaled: see that they fit before any change */
+	if (mult_frac(max(st->act_threshold, st->inact_threshold),
+		      adxl380_range_scale_factor_tbl[st->range],
+		      adxl380_range_scale_factor_tbl[range]) > ADXL380_THRESH_MAX)
+		return -EINVAL;
+
 	ret = adxl380_set_measure_en(st, false);
 	if (ret)
 		return ret;
@@ -877,7 +886,7 @@ static int adxl380_set_fifo_samples(struct adxl380_state *st)
 	ret = regmap_update_bits(st->regmap, ADXL380_FIFO_CONFIG_0_REG,
 				 ADXL380_FIFO_SAMPLES_8_MSK,
 				 FIELD_PREP(ADXL380_FIFO_SAMPLES_8_MSK,
-					    (fifo_samples & BIT(8))));
+					    !!(fifo_samples & BIT(8))));
 	if (ret)
 		return ret;
 
@@ -965,6 +974,13 @@ static irqreturn_t adxl380_irq_handler(int irq, void  *p)
 	ret = adxl380_get_fifo_entries(st, &fifo_entries);
 	if (ret)
 		return IRQ_HANDLED;
+
+	if (fifo_entries > ADXL380_FIFO_SAMPLES) {
+		dev_err_ratelimited(st->dev,
+				    "FIFO entry count %u exceeds FIFO size %lu\n",
+				    fifo_entries, ADXL380_FIFO_SAMPLES);
+		return IRQ_HANDLED;
+	}
 
 	fifo_entries = rounddown(fifo_entries, st->fifo_set_size);
 	ret = regmap_noinc_read(st->regmap, ADXL380_FIFO_DATA, &st->fifo_buf,
@@ -1878,7 +1894,7 @@ static int adxl380_setup(struct iio_dev *indio_dev)
 	if (reg_val != ADXL380_DEVID_AD_VAL)
 		dev_warn(st->dev, "Unknown chip id %x\n", reg_val);
 
-	ret = regmap_bulk_read(st->regmap, ADLX380_PART_ID_REG,
+	ret = regmap_bulk_read(st->regmap, ADXL380_PART_ID_REG,
 			       &st->transf_buf, 2);
 	if (ret)
 		return ret;
@@ -1967,7 +1983,9 @@ int adxl380_probe(struct device *dev, struct regmap *regmap,
 	st->chip_info = chip_info;
 	st->odr = ADXL380_ODR_DSM;
 
-	mutex_init(&st->lock);
+	ret = devm_mutex_init(dev, &st->lock);
+	if (ret)
+		return ret;
 
 	indio_dev->channels = adxl380_channels;
 	indio_dev->num_channels = ARRAY_SIZE(adxl380_channels);

@@ -53,7 +53,7 @@ struct gpio_shared_entry {
 	unsigned int offset;
 	/* Index in the property value array. */
 	size_t index;
-	/* Synchronizes the modification of shared_desc. */
+	/* Synchronizes the modification of shared_desc and offset. */
 	struct mutex lock;
 	struct gpio_shared_desc *shared_desc;
 	struct kref ref;
@@ -261,10 +261,13 @@ static int gpio_shared_of_traverse(struct device_node *curr)
 				con_id[con_id_len - suffix_len] = '\0';
 			}
 
-			ref = gpio_shared_make_ref(fwnode_handle_get(of_fwnode_handle(curr)),
-						   con_id, args.args[1]);
-			if (!ref)
+			struct fwnode_handle *curr_fwnode =
+				fwnode_handle_get(of_fwnode_handle(curr));
+			ref = gpio_shared_make_ref(curr_fwnode, con_id, args.args[1]);
+			if (!ref) {
+				fwnode_handle_put(curr_fwnode);
 				return -ENOMEM;
+			}
 
 			if (!list_empty(&entry->refs))
 				pr_debug("GPIO %u at %s is shared by multiple firmware nodes\n",
@@ -443,13 +446,17 @@ static bool gpio_shared_dev_is_reset_gpio(struct device *consumer,
 }
 #endif /* CONFIG_RESET_GPIO */
 
-int gpio_shared_add_proxy_lookup(struct device *consumer, const char *con_id,
-				 unsigned long lflags)
+int gpio_shared_add_proxy_lookup(struct device *consumer, struct fwnode_handle *fwnode,
+				 const char *con_id, unsigned long lflags)
 {
-	const char *dev_id = dev_name(consumer);
-	struct gpiod_lookup_table *lookup;
 	struct gpio_shared_entry *entry;
 	struct gpio_shared_ref *ref;
+	const char *dev_id;
+
+	if (!consumer)
+		return -EOPNOTSUPP;
+
+	dev_id = dev_name(consumer);
 
 	list_for_each_entry(entry, &gpio_shared_list, list) {
 		list_for_each_entry(ref, &entry->refs, list) {
@@ -458,7 +465,7 @@ int gpio_shared_add_proxy_lookup(struct device *consumer, const char *con_id,
 			if (!ref->fwnode && device_is_compatible(consumer, "reset-gpio")) {
 				if (!gpio_shared_dev_is_reset_gpio(consumer, entry, ref))
 					continue;
-			} else if (!device_match_fwnode(consumer, ref->fwnode)) {
+			} else if (fwnode != ref->fwnode) {
 				continue;
 			}
 
@@ -477,18 +484,22 @@ int gpio_shared_add_proxy_lookup(struct device *consumer, const char *con_id,
 			if (!key)
 				return -ENOMEM;
 
-			lookup = kzalloc_flex(*lookup, table, 2);
+			struct gpiod_lookup_table *lookup __free(kfree) =
+				kzalloc_flex(*lookup, table, 2);
 			if (!lookup)
 				return -ENOMEM;
 
 			pr_debug("Adding machine lookup entry for a shared GPIO for consumer %s, with key '%s' and con_id '%s'\n",
 				 dev_id, key, ref->con_id ?: "none");
 
-			lookup->dev_id = dev_id;
+			lookup->dev_id = kstrdup(dev_id, GFP_KERNEL);
+			if (!lookup->dev_id)
+				return -ENOMEM;
+
 			lookup->table[0] = GPIO_LOOKUP(no_free_ptr(key), 0,
 						       ref->con_id, lflags);
 
-			ref->lookup = lookup;
+			ref->lookup = no_free_ptr(lookup);
 			gpiod_add_lookup_table(ref->lookup);
 
 			return 0;
@@ -506,8 +517,9 @@ static void gpio_shared_remove_adev(struct auxiliary_device *adev)
 	auxiliary_device_uninit(adev);
 }
 
-int gpio_device_setup_shared(struct gpio_device *gdev)
+int gpiochip_setup_shared(struct gpio_chip *gc)
 {
+	struct gpio_device *gdev = gc->gpiodev;
 	struct gpio_shared_entry *entry;
 	struct gpio_shared_ref *ref;
 	struct gpio_desc *desc;
@@ -520,8 +532,7 @@ int gpio_device_setup_shared(struct gpio_device *gdev)
 				 * This is a shared GPIO proxy. Mark its
 				 * descriptor as such and return here.
 				 */
-				__set_bit(GPIOD_FLAG_SHARED_PROXY,
-					  &gdev->descs[0].flags);
+				set_bit(GPIOD_FLAG_SHARED_PROXY, &gdev->descs[0].flags);
 				return 0;
 			}
 		}
@@ -538,20 +549,42 @@ int gpio_device_setup_shared(struct gpio_device *gdev)
 		if (list_count_nodes(&entry->refs) <= 1)
 			continue;
 
-		desc = &gdev->descs[entry->offset];
+		scoped_guard(mutex, &entry->lock) {
+#if IS_ENABLED(CONFIG_OF)
+			if (is_of_node(entry->fwnode) && gc->of_xlate) {
+				/*
+				 * This is the earliest that we can tranlate the
+				 * devicetree offset to the chip offset.
+				 */
+				struct of_phandle_args gpiospec = { };
 
-		__set_bit(GPIOD_FLAG_SHARED, &desc->flags);
-		/*
-		 * Shared GPIOs are not requested via the normal path. Make
-		 * them inaccessible to anyone even before we register the
-		 * chip.
-		 */
-		ret = gpiod_request_commit(desc, "shared");
-		if (ret)
-			return ret;
+				gpiospec.np = to_of_node(entry->fwnode);
+				gpiospec.args_count = 2;
+				gpiospec.args[0] = entry->offset;
 
-		pr_debug("GPIO %u owned by %s is shared by multiple consumers\n",
-			 entry->offset, gpio_device_get_label(gdev));
+				ret = gc->of_xlate(gc, &gpiospec, NULL);
+				if (ret < 0)
+					return ret;
+
+				entry->offset = ret;
+			}
+#endif /* CONFIG_OF */
+
+			desc = &gdev->descs[entry->offset];
+
+			set_bit(GPIOD_FLAG_SHARED, &desc->flags);
+			/*
+			 * Shared GPIOs are not requested via the normal path. Make
+			 * them inaccessible to anyone even before we register the
+			 * chip.
+			 */
+			ret = gpiod_request_commit(desc, "shared");
+			if (ret)
+				return ret;
+
+			pr_debug("GPIO %u owned by %s is shared by multiple consumers\n",
+				 entry->offset, gpio_device_get_label(gdev));
+		}
 
 		list_for_each_entry(ref, &entry->refs, list) {
 			pr_debug("Setting up a shared GPIO entry for %s (con_id: '%s')\n",
@@ -578,14 +611,14 @@ void gpio_device_teardown_shared(struct gpio_device *gdev)
 		if (!device_match_fwnode(&gdev->dev, entry->fwnode))
 			continue;
 
-		gpiod_free_commit(&gdev->descs[entry->offset]);
+		scoped_guard(mutex, &entry->lock)
+			gpiod_free_commit(&gdev->descs[entry->offset]);
 
 		list_for_each_entry(ref, &entry->refs, list) {
-			guard(mutex)(&ref->lock);
-
 			if (ref->lookup) {
 				gpiod_remove_lookup_table(ref->lookup);
 				kfree(ref->lookup->table[0].key);
+				kfree(ref->lookup->dev_id);
 				kfree(ref->lookup);
 				ref->lookup = NULL;
 			}
@@ -601,21 +634,20 @@ static void gpio_shared_release(struct kref *kref)
 		container_of(kref, struct gpio_shared_entry, ref);
 	struct gpio_shared_desc *shared_desc;
 
-	guard(mutex)(&entry->lock);
-
 	shared_desc = entry->shared_desc;
 	gpio_device_put(shared_desc->desc->gdev);
-	if (shared_desc->can_sleep)
-		mutex_destroy(&shared_desc->mutex);
+	mutex_destroy(&shared_desc->mutex);
 	kfree(shared_desc);
 	entry->shared_desc = NULL;
+
+	mutex_unlock(&entry->lock);
 }
 
 static void gpiod_shared_put(void *data)
 {
 	struct gpio_shared_entry *entry = data;
 
-	kref_put(&entry->ref, gpio_shared_release);
+	kref_put_mutex(&entry->ref, gpio_shared_release, &entry->lock);
 }
 
 static struct gpio_shared_desc *
@@ -637,11 +669,7 @@ gpiod_shared_desc_create(struct gpio_shared_entry *entry)
 	}
 
 	shared_desc->desc = &gdev->descs[entry->offset];
-	shared_desc->can_sleep = gpiod_cansleep(shared_desc->desc);
-	if (shared_desc->can_sleep)
-		mutex_init(&shared_desc->mutex);
-	else
-		spin_lock_init(&shared_desc->spinlock);
+	mutex_init(&shared_desc->mutex);
 
 	return shared_desc;
 }
@@ -748,14 +776,14 @@ static bool gpio_shared_entry_is_really_shared(struct gpio_shared_entry *entry)
 static void gpio_shared_free_exclusive(void)
 {
 	struct gpio_shared_entry *entry, *epos;
+	struct gpio_shared_ref *ref, *rpos;
 
 	list_for_each_entry_safe(entry, epos, &gpio_shared_list, list) {
 		if (gpio_shared_entry_is_really_shared(entry))
 			continue;
 
-		gpio_shared_drop_ref(list_first_entry(&entry->refs,
-						      struct gpio_shared_ref,
-						      list));
+		list_for_each_entry_safe(ref, rpos, &entry->refs, list)
+			gpio_shared_drop_ref(ref);
 		gpio_shared_drop_entry(entry);
 	}
 }

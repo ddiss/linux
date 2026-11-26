@@ -104,9 +104,8 @@ static int dwc3_google_set_pmu_state(struct dwc3_google *google, int state)
 	regmap_read(google->usb_cfg_regmap,
 		    google->host_cfg_offset + HOST_CFG1_OFFSET, &reg);
 
-	reg &= ~HOST_CFG1_PM_POWER_STATE_REQUEST;
-	reg |= (FIELD_PREP(HOST_CFG1_PM_POWER_STATE_REQUEST, state) |
-		HOST_CFG1_PME_EN);
+	FIELD_MODIFY(HOST_CFG1_PM_POWER_STATE_REQUEST, &reg, state);
+	reg |= HOST_CFG1_PME_EN;
 	regmap_write(google->usb_cfg_regmap,
 		     google->host_cfg_offset + HOST_CFG1_OFFSET, reg);
 
@@ -236,10 +235,8 @@ static int dwc3_google_request_irq(struct dwc3_google *google, struct platform_d
 					dwc3_google_resume_irq,
 					IRQF_TRIGGER_HIGH | IRQF_ONESHOT,
 					req_name, google);
-	if (ret < 0) {
-		dev_err(google->dev, "failed to request irq %s\n", req_name);
+	if (ret < 0)
 		return ret;
-	}
 
 	return irq;
 }
@@ -370,7 +367,7 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	int			ret;
 	u32			args[2];
 
-	google = devm_kzalloc(&pdev->dev, sizeof(*google), GFP_KERNEL);
+	google = devm_kzalloc_obj(&pdev->dev, *google);
 	if (!google)
 		return -ENOMEM;
 
@@ -385,8 +382,9 @@ static int dwc3_google_probe(struct platform_device *pdev)
 						     "google,usb-cfg-csr",
 						     ARRAY_SIZE(args), args);
 	if (IS_ERR(google->usb_cfg_regmap)) {
-		return dev_err_probe(dev, PTR_ERR(google->usb_cfg_regmap),
-				     "invalid usb cfg csr\n");
+		ret = dev_err_probe(dev, PTR_ERR(google->usb_cfg_regmap),
+				    "invalid usb cfg csr\n");
+		goto err_deinit_pdom;
 	}
 
 	google->host_cfg_offset = args[0];
@@ -442,6 +440,7 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	probe_data.dwc = &google->dwc;
 	probe_data.res = res;
 	probe_data.ignore_clocks_and_resets = true;
+	probe_data.properties = DWC3_DEFAULT_PROPERTIES;
 	ret = dwc3_core_probe(&probe_data);
 	if (ret)  {
 		ret = dev_err_probe(dev, ret, "failed to register DWC3 Core\n");

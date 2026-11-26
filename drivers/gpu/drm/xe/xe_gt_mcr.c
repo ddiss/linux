@@ -3,6 +3,9 @@
  * Copyright © 2022 Intel Corporation
  */
 
+#include <kunit/static_stub.h>
+#include <kunit/visibility.h>
+
 #include "xe_gt_mcr.h"
 
 #include "regs/xe_gt_regs.h"
@@ -201,7 +204,7 @@ static const struct xe_mmio_range xe2lpg_dss_steering_table[] = {
 	{ 0x009680, 0x0096FF },         /* DSS */
 	{ 0x00D800, 0x00D87F },         /* SLICE */
 	{ 0x00DC00, 0x00DCFF },         /* SLICE */
-	{ 0x00DE80, 0x00E8FF },         /* DSS (0xE000-0xE0FF reserved) */
+	{ 0x00DE00, 0x00E8FF },         /* DSS (0xE000-0xE0FF reserved) */
 	{ 0x00E980, 0x00E9FF },         /* SLICE */
 	{ 0x013000, 0x0133FF },         /* DSS (0x13000-0x131FF), SLICE (0x13200-0x133FF) */
 	{},
@@ -216,9 +219,7 @@ static const struct xe_mmio_range xe2lpg_sqidi_psmi_steering_table[] = {
 static const struct xe_mmio_range xe2lpg_instance0_steering_table[] = {
 	{ 0x004000, 0x004AFF },         /* GAM, rsvd, GAMWKR */
 	{ 0x008700, 0x00887F },         /* SQIDI, MEMPIPE */
-	{ 0x00B000, 0x00B3FF },         /* NODE, L3BANK */
 	{ 0x00C800, 0x00CFFF },         /* GAM */
-	{ 0x00D880, 0x00D8FF },         /* NODE */
 	{ 0x00DD00, 0x00DDFF },         /* MEMPIPE */
 	{ 0x00E900, 0x00E97F },         /* MEMPIPE */
 	{ 0x00F000, 0x00FFFF },         /* GAM, GAMWKR */
@@ -267,7 +268,7 @@ static const struct xe_mmio_range xe3p_xpc_gam_grp1_steering_table[] = {
 	{},
 };
 
-static const struct xe_mmio_range xe3p_xpc_node_steering_table[] = {
+static const struct xe_mmio_range xe2_node_steering_table[] = {
 	{ 0x00B000, 0x00B0FF },
 	{ 0x00D880, 0x00D8FF },
 	{},
@@ -280,12 +281,25 @@ static const struct xe_mmio_range xe3p_xpc_instance0_steering_table[] = {
 	{},
 };
 
+static const struct xe_mmio_range xe3p_lpg_instance0_steering_table[] = {
+	{ 0x004000, 0x004AFF },         /* GAM, rsvd, GAMWKR */
+	{ 0x008700, 0x00887F },         /* NODE */
+	{ 0x00B000, 0x00B3FF },         /* NODE, L3BANK */
+	{ 0x00B500, 0x00B6FF },		/* PSMI */
+	{ 0x00C800, 0x00CFFF },         /* GAM */
+	{ 0x00D880, 0x00D8FF },         /* NODE */
+	{ 0x00DD00, 0x00DD7F },         /* MEMPIPE */
+	{ 0x00F000, 0x00FFFF },         /* GAM, GAMWKR */
+	{ 0x013400, 0x0135FF },         /* MEMPIPE */
+	{},
+};
+
 static void init_steering_l3bank(struct xe_gt *gt)
 {
 	struct xe_device *xe = gt_to_xe(gt);
 	struct xe_mmio *mmio = &gt->mmio;
 
-	if (GRAPHICS_VER(xe) >= 35) {
+	if (GRAPHICS_VER(xe) >= 20) {
 		unsigned int first_bank = xe_l3_bank_mask_ffs(gt->fuse_topo.l3_bank_mask);
 		const int banks_per_node = 4;
 		unsigned int node = first_bank / banks_per_node;
@@ -390,8 +404,7 @@ fallback:
 	 * Some older platforms don't have tables or don't have complete tables.
 	 * Newer platforms should always have the required info.
 	 */
-	if (GRAPHICS_VERx100(gt_to_xe(gt)) >= 2000 &&
-	    !gt_to_xe(gt)->info.force_execlist)
+	if (GRAPHICS_VERx100(gt_to_xe(gt)) >= 2000)
 		xe_gt_err(gt, "Slice/Subslice counts missing from hwconfig table; using typical fallback values\n");
 
 	if (gt_to_xe(gt)->info.platform == XE_PVC)
@@ -417,19 +430,6 @@ void xe_gt_mcr_get_dss_steering(const struct xe_gt *gt, unsigned int dss, u16 *g
 	*instance = dss % gt->steering_dss_per_grp;
 }
 
-/**
- * xe_gt_mcr_steering_info_to_dss_id - Get DSS ID from group/instance steering
- * @gt: GT structure
- * @group: steering group ID
- * @instance: steering instance ID
- *
- * Return: the converted DSS id.
- */
-u32 xe_gt_mcr_steering_info_to_dss_id(struct xe_gt *gt, u16 group, u16 instance)
-{
-	return group * dss_per_group(gt) + instance;
-}
-
 static void init_steering_dss(struct xe_gt *gt)
 {
 	gt->steering_dss_per_grp = dss_per_group(gt);
@@ -443,11 +443,16 @@ static void init_steering_dss(struct xe_gt *gt)
 
 static void init_steering_oaddrm(struct xe_gt *gt)
 {
+	u64 hwe_mask = XE_HW_ENGINE_VCS0 | XE_HW_ENGINE_VECS0;
+
+	/* TODO: Add 'VD per SCMI' and 'VE per SCMI' values into 'struct xe_media_desc' */
+	if (MEDIA_VERx100(gt_to_xe(gt)) >= 3500)
+		hwe_mask |= XE_HW_ENGINE_VCS1 | XE_HW_ENGINE_VECS1;
 	/*
 	 * First instance is only terminated if the entire first media slice
-	 * is absent (i.e., no VCS0 or VECS0).
+	 * is absent (i.e., no engines in hwe_mask).
 	 */
-	if (gt->info.engine_mask & (XE_HW_ENGINE_VCS0 | XE_HW_ENGINE_VECS0))
+	if (gt->info.engine_mask & hwe_mask)
 		gt->steering[OADDRM].group_target = 0;
 	else
 		gt->steering[OADDRM].group_target = 1;
@@ -505,11 +510,8 @@ void xe_gt_mcr_init_early(struct xe_gt *gt)
 
 	spin_lock_init(&gt->mcr_lock);
 
-	if (IS_SRIOV_VF(xe))
-		return;
-
 	if (gt->info.type == XE_GT_TYPE_MEDIA) {
-		drm_WARN_ON(&xe->drm, MEDIA_VER(xe) < 13);
+		xe_gt_WARN_ON(gt, MEDIA_VER(xe) < 13);
 
 		if (MEDIA_VER(xe) >= 30) {
 			gt->steering[OADDRM].ranges = xe2lpm_gpmxmt_steering_table;
@@ -522,21 +524,20 @@ void xe_gt_mcr_init_early(struct xe_gt *gt)
 		}
 	} else {
 		if (GRAPHICS_VERx100(xe) == 3511) {
-			/*
-			 * TODO: there are some ranges in bspec with missing
-			 * termination: [0x00B000, 0x00B0FF] and
-			 * [0x00D880, 0x00D8FF] (NODE); [0x00B100, 0x00B3FF]
-			 * (L3BANK). Update them here once bspec is updated.
-			 */
 			gt->steering[DSS].ranges = xe3p_xpc_xecore_steering_table;
 			gt->steering[GAM1].ranges = xe3p_xpc_gam_grp1_steering_table;
 			gt->steering[INSTANCE0].ranges = xe3p_xpc_instance0_steering_table;
 			gt->steering[L3BANK].ranges = xelpg_l3bank_steering_table;
-			gt->steering[NODE].ranges = xe3p_xpc_node_steering_table;
+			gt->steering[NODE].ranges = xe2_node_steering_table;
+		} else if (GRAPHICS_VERx100(xe) >= 3510) {
+			gt->steering[DSS].ranges = xe2lpg_dss_steering_table;
+			gt->steering[INSTANCE0].ranges = xe3p_lpg_instance0_steering_table;
 		} else if (GRAPHICS_VER(xe) >= 20) {
 			gt->steering[DSS].ranges = xe2lpg_dss_steering_table;
 			gt->steering[SQIDI_PSMI].ranges = xe2lpg_sqidi_psmi_steering_table;
 			gt->steering[INSTANCE0].ranges = xe2lpg_instance0_steering_table;
+			gt->steering[L3BANK].ranges = xelpg_l3bank_steering_table;
+			gt->steering[NODE].ranges = xe2_node_steering_table;
 		} else if (GRAPHICS_VERx100(xe) >= 1270) {
 			gt->steering[INSTANCE0].ranges = xelpg_instance0_steering_table;
 			gt->steering[L3BANK].ranges = xelpg_l3bank_steering_table;
@@ -559,6 +560,7 @@ void xe_gt_mcr_init_early(struct xe_gt *gt)
 	/* Mark instance 0 as initialized, we need this early for VRAM and CCS probe. */
 	gt->steering[INSTANCE0].initialized = true;
 }
+EXPORT_SYMBOL_IF_KUNIT(xe_gt_mcr_init_early);
 
 /**
  * xe_gt_mcr_init - Normal initialization of the MCR support
@@ -568,9 +570,6 @@ void xe_gt_mcr_init_early(struct xe_gt *gt)
  */
 void xe_gt_mcr_init(struct xe_gt *gt)
 {
-	if (IS_SRIOV_VF(gt_to_xe(gt)))
-		return;
-
 	/* Select non-terminated steering target for each type */
 	for (int i = 0; i < NUM_STEERING_TYPES; i++) {
 		gt->steering[i].initialized = true;
@@ -609,6 +608,40 @@ void xe_gt_mcr_set_implicit_defaults(struct xe_gt *gt)
 	}
 }
 
+static bool reg_in_steering_type_ranges(struct xe_gt *gt,
+					struct xe_reg reg,
+					int type)
+{
+	if (!gt->steering[type].ranges)
+		return false;
+
+	for (int i = 0; gt->steering[type].ranges[i].end > 0; i++)
+		if (xe_mmio_in_range(&gt->mmio, &gt->steering[type].ranges[i], reg))
+			return true;
+
+	return false;
+}
+
+/*
+ * xe_gt_mcr_check_reg - check if a register is recognized by this GT as MCR
+ * @gt: GT structure
+ * @reg: The register to check
+ *
+ * Returns true if the register offset falls within one of the MMIO ranges
+ * classified as MCR for the GT.
+ */
+bool xe_gt_mcr_check_reg(struct xe_gt *gt, struct xe_reg reg)
+{
+	KUNIT_STATIC_STUB_REDIRECT(xe_gt_mcr_check_reg, gt, reg);
+
+	for (int type = 0; type <= IMPLICIT_STEERING; type++)
+		if (reg_in_steering_type_ranges(gt, reg, type))
+			return true;
+
+	return false;
+}
+EXPORT_SYMBOL_IF_KUNIT(xe_gt_mcr_check_reg);
+
 /*
  * xe_gt_mcr_get_nonterminated_steering - find group/instance values that
  *    will steer a register to a non-terminated instance
@@ -630,38 +663,29 @@ bool xe_gt_mcr_get_nonterminated_steering(struct xe_gt *gt,
 					  u8 *group, u8 *instance)
 {
 	const struct xe_reg reg = to_xe_reg(reg_mcr);
-	const struct xe_mmio_range *implicit_ranges;
 
 	for (int type = 0; type < IMPLICIT_STEERING; type++) {
-		if (!gt->steering[type].ranges)
-			continue;
+		if (reg_in_steering_type_ranges(gt, reg, type)) {
+			xe_gt_WARN(gt, !gt->steering[type].initialized,
+				   "Uninitialized usage of MCR register %s/%#x\n",
+				   xe_steering_types[type].name, reg.addr);
 
-		for (int i = 0; gt->steering[type].ranges[i].end > 0; i++) {
-			if (xe_mmio_in_range(&gt->mmio, &gt->steering[type].ranges[i], reg)) {
-				drm_WARN(&gt_to_xe(gt)->drm, !gt->steering[type].initialized,
-					 "Uninitialized usage of MCR register %s/%#x\n",
-					 xe_steering_types[type].name, reg.addr);
-
-				*group = gt->steering[type].group_target;
-				*instance = gt->steering[type].instance_target;
-				return true;
-			}
+			*group = gt->steering[type].group_target;
+			*instance = gt->steering[type].instance_target;
+			return true;
 		}
 	}
 
-	implicit_ranges = gt->steering[IMPLICIT_STEERING].ranges;
-	if (implicit_ranges)
-		for (int i = 0; implicit_ranges[i].end > 0; i++)
-			if (xe_mmio_in_range(&gt->mmio, &implicit_ranges[i], reg))
-				return false;
+	if (reg_in_steering_type_ranges(gt, reg, IMPLICIT_STEERING))
+		return false;
 
 	/*
 	 * Not found in a steering table and not a register with implicit
 	 * steering. Just steer to 0/0 as a guess and raise a warning.
 	 */
-	drm_WARN(&gt_to_xe(gt)->drm, true,
-		 "Did not find MCR register %#x in any MCR steering table\n",
-		 reg.addr);
+	xe_gt_WARN(gt, true,
+		   "Did not find MCR register %#x in any MCR steering table\n",
+		   reg.addr);
 	*group = 0;
 	*instance = 0;
 
@@ -690,7 +714,7 @@ static void mcr_lock(struct xe_gt *gt) __acquires(&gt->mcr_lock)
 		ret = xe_mmio_wait32(&gt->mmio, STEER_SEMAPHORE, 0x1, 0x1, 10, NULL,
 				     true);
 
-	drm_WARN_ON_ONCE(&xe->drm, ret == -ETIMEDOUT);
+	xe_gt_WARN_ON_ONCE(gt, ret == -ETIMEDOUT);
 }
 
 static void mcr_unlock(struct xe_gt *gt) __releases(&gt->mcr_lock)

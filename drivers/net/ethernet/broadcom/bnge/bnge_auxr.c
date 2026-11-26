@@ -141,12 +141,15 @@ static void bnge_aux_dev_release(struct device *dev)
 {
 	struct bnge_auxr_priv *aux_priv =
 			container_of(dev, struct bnge_auxr_priv, aux_dev.dev);
-	struct bnge_dev *bd = pci_get_drvdata(aux_priv->auxr_dev->pdev);
+	struct bnge_auxr_dev *auxr_dev = aux_priv->auxr_dev;
+	struct bnge_dev *bd = pci_get_drvdata(to_pci_dev(dev->parent));
 
 	ida_free(&bnge_aux_dev_ids, aux_priv->id);
-	kfree(aux_priv->auxr_dev->auxr_info);
+	if (auxr_dev) {
+		kfree(auxr_dev->auxr_info);
+		kfree(auxr_dev);
+	}
 	bd->auxr_dev = NULL;
-	kfree(aux_priv->auxr_dev);
 	kfree(aux_priv);
 	bd->aux_priv = NULL;
 }
@@ -194,6 +197,7 @@ void bnge_rdma_aux_device_add(struct bnge_dev *bd)
 		dev_warn(bd->dev, "Failed to add auxiliary device for ROCE\n");
 		auxiliary_device_uninit(aux_dev);
 		bd->flags &= ~BNGE_EN_ROCE;
+		return;
 	}
 
 	bd->auxr_dev->net = bd->netdev;

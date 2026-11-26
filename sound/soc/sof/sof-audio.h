@@ -43,6 +43,9 @@
 #define WIDGET_IS_AIF(id) ((id) == snd_soc_dapm_aif_in || (id) == snd_soc_dapm_aif_out)
 #define WIDGET_IS_AIF_OR_DAI(id) (WIDGET_IS_DAI(id) || WIDGET_IS_AIF(id))
 #define WIDGET_IS_COPIER(id) (WIDGET_IS_AIF_OR_DAI(id) || (id) == snd_soc_dapm_buffer)
+#define WIDGET_IS_PROCESS(id) ((id) == snd_soc_dapm_effect ||	\
+			       (id) == snd_soc_dapm_decoder ||	\
+			       (id) == snd_soc_dapm_encoder)
 
 #define SOF_DAI_PARAM_INTEL_SSP_MCLK		0
 #define SOF_DAI_PARAM_INTEL_SSP_BCLK		1
@@ -119,14 +122,16 @@ struct snd_sof_dai_config_data {
  *				  therefore the host must do the same and should stop the DMA during
  *				  hw_free.
  * @d0i3_supported_in_s0ix: Allow DSP D0I3 during S0iX
+ * @compress_ops: Pointer to ops for compressed streams
  */
 struct sof_ipc_pcm_ops {
 	int (*hw_params)(struct snd_soc_component *component, struct snd_pcm_substream *substream,
 			 struct snd_pcm_hw_params *params,
 			 struct snd_sof_platform_stream_params *platform_params);
-	int (*hw_free)(struct snd_soc_component *component, struct snd_pcm_substream *substream);
-	int (*trigger)(struct snd_soc_component *component,  struct snd_pcm_substream *substream,
-		       int cmd);
+	int (*hw_free)(struct snd_soc_component *component, struct snd_pcm_substream *substream,
+		       struct snd_sof_pcm *spcm, int dir);
+	int (*trigger)(struct snd_soc_component *component, struct snd_pcm_substream *substream,
+		       struct snd_sof_pcm *spcm, int cmd, int dir);
 	int (*dai_link_fixup)(struct snd_soc_pcm_runtime *rtd, struct snd_pcm_hw_params *params);
 	int (*pcm_setup)(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm);
 	void (*pcm_free)(struct snd_sof_dev *sdev, struct snd_sof_pcm *spcm);
@@ -139,6 +144,7 @@ struct sof_ipc_pcm_ops {
 	bool ipc_first_on_start;
 	bool platform_stop_during_hw_free;
 	bool d0i3_supported_in_s0ix;
+	const struct snd_compress_ops *compress_ops;
 };
 
 /**
@@ -354,10 +360,12 @@ struct snd_sof_pcm {
 	struct snd_sof_pcm_stream stream[2];
 	struct list_head list;	/* list in sdev pcm list */
 	struct snd_pcm_hw_params params[2];
+	struct snd_compr_params cparams[2]; /* applicable for compress devices */
 	struct snd_sof_platform_stream_params platform_params[2];
 	bool prepared[2]; /* PCM_PARAMS set successfully */
 	bool setup_done[2]; /* the setup of the SOF PCM device is done */
 	bool pending_stop[2]; /* only used if (!pcm_ops->platform_stop_during_hw_free) */
+	bool compr_started[2]; /* compress stream has been started */
 
 	/* Must be last - ends in a flex-array member. */
 	struct snd_soc_tplg_pcm pcm;
@@ -411,11 +419,11 @@ struct snd_sof_dai_link {
 	struct snd_sof_tuple *tuples;
 	int num_tuples;
 	struct snd_soc_dai_link *link;
-	struct snd_soc_tplg_hw_config *hw_configs;
 	int num_hw_configs;
 	int default_hw_cfg_id;
 	int type;
 	struct list_head list;
+	struct snd_soc_tplg_hw_config hw_configs[] __counted_by(num_hw_configs);
 };
 
 /* ASoC SOF DAPM widget */
@@ -459,10 +467,10 @@ struct snd_sof_widget {
 	/* Scheduling domain (enum sof_comp_domain), unset, Low Latency, or Data Processing */
 	u32 comp_domain;
 
-	/* The values below are added to mod_init pay load if comp_domain indicates DP component */
-	u32 dp_domain_id;	/* DP process userspace domain ID */
-	u32 dp_stack_bytes;	/* DP process stack size requirement in bytes */
-	u32 dp_heap_bytes;	/* DP process heap size requirement in bytes */
+	/* Module instance's memory configuration. */
+	u32 domain_id;		/* Module instance's userspace domain ID */
+	u32 stack_bytes;	/* Module instance's stack size requirement */
+	u32 heap_bytes;		/* Module instance's heap size requirement */
 
 	struct snd_soc_dapm_widget *widget;
 	struct list_head list;	/* list in sdev widget list */
@@ -634,29 +642,40 @@ struct snd_sof_pcm *snd_sof_find_spcm_comp(struct snd_soc_component *scomp,
 					   int *direction);
 void snd_sof_pcm_period_elapsed(struct snd_pcm_substream *substream);
 void snd_sof_pcm_init_elapsed_work(struct work_struct *work);
-
+int sof_pcm_setup_connected_widgets(struct snd_sof_dev *sdev, struct snd_soc_pcm_runtime *rtd,
+				    struct snd_sof_pcm *spcm, struct snd_pcm_hw_params *params,
+				    struct snd_sof_platform_stream_params *platform_params,
+				    int dir);
+struct snd_sof_widget *snd_sof_find_swidget_by_comp_id(struct snd_sof_dev *sdev,
+						       int comp_id);
 /*
  * snd_sof_pcm specific wrappers for dev_dbg() and dev_err() to provide
  * consistent and useful prints.
  */
 #define spcm_dbg(__spcm, __dir, __fmt, ...)					\
 	dev_dbg((__spcm)->scomp->dev, "pcm%u (%s), dir %d: " __fmt,		\
-		(__spcm)->pcm.pcm_id, (__spcm)->pcm.pcm_name, __dir,		\
+		le32_to_cpu((__spcm)->pcm.pcm_id),				\
+		(__spcm)->pcm.pcm_name, __dir,					\
 		##__VA_ARGS__)
 
 #define spcm_dbg_ratelimited(__spcm, __dir, __fmt, ...)				\
 	dev_dbg_ratelimited((__spcm)->scomp->dev, "pcm%u (%s), dir %d: " __fmt,	\
-		(__spcm)->pcm.pcm_id, (__spcm)->pcm.pcm_name, __dir,		\
-		##__VA_ARGS__)
+			    le32_to_cpu((__spcm)->pcm.pcm_id),			\
+			    (__spcm)->pcm.pcm_name, __dir,			\
+			    ##__VA_ARGS__)
 
 #define spcm_err(__spcm, __dir, __fmt, ...)					\
 	dev_err((__spcm)->scomp->dev, "%s: pcm%u (%s), dir %d: " __fmt,		\
-		__func__, (__spcm)->pcm.pcm_id, (__spcm)->pcm.pcm_name, __dir,	\
+		__func__, le32_to_cpu((__spcm)->pcm.pcm_id),			\
+		(__spcm)->pcm.pcm_name, __dir,					\
 		##__VA_ARGS__)
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_COMPRESS)
 void snd_sof_compr_fragment_elapsed(struct snd_compr_stream *cstream);
 void snd_sof_compr_init_elapsed_work(struct work_struct *work);
+int snd_sof_compr_create_page_table(struct snd_soc_component *component,
+				    struct snd_compr_stream *cstream,
+				    unsigned char *dma_area, size_t size);
 #else
 static inline void snd_sof_compr_fragment_elapsed(struct snd_compr_stream *cstream) { }
 static inline void snd_sof_compr_init_elapsed_work(struct work_struct *work) { }

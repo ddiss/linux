@@ -800,7 +800,7 @@ static int ni_tio_set_clock_src(struct ni_gpct *counter,
 				GI_PRESCALE_X2(counter_dev->variant) |
 				GI_PRESCALE_X8(counter_dev->variant), bits);
 	}
-	counter->clock_period_ps = period_ns * 1000;
+	counter->clock_period_ps = (u64)period_ns * 1000;
 	ni_tio_set_sync_mode(counter);
 	return 0;
 }
@@ -1824,17 +1824,6 @@ void ni_gpct_device_destroy(struct ni_gpct_device *counter_dev)
 	kfree(counter_dev);
 }
 EXPORT_SYMBOL_GPL(ni_gpct_device_destroy);
-
-static int __init ni_tio_init_module(void)
-{
-	return 0;
-}
-module_init(ni_tio_init_module);
-
-static void __exit ni_tio_cleanup_module(void)
-{
-}
-module_exit(ni_tio_cleanup_module);
 
 MODULE_AUTHOR("Comedi <comedi@comedi.org>");
 MODULE_DESCRIPTION("Comedi support for NI general-purpose counters");

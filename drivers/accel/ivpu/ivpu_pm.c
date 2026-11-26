@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (C) 2020-2024 Intel Corporation
+ * Copyright (C) 2020-2026 Intel Corporation
  */
 
 #include <linux/highmem.h>
@@ -46,7 +46,6 @@ static void ivpu_pm_prepare_cold_boot(struct ivpu_device *vdev)
 	ivpu_cmdq_reset_all_contexts(vdev);
 	ivpu_ipc_reset(vdev);
 	ivpu_fw_log_reset(vdev);
-	ivpu_fw_load(vdev);
 	fw->last_heartbeat = 0;
 
 	ivpu_dbg(vdev, FW_BOOT, "Cold boot entry point 0x%llx", vdev->fw->cold_boot_entry_point);
@@ -151,8 +150,8 @@ static void ivpu_pm_reset_complete(struct ivpu_device *vdev)
 	up_write(&vdev->pm->reset_lock);
 	atomic_set(&vdev->pm->reset_pending, 0);
 
-	pm_runtime_mark_last_busy(vdev->drm.dev);
 	pm_runtime_enable(vdev->drm.dev);
+	pm_request_autosuspend(vdev->drm.dev);
 }
 
 static void ivpu_pm_recovery_work(struct work_struct *work)
@@ -166,7 +165,7 @@ static void ivpu_pm_recovery_work(struct work_struct *work)
 	ivpu_pm_reset_begin(vdev);
 
 	if (!pm_runtime_status_suspended(vdev->drm.dev)) {
-		ivpu_jsm_state_dump(vdev);
+		ivpu_jsm_state_dump_no_reply(vdev);
 		ivpu_dev_coredump(vdev);
 		ivpu_suspend(vdev);
 	}
@@ -205,23 +204,32 @@ static void ivpu_job_timeout_work(struct work_struct *work)
 
 	if (ivpu_jsm_get_heartbeat(vdev, 0, &heartbeat) || heartbeat <= vdev->fw->last_heartbeat) {
 		ivpu_err(vdev, "Job timeout detected, heartbeat not progressed\n");
-		goto recovery;
+		goto abort;
 	}
 
 	inference_max_retries = DIV_ROUND_UP(inference_timeout_ms, timeout_ms);
 	if (atomic_fetch_inc(&vdev->job_timeout_counter) >= inference_max_retries) {
 		ivpu_err(vdev, "Job timeout detected, heartbeat limit (%lld) exceeded\n",
 			 inference_max_retries);
-		goto recovery;
+		goto abort;
 	}
 
 	vdev->fw->last_heartbeat = heartbeat;
 	ivpu_start_job_timeout_detection(vdev);
 	return;
 
-recovery:
+abort:
 	atomic_set(&vdev->job_timeout_counter, 0);
-	ivpu_pm_trigger_recovery(vdev, "TDR");
+
+	if (vdev->fw->sched_mode == VPU_SCHEDULING_MODE_OS) {
+		ivpu_pm_trigger_recovery(vdev, "Job timeout");
+		return;
+	}
+
+	ivpu_jsm_state_dump(vdev);
+	ivpu_dev_coredump(vdev);
+	atomic_set(&vdev->job_timeout_detected, 1);
+	queue_work(system_percpu_wq, &vdev->context_abort_work);
 }
 
 void ivpu_start_job_timeout_detection(struct ivpu_device *vdev)
@@ -404,8 +412,10 @@ void ivpu_pm_init(struct ivpu_device *vdev)
 	init_rwsem(&pm->reset_lock);
 	atomic_set(&pm->reset_pending, 0);
 	atomic_set(&pm->reset_counter, 0);
+	atomic_set(&pm->engine_reset_counter, 0);
 
 	INIT_WORK(&pm->recovery_work, ivpu_pm_recovery_work);
+	disable_work(&pm->recovery_work);
 	INIT_DELAYED_WORK(&pm->job_timeout_work, ivpu_job_timeout_work);
 
 	if (ivpu_disable_recovery)
@@ -429,6 +439,12 @@ void ivpu_pm_disable_recovery(struct ivpu_device *vdev)
 void ivpu_pm_enable(struct ivpu_device *vdev)
 {
 	struct device *dev = vdev->drm.dev;
+
+	enable_work(&vdev->pm->recovery_work);
+	if (atomic_read(&vdev->pm->reset_pending)) {
+		queue_work(system_dfl_wq, &vdev->pm->recovery_work);
+		flush_work(&vdev->pm->recovery_work);
+	}
 
 	pm_runtime_allow(dev);
 	pm_runtime_put_autosuspend(dev);

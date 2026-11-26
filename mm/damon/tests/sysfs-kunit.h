@@ -1,8 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Data Access Monitor Unit Tests
- *
- * Author: SeongJae Park <sj@kernel.org>
  */
 
 #ifdef CONFIG_DAMON_SYSFS_KUNIT_TEST
@@ -79,6 +77,15 @@ static void damon_sysfs_test_add_targets(struct kunit *test)
 		kfree(sysfs_target->regions);
 		kfree(sysfs_target);
 		kunit_skip(test, "ctx alloc fail");
+	}
+
+	if (damon_select_ops(ctx, DAMON_OPS_VADDR)) {
+		damon_destroy_ctx(ctx);
+		kfree(sysfs_targets->targets_arr);
+		kfree(sysfs_targets);
+		kfree(sysfs_target->regions);
+		kfree(sysfs_target);
+		kunit_skip(test, "vaddr ops not registered");
 	}
 
 	damon_sysfs_add_targets(ctx, sysfs_targets);

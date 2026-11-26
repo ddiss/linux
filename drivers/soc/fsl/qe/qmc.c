@@ -1301,7 +1301,7 @@ static int qmc_of_parse_chans(struct qmc *qmc, struct device_node *np)
 			return -EINVAL;
 		}
 
-		chan = devm_kzalloc(qmc->dev, sizeof(*chan), GFP_KERNEL);
+		chan = devm_kzalloc_obj(qmc->dev, *chan);
 		if (!chan)
 			return -ENOMEM;
 
@@ -1790,8 +1790,8 @@ static int qmc_qe_init_resources(struct qmc *qmc, struct platform_device *pdev)
 		return -EINVAL;
 	qmc->dpram_offset = res->start - qe_muram_dma(qe_muram_addr(0));
 	qmc->dpram = devm_ioremap_resource(qmc->dev, res);
-	if (IS_ERR(qmc->scc_pram))
-		return PTR_ERR(qmc->scc_pram);
+	if (IS_ERR(qmc->dpram))
+		return PTR_ERR(qmc->dpram);
 
 	return 0;
 }
@@ -1906,7 +1906,7 @@ static int qmc_probe(struct platform_device *pdev)
 	int irq;
 	int ret;
 
-	qmc = devm_kzalloc(&pdev->dev, sizeof(*qmc), GFP_KERNEL);
+	qmc = devm_kzalloc_obj(&pdev->dev, *qmc);
 	if (!qmc)
 		return -ENOMEM;
 

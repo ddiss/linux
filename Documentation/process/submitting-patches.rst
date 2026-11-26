@@ -23,7 +23,7 @@ easier.
 
 Some subsystems and maintainer trees have additional information about
 their workflow and expectations, see
-:ref:`Documentation/process/maintainer-handbooks.rst <maintainer_handbooks_main>`.
+Documentation/process/maintainer-handbooks.rst.
 
 Obtain a current source tree
 ----------------------------
@@ -239,9 +239,12 @@ patches as arguments to scripts/get_maintainer.pl).  If you cannot find a
 maintainer for the subsystem you are working on, Andrew Morton
 (akpm@linux-foundation.org) serves as a maintainer of last resort.
 
-linux-kernel@vger.kernel.org should be used by default for all patches, but the
-volume on that list has caused a number of developers to tune it out.  Please
-do not spam unrelated lists and unrelated people, though.
+You should also normally choose at least one mailing list to receive a copy of
+your patch set.  Look in the MAINTAINERS file for a subsystem-specific list;
+your patch will probably get more attention there.
+linux-kernel@vger.kernel.org functions as a list of last resort for patches
+that do not have a subsystem-specific list.  Please do not spam unrelated lists
+and unrelated people, though.
 
 Many kernel-related lists are hosted at kernel.org; you can find a list
 of them at https://subspace.kernel.org.  There are kernel-related lists
@@ -404,12 +407,11 @@ patches that are being emailed around.
 The sign-off is a simple line at the end of the explanation for the
 patch, which certifies that you wrote it or otherwise have the right to
 pass it on as an open-source patch.  The rules are pretty simple: if you
-can certify the below:
+can certify the below::
 
-Developer's Certificate of Origin 1.1
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        Developer's Certificate of Origin 1.1
 
-By making a contribution to this project, I certify that:
+        By making a contribution to this project, I certify that:
 
         (a) The contribution was created in whole or in part by me and I
             have the right to submit it under the open source license
@@ -457,7 +459,7 @@ When to use Acked-by:, Cc:, and Co-developed-by:
 ------------------------------------------------
 
 The Signed-off-by: tag indicates that the signer was involved in the
-development of the patch, or that he/she was in the patch's delivery path.
+development of the patch, or that they were in the patch's delivery path.
 
 If a person was not directly involved in the preparation or handling of a
 patch but wishes to signify and record their approval of it then they can
@@ -554,12 +556,11 @@ some testing has been performed, provides a means to locate testers for
 future patches, and ensures credit for the testers.
 
 Reviewed-by:, instead, indicates that the patch has been reviewed and found
-acceptable according to the Reviewer's Statement:
+acceptable according to the Reviewer's Statement::
 
-Reviewer's statement of oversight
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+	Reviewer's statement of oversight
 
-By offering my Reviewed-by: tag, I state that:
+	By offering my Reviewed-by: tag, I state that:
 
 	 (a) I have carried out a technical review of this patch to
 	     evaluate its appropriateness and readiness for inclusion into
@@ -581,12 +582,12 @@ By offering my Reviewed-by: tag, I state that:
 
 A Reviewed-by tag is a statement of opinion that the patch is an
 appropriate modification of the kernel without any remaining serious
-technical issues.  Any interested reviewer (who has done the work) can
-offer a Reviewed-by tag for a patch.  This tag serves to give credit to
-reviewers and to inform maintainers of the degree of review which has been
-done on the patch.  Reviewed-by: tags, when supplied by reviewers known to
-understand the subject area and to perform thorough reviews, will normally
-increase the likelihood of your patch getting into the kernel.
+technical issues.  Any interested reviewer (who has done the work and is a
+person with known identity) can offer a Reviewed-by tag for a patch.  This tag
+serves to give credit to reviewers and to inform maintainers of the degree of
+review which has been done on the patch.  Reviewed-by: tags, when supplied by
+reviewers known to understand the subject area and to perform thorough reviews,
+will normally increase the likelihood of your patch getting into the kernel.
 
 Both Tested-by and Reviewed-by tags, once received on mailing list from tester
 or reviewer, should be added by author to the applicable patches when sending

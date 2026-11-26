@@ -20,8 +20,6 @@
 #include "coresight-trace-id.h"
 #include "coresight-tpdm.h"
 
-DEFINE_CORESIGHT_DEVLIST(tpda_devs, "tpda");
-
 static void tpda_clear_element_size(struct coresight_device *csdev)
 {
 	struct tpda_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
@@ -567,7 +565,7 @@ static int tpda_probe(struct amba_device *adev, const struct amba_id *id)
 		return PTR_ERR(pdata);
 	adev->dev.platform_data = pdata;
 
-	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
+	drvdata = devm_kzalloc_obj(dev, *drvdata);
 	if (!drvdata)
 		return -ENOMEM;
 
@@ -585,7 +583,7 @@ static int tpda_probe(struct amba_device *adev, const struct amba_id *id)
 	if (ret)
 		return ret;
 
-	desc.name = coresight_alloc_device_name(&tpda_devs, dev);
+	desc.name = coresight_alloc_device_name("tpda", dev);
 	if (!desc.name)
 		return -ENOMEM;
 	desc.type = CORESIGHT_DEV_TYPE_LINK;

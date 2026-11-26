@@ -361,19 +361,13 @@ static int stm32_cryp_it_start(struct stm32_cryp *cryp);
 
 static struct stm32_cryp *stm32_cryp_find_dev(struct stm32_cryp_ctx *ctx)
 {
-	struct stm32_cryp *tmp, *cryp = NULL;
+	struct stm32_cryp *cryp;
 
 	spin_lock_bh(&cryp_list.lock);
-	if (!ctx->cryp) {
-		list_for_each_entry(tmp, &cryp_list.dev_list, list) {
-			cryp = tmp;
-			break;
-		}
-		ctx->cryp = cryp;
-	} else {
-		cryp = ctx->cryp;
-	}
-
+	if (!ctx->cryp)
+		ctx->cryp = list_first_entry_or_null(&cryp_list.dev_list,
+						     struct stm32_cryp, list);
+	cryp = ctx->cryp;
 	spin_unlock_bh(&cryp_list.lock);
 
 	return cryp;
@@ -2573,7 +2567,7 @@ static int stm32_cryp_probe(struct platform_device *pdev)
 	struct reset_control *rst;
 	int irq, ret;
 
-	cryp = devm_kzalloc(dev, sizeof(*cryp), GFP_KERNEL);
+	cryp = devm_kzalloc_obj(dev, *cryp);
 	if (!cryp)
 		return -ENOMEM;
 
@@ -2596,10 +2590,8 @@ static int stm32_cryp_probe(struct platform_device *pdev)
 	ret = devm_request_threaded_irq(dev, irq, stm32_cryp_irq,
 					stm32_cryp_irq_thread, IRQF_ONESHOT,
 					dev_name(dev), cryp);
-	if (ret) {
-		dev_err(dev, "Cannot grab IRQ\n");
+	if (ret)
 		return ret;
-	}
 
 	cryp->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(cryp->clk)) {

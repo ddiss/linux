@@ -50,7 +50,7 @@ static struct mbox_chan *mtk_vcp_mbox_xlate(struct mbox_controller *mbox,
 					    const struct of_phandle_args *sp)
 {
 	if (sp->args_count)
-		return NULL;
+		return ERR_PTR(-EINVAL);
 
 	return &mbox->chans[0];
 }
@@ -102,7 +102,7 @@ static int mtk_vcp_mbox_probe(struct platform_device *pdev)
 	struct mbox_controller *mbox;
 	int ret, irq;
 
-	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 

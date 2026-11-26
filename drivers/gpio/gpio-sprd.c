@@ -7,7 +7,6 @@
 #include <linux/bitops.h>
 #include <linux/gpio/driver.h>
 #include <linux/kernel.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/spinlock.h>
@@ -224,7 +223,7 @@ static int sprd_gpio_probe(struct platform_device *pdev)
 	struct gpio_irq_chip *irq;
 	struct sprd_gpio *sprd_gpio;
 
-	sprd_gpio = devm_kzalloc(&pdev->dev, sizeof(*sprd_gpio), GFP_KERNEL);
+	sprd_gpio = devm_kzalloc_obj(&pdev->dev, *sprd_gpio);
 	if (!sprd_gpio)
 		return -ENOMEM;
 

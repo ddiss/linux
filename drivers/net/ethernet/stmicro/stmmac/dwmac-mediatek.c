@@ -93,9 +93,9 @@ struct mediatek_dwmac_variant {
 	const char * const *clk_list;
 	int num_clks;
 
-	u32 dma_bit_mask;
 	u32 rx_delay_max;
 	u32 tx_delay_max;
+	u8 dma_bit_mask;
 };
 
 /* list of clocks required for mac */
@@ -268,9 +268,9 @@ static const struct mediatek_dwmac_variant mt2712_gmac_variant = {
 		.dwmac_set_delay = mt2712_set_delay,
 		.clk_list = mt2712_dwmac_clk_l,
 		.num_clks = ARRAY_SIZE(mt2712_dwmac_clk_l),
-		.dma_bit_mask = 33,
 		.rx_delay_max = 17600,
 		.tx_delay_max = 17600,
+		.dma_bit_mask = 33,
 };
 
 static int mt8195_set_interface(struct mediatek_dwmac_plat_data *plat,
@@ -418,9 +418,9 @@ static const struct mediatek_dwmac_variant mt8195_gmac_variant = {
 	.dwmac_set_delay = mt8195_set_delay,
 	.clk_list = mt8195_dwmac_clk_l,
 	.num_clks = ARRAY_SIZE(mt8195_dwmac_clk_l),
-	.dma_bit_mask = 35,
 	.rx_delay_max = 9280,
 	.tx_delay_max = 9280,
+	.dma_bit_mask = 35,
 };
 
 static int mediatek_dwmac_config_dt(struct mediatek_dwmac_plat_data *plat)
@@ -466,7 +466,8 @@ static int mediatek_dwmac_clk_init(struct mediatek_dwmac_plat_data *plat)
 	const struct mediatek_dwmac_variant *variant = plat->variant;
 	int i, ret;
 
-	plat->clks = devm_kcalloc(plat->dev, variant->num_clks, sizeof(*plat->clks), GFP_KERNEL);
+	plat->clks = devm_kzalloc_objs(plat->dev, *plat->clks,
+				       variant->num_clks);
 	if (!plat->clks)
 		return -ENOMEM;
 
@@ -564,16 +565,15 @@ static int mediatek_dwmac_common_data(struct platform_device *pdev,
 		plat->flags &= ~STMMAC_FLAG_USE_PHY_WOL;
 	else
 		plat->flags |= STMMAC_FLAG_USE_PHY_WOL;
-	plat->riwt_off = 1;
+	plat->riwt_off = true;
 	plat->maxmtu = ETH_DATA_LEN;
 	plat->host_dma_width = priv_plat->variant->dma_bit_mask;
 	plat->bsp_priv = priv_plat;
 	plat->resume = mediatek_dwmac_init;
 	plat->clks_config = mediatek_dwmac_clks_config;
 
-	plat->safety_feat_cfg = devm_kzalloc(&pdev->dev,
-					     sizeof(*plat->safety_feat_cfg),
-					     GFP_KERNEL);
+	plat->safety_feat_cfg = devm_kzalloc_obj(&pdev->dev,
+						 *plat->safety_feat_cfg);
 	if (!plat->safety_feat_cfg)
 		return -ENOMEM;
 
@@ -603,7 +603,7 @@ static int mediatek_dwmac_probe(struct platform_device *pdev)
 	struct stmmac_resources stmmac_res;
 	int ret;
 
-	priv_plat = devm_kzalloc(&pdev->dev, sizeof(*priv_plat), GFP_KERNEL);
+	priv_plat = devm_kzalloc_obj(&pdev->dev, *priv_plat);
 	if (!priv_plat)
 		return -ENOMEM;
 

@@ -84,7 +84,8 @@ static int temp_read(struct device *dev, enum hwmon_sensor_types type, u32 attr,
 		     int channel, long *val)
 {
 	struct mgb4_dev *mgbdev = dev_get_drvdata(dev);
-	u32 val10, raw;
+	u32 raw;
+	int val10;
 
 	if (type != hwmon_temp || attr != hwmon_temp_input)
 		return -EOPNOTSUPP;
@@ -693,9 +694,9 @@ static void mgb4_remove(struct pci_dev *pdev)
 }
 
 static const struct pci_device_id mgb4_pci_ids[] = {
-	{ PCI_DEVICE(DIGITEQ_VID, T100_DID), },
-	{ PCI_DEVICE(DIGITEQ_VID, T200_DID), },
-	{ 0, }
+	{ PCI_DEVICE(DIGITEQ_VID, T100_DID) },
+	{ PCI_DEVICE(DIGITEQ_VID, T200_DID) },
+	{ }
 };
 MODULE_DEVICE_TABLE(pci, mgb4_pci_ids);
 

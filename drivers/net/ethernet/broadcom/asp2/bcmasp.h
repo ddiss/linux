@@ -6,6 +6,7 @@
 #include <linux/phy.h>
 #include <linux/io-64-nonatomic-hi-lo.h>
 #include <uapi/linux/ethtool.h>
+#include <net/page_pool/helpers.h>
 
 #define ASP_INTR2_OFFSET			0x1000
 #define  ASP_INTR2_STATUS			0x0
@@ -75,11 +76,6 @@
 #define   ASP_RX_FILTER_MDA_CFG_EN_SHIFT	8
 #define   ASP_RX_FILTER_MDA_CFG_UMC_SEL(sel)	((sel) > 1 ? BIT(17) : \
 						 BIT((sel) + 9))
-#define  ASP_RX_FILTER_MDA_PAT_H(sel)		(((sel) * 0x14) + 0x104)
-#define  ASP_RX_FILTER_MDA_PAT_L(sel)		(((sel) * 0x14) + 0x108)
-#define  ASP_RX_FILTER_MDA_MSK_H(sel)		(((sel) * 0x14) + 0x10c)
-#define  ASP_RX_FILTER_MDA_MSK_L(sel)		(((sel) * 0x14) + 0x110)
-#define  ASP_RX_FILTER_MDA_CFG(sel)		(((sel) * 0x14) + 0x100)
 #define  ASP_RX_FILTER_MDA_PAT_H(sel)		(((sel) * 0x14) + 0x104)
 #define  ASP_RX_FILTER_MDA_PAT_L(sel)		(((sel) * 0x14) + 0x108)
 #define  ASP_RX_FILTER_MDA_MSK_H(sel)		(((sel) * 0x14) + 0x10c)
@@ -249,10 +245,6 @@ struct bcmasp_intf_stats64 {
 };
 
 struct bcmasp_mib_counters {
-	u32	edpkt_ts;
-	u32	edpkt_rx_pkt_cnt;
-	u32	edpkt_hdr_ext_cnt;
-	u32	edpkt_hdr_out_cnt;
 	u32	umac_frm_cnt;
 	u32	fb_frm_cnt;
 	u32	fb_rx_fifo_depth;
@@ -298,16 +290,19 @@ struct bcmasp_intf {
 	void __iomem			*rx_edpkt_cfg;
 	void __iomem			*rx_edpkt_dma;
 	int				rx_edpkt_index;
-	int				rx_buf_order;
 	struct bcmasp_desc		*rx_edpkt_cpu;
 	dma_addr_t			rx_edpkt_dma_addr;
 	dma_addr_t			rx_edpkt_dma_read;
 	dma_addr_t			rx_edpkt_dma_valid;
 
-	/* RX buffer prefetcher ring*/
+	/* Streaming RX data ring (RBUF_4K mode) */
 	void				*rx_ring_cpu;
 	dma_addr_t			rx_ring_dma;
 	dma_addr_t			rx_ring_dma_valid;
+	int				rx_buf_order;
+
+	/* Page pool for recycling RX SKB data pages */
+	struct page_pool		*rx_page_pool;
 	struct napi_struct		rx_napi;
 
 	struct bcmasp_res		res;

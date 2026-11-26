@@ -588,9 +588,7 @@ static int ieee80211_ifa_changed(struct notifier_block *nb,
 	if (sdata->vif.type != NL80211_IFTYPE_STATION)
 		return NOTIFY_DONE;
 
-	idev = __in_dev_get_rtnl(sdata->dev);
-	if (!idev)
-		return NOTIFY_DONE;
+	idev = ifa->ifa_dev;
 
 	ifmgd = &sdata->u.mgd;
 
@@ -747,8 +745,17 @@ ieee80211_default_mgmt_stypes[NUM_NL80211_IFTYPES] = {
 	},
 	[NL80211_IFTYPE_NAN] = {
 		.tx = 0xffff,
+		/*
+		 * Beacon Rx registration is needed to let user space handle
+		 * service discovery when Instant Communication is enabled.
+		 */
 		.rx = BIT(IEEE80211_STYPE_ACTION >> 4) |
-			BIT(IEEE80211_STYPE_AUTH >> 4),
+			BIT(IEEE80211_STYPE_AUTH >> 4) |
+			BIT(IEEE80211_STYPE_BEACON >> 4),
+	},
+	[NL80211_IFTYPE_NAN_DATA] = {
+		.tx = 0xffff,
+		.rx = BIT(IEEE80211_STYPE_ACTION >> 4),
 	},
 };
 
@@ -915,6 +922,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_TXQS);
 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_RRM);
+	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_IEEE8021X_AUTH);
 
 	wiphy->bss_priv_size = sizeof(struct ieee80211_bss);
 
@@ -983,6 +991,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 	spin_lock_init(&local->rx_path_lock);
 	spin_lock_init(&local->queue_stop_reason_lock);
 
+	local->aql_txq_limit_mc = IEEE80211_DEFAULT_AQL_TXQ_LIMIT_MC;
 	for (i = 0; i < IEEE80211_NUM_ACS; i++) {
 		INIT_LIST_HEAD(&local->active_txqs[i]);
 		spin_lock_init(&local->active_txq_lock[i]);
@@ -1117,6 +1126,19 @@ ieee80211_ifcomb_check(const struct ieee80211_iface_combination *c, int n_comb)
 	return true;
 }
 
+static void ieee80211_create_default_chandef(struct cfg80211_chan_def *chandef,
+					     struct ieee80211_channel *chan)
+{
+	*chandef = (struct cfg80211_chan_def) {
+		.chan = chan,
+		.width = chan->band == NL80211_BAND_S1GHZ ?
+				 NL80211_CHAN_WIDTH_1 :
+				 NL80211_CHAN_WIDTH_20_NOHT,
+		.center_freq1 = chan->center_freq,
+		.freq1_offset = chan->freq_offset,
+	};
+}
+
 int ieee80211_register_hw(struct ieee80211_hw *hw)
 {
 	struct ieee80211_local *local = hw_to_local(hw);
@@ -1143,7 +1165,9 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 
 	if (WARN_ON(local->hw.wiphy->interface_modes &
 			BIT(NL80211_IFTYPE_NAN) &&
-		    (!local->ops->start_nan || !local->ops->stop_nan)))
+		    ((!local->ops->start_nan || !local->ops->stop_nan) ||
+		     (local->hw.wiphy->nan_capa.flags & WIPHY_NAN_FLAGS_USERSPACE_DE &&
+		     (local->ops->add_nan_func || local->ops->del_nan_func)))))
 		return -EINVAL;
 
 	if (hw->wiphy->flags & WIPHY_FLAG_SUPPORTS_MLO) {
@@ -1260,9 +1284,8 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 			/* if none found then use the first anyway */
 			if (i == sband->n_channels)
 				i = 0;
-			cfg80211_chandef_create(&dflt_chandef,
-						&sband->channels[i],
-						NL80211_CHAN_NO_HT);
+			ieee80211_create_default_chandef(&dflt_chandef,
+							 &sband->channels[i]);
 			/* init channel we're on */
 			local->monitor_chanreq.oper = dflt_chandef;
 			if (local->emulate_chanctx) {
@@ -1304,12 +1327,13 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 					IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G;
 
 			/* currently no support for HE client where HT has 40 MHz but not HT */
-			if (iftd->he_cap.has_he &&
-			    iftd->types_mask & (BIT(NL80211_IFTYPE_STATION) |
-						BIT(NL80211_IFTYPE_P2P_CLIENT)) &&
-			    sband->ht_cap.ht_supported &&
-			    sband->ht_cap.cap & IEEE80211_HT_CAP_SUP_WIDTH_20_40 &&
-			    !(iftd->he_cap.he_cap_elem.phy_cap_info[0] & he_40_mhz_cap))
+			if (WARN_ON(iftd->he_cap.has_he &&
+				    iftd->types_mask & (BIT(NL80211_IFTYPE_STATION) |
+							BIT(NL80211_IFTYPE_P2P_CLIENT)) &&
+				    sband->ht_cap.ht_supported &&
+				    sband->ht_cap.cap & IEEE80211_HT_CAP_SUP_WIDTH_20_40 &&
+				    !(iftd->he_cap.he_cap_elem.phy_cap_info[0] &
+				      he_40_mhz_cap)))
 				return -EINVAL;
 
 			/* no support for per-band vendor elems with MLO */
@@ -1435,6 +1459,10 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 			sizeof(struct ieee80211_he_mcs_nss_supp) +
 			IEEE80211_HE_PPE_THRES_MAX_LEN;
 
+		if (local->hw.wiphy->bands[NL80211_BAND_6GHZ])
+			local->scan_ies_len +=
+				3 + sizeof(struct ieee80211_he_6ghz_capa);
+
 		if (supp_eht)
 			local->scan_ies_len +=
 				3 + sizeof(struct ieee80211_eht_cap_elem) +
@@ -1444,8 +1472,7 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 
 	if (supp_uhr)
 		local->scan_ies_len +=
-			3 + sizeof(struct ieee80211_uhr_cap) +
-			sizeof(struct ieee80211_uhr_cap_phy);
+			3 + sizeof(struct ieee80211_uhr_cap);
 
 	if (!local->ops->hw_scan) {
 		/* For hw_scan, driver needs to set these up. */
@@ -1540,10 +1567,8 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	if (result)
 		goto fail_flows;
 
-	rtnl_lock();
 	result = ieee80211_init_rate_ctrl_alg(local,
 					      hw->rate_control_algorithm);
-	rtnl_unlock();
 	if (result < 0) {
 		wiphy_debug(local->hw.wiphy,
 			    "Failed to initialize rate control algorithm\n");
@@ -1584,7 +1609,7 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 		sband = kmemdup(sband, sizeof(*sband), GFP_KERNEL);
 		if (!sband) {
 			result = -ENOMEM;
-			goto fail_rate;
+			goto fail_band;
 		}
 
 		wiphy_dbg(hw->wiphy, "copying sband (band %d) due to VHT EXT NSS BW flag\n",
@@ -1596,6 +1621,15 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 		local->hw.wiphy->bands[band] = sband;
 		local->sband_allocated |= BIT(band);
 	}
+
+	/*
+	 * mac80211 supports EPPKE, if the driver supports (Re)Association
+	 * frame encryption
+	 */
+	if (wiphy_ext_feature_isset(local->hw.wiphy,
+				    NL80211_EXT_FEATURE_ASSOC_FRAME_ENCRYPTION))
+		wiphy_ext_feature_set(local->hw.wiphy,
+				      NL80211_EXT_FEATURE_EPPKE);
 
 	result = wiphy_register(local->hw.wiphy);
 	if (result < 0)
@@ -1649,12 +1683,13 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 #if defined(CONFIG_INET) || defined(CONFIG_IPV6)
  fail_ifa:
 #endif
-	wiphy_unregister(local->hw.wiphy);
- fail_wiphy_register:
 	rtnl_lock();
-	rate_control_deinitialize(local);
 	ieee80211_remove_interfaces(local);
 	rtnl_unlock();
+	wiphy_unregister(local->hw.wiphy);
+ fail_wiphy_register:
+ fail_band:
+	rate_control_deinitialize(local);
  fail_rate:
 	ieee80211_txq_teardown_flows(local);
  fail_flows:
@@ -1700,6 +1735,8 @@ void ieee80211_unregister_hw(struct ieee80211_hw *hw)
 	rtnl_unlock();
 
 	cancel_work_sync(&local->restart_work);
+
+	tasklet_kill(&local->wake_txqs_tasklet);
 
 	ieee80211_clear_tx_pending(local);
 	rate_control_deinitialize(local);

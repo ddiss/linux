@@ -17,19 +17,35 @@ endif
 # it defaults to this nolibc directory.
 OUTPUT ?= $(CURDIR)/
 
-ifeq ($(V),1)
-Q=
-else
-Q=@
-endif
+architectures := \
+		alpha \
+		arm \
+		arm64 \
+		hexagon \
+		loongarch \
+		m68k \
+		mips \
+		openrisc \
+		parisc \
+		powerpc \
+		riscv \
+		s390 \
+		sh \
+		sparc \
+		x86 \
 
-arch_files := arch.h $(wildcard arch-*.h)
+arch_files := arch.h $(addsuffix .h, $(addprefix arch-, $(architectures)))
 all_files := \
+		alloca.h \
+		assert.h \
+		byteswap.h \
 		compiler.h \
 		crt.h \
 		ctype.h \
 		dirent.h \
 		elf.h \
+		endian.h \
+		err.h \
 		errno.h \
 		fcntl.h \
 		getopt.h \
@@ -59,6 +75,7 @@ all_files := \
 		sys/reboot.h \
 		sys/resource.h \
 		sys/select.h \
+		sys/sendfile.h \
 		sys/stat.h \
 		sys/syscall.h \
 		sys/sysmacros.h \
@@ -96,12 +113,10 @@ help:
 
 # installs headers for all archs at once.
 headers:
-	$(Q)mkdir -p "$(OUTPUT)sysroot"
 	$(Q)mkdir -p "$(OUTPUT)sysroot/include"
 	$(Q)cp --parents $(arch_files) $(all_files) "$(OUTPUT)sysroot/include/"
 
 headers_standalone: headers
-	$(Q)$(MAKE) -C $(srctree) headers
 	$(Q)$(MAKE) -C $(srctree) headers_install INSTALL_HDR_PATH=$(OUTPUT)sysroot
 
 CFLAGS_s390 := -m64

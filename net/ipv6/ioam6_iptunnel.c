@@ -35,7 +35,7 @@ struct ioam6_lwt_freq {
 };
 
 struct ioam6_lwt {
-	struct dst_entry null_dst;
+	struct rt6_info null_rt;
 	struct dst_cache cache;
 	struct ioam6_lwt_freq freq;
 	atomic_t pkt_cnt;
@@ -176,7 +176,7 @@ static int ioam6_build_state(struct net *net, struct nlattr *nla,
 	 * it is stored in the cache. Then, +1/-1 each time we read the cache
 	 * and release it. Long story short, we're fine.
 	 */
-	dst_init(&ilwt->null_dst, NULL, NULL, DST_OBSOLETE_NONE, DST_NOCOUNT);
+	dst_init(&ilwt->null_rt.dst, NULL, NULL, DST_OBSOLETE_NONE, DST_NOCOUNT);
 
 	atomic_set(&ilwt->pkt_cnt, 0);
 	ilwt->freq.k = freq_k;
@@ -254,10 +254,11 @@ static int ioam6_do_fill(struct net *net, struct sk_buff *skb)
 }
 
 static int ioam6_do_inline(struct net *net, struct sk_buff *skb,
-			   struct ioam6_lwt_encap *tuninfo,
+			   const struct ioam6_lwt_encap *tuninfo,
 			   struct dst_entry *cache_dst)
 {
 	struct ipv6hdr *oldhdr, *hdr;
+	struct ipv6_opt_hdr *opt_hdr;
 	int hdrlen, err;
 
 	hdrlen = (tuninfo->eh.hdrlen + 1) << 3;
@@ -276,12 +277,13 @@ static int ioam6_do_inline(struct net *net, struct sk_buff *skb,
 
 	hdr = ipv6_hdr(skb);
 	memmove(hdr, oldhdr, sizeof(*oldhdr));
-	tuninfo->eh.nexthdr = hdr->nexthdr;
 
 	skb_set_transport_header(skb, sizeof(*hdr));
 	skb_postpush_rcsum(skb, hdr, sizeof(*hdr) + hdrlen);
 
-	memcpy(skb_transport_header(skb), (u8 *)tuninfo, hdrlen);
+	opt_hdr = (struct ipv6_opt_hdr *)skb_transport_header(skb);
+	memcpy(opt_hdr, tuninfo, hdrlen);
+	opt_hdr->nexthdr = hdr->nexthdr;
 
 	hdr->nexthdr = NEXTHDR_HOP;
 	hdr->payload_len = cpu_to_be16(skb->len - sizeof(*hdr));
@@ -290,7 +292,7 @@ static int ioam6_do_inline(struct net *net, struct sk_buff *skb,
 }
 
 static int ioam6_do_encap(struct net *net, struct sk_buff *skb,
-			  struct ioam6_lwt_encap *tuninfo,
+			  const struct ioam6_lwt_encap *tuninfo,
 			  bool has_tunsrc,
 			  struct in6_addr *tunsrc,
 			  struct in6_addr *tundst,
@@ -298,6 +300,7 @@ static int ioam6_do_encap(struct net *net, struct sk_buff *skb,
 {
 	struct dst_entry *dst = skb_dst(skb);
 	struct ipv6hdr *hdr, *inner_hdr;
+	struct ipv6_opt_hdr *opt_hdr;
 	int hdrlen, len, err;
 
 	hdrlen = (tuninfo->eh.hdrlen + 1) << 3;
@@ -314,8 +317,9 @@ static int ioam6_do_encap(struct net *net, struct sk_buff *skb,
 	skb_mac_header_rebuild(skb);
 	skb_set_transport_header(skb, sizeof(*hdr));
 
-	tuninfo->eh.nexthdr = NEXTHDR_IPV6;
-	memcpy(skb_transport_header(skb), (u8 *)tuninfo, hdrlen);
+	opt_hdr = (struct ipv6_opt_hdr *)skb_transport_header(skb);
+	memcpy(opt_hdr, tuninfo, hdrlen);
+	opt_hdr->nexthdr = NEXTHDR_IPV6;
 
 	hdr = ipv6_hdr(skb);
 	memcpy(hdr, inner_hdr, sizeof(*hdr));
@@ -360,7 +364,7 @@ static int ioam6_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 	/* This is how we notify that the destination does not change after
 	 * transformation and that we need to use orig_dst instead of the cache
 	 */
-	if (dst == &ilwt->null_dst) {
+	if (dst == &ilwt->null_rt.dst) {
 		dst_release(dst);
 
 		dst = orig_dst;
@@ -429,7 +433,7 @@ do_encap:
 		local_bh_disable();
 		if (orig_dst->lwtstate == dst->lwtstate)
 			dst_cache_set_ip6(&ilwt->cache,
-					  &ilwt->null_dst, &fl6.saddr);
+					  &ilwt->null_rt.dst, &fl6.saddr);
 		else
 			dst_cache_set_ip6(&ilwt->cache, dst, &fl6.saddr);
 		local_bh_enable();

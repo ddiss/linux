@@ -18,7 +18,6 @@
 #include <linux/ktime.h>
 #include <linux/mailbox_client.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
@@ -475,7 +474,7 @@ static int hisi_uncore_mark_related_cpus(struct hisi_uncore_freq *uncore,
 		return -EINVAL;
 
 	len = rc;
-	u32 *num __free(kfree) = kcalloc(len, sizeof(*num), GFP_KERNEL);
+	u32 *num __free(kfree) = kzalloc_objs(*num, len);
 	if (!num)
 		return -ENOMEM;
 
@@ -541,7 +540,7 @@ static ssize_t related_cpus_show(struct device *dev,
 {
 	struct hisi_uncore_freq *uncore = dev_get_drvdata(dev->parent);
 
-	return cpumap_print_to_pagebuf(true, buf, &uncore->related_cpus);
+	return sysfs_emit(buf, "%*pbl\n", cpumask_pr_args(&uncore->related_cpus));
 }
 
 static DEVICE_ATTR_RO(related_cpus);
@@ -564,7 +563,7 @@ static int hisi_uncore_devfreq_register(struct hisi_uncore_freq *uncore)
 	if (rc)
 		return dev_err_probe(dev, rc, "Failed to get plat init freq\n");
 
-	profile = devm_kzalloc(dev, sizeof(*profile), GFP_KERNEL);
+	profile = devm_kzalloc_obj(dev, *profile);
 	if (!profile)
 		return -ENOMEM;
 
@@ -602,7 +601,7 @@ static int hisi_uncore_freq_probe(struct platform_device *pdev)
 	u32 cap;
 	int rc;
 
-	uncore = devm_kzalloc(dev, sizeof(*uncore), GFP_KERNEL);
+	uncore = devm_kzalloc_obj(dev, *uncore);
 	if (!uncore)
 		return -ENOMEM;
 

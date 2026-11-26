@@ -25,6 +25,7 @@
 #include <linux/mm.h>
 
 #include <asm/cpu_device_id.h>
+#include <asm/cpuid/api.h>
 #include <asm/processor.h>
 #include <asm/tlbflush.h>
 #include <asm/setup.h>
@@ -123,16 +124,8 @@ static inline unsigned int exttable_size(struct extended_sigtable *et)
 void intel_collect_cpu_info(struct cpu_signature *sig)
 {
 	sig->sig = cpuid_eax(1);
-	sig->pf = 0;
 	sig->rev = intel_get_microcode_revision();
-
-	if (IFM(x86_family(sig->sig), x86_model(sig->sig)) >= INTEL_PENTIUM_III_DESCHUTES) {
-		unsigned int val[2];
-
-		/* get processor flags from MSR 0x17 */
-		native_rdmsr(MSR_IA32_PLATFORM_ID, val[0], val[1]);
-		sig->pf = 1 << ((val[1] >> 18) & 7);
-	}
+	sig->pf  = 1 << intel_get_platform_id();
 }
 EXPORT_SYMBOL_GPL(intel_collect_cpu_info);
 
@@ -142,8 +135,15 @@ static inline bool cpu_signatures_match(struct cpu_signature *s1, unsigned int s
 	if (s1->sig != sig2)
 		return false;
 
-	/* Processor flags are either both 0 or they intersect. */
-	return ((!s1->pf && !pf2) || (s1->pf & pf2));
+	/*
+	 * Consider an empty mask to match everything. This
+	 * should only occur for one CPU model, the PII.
+	 */
+	if (!pf2)
+		return true;
+
+	/* Is the CPU's platform ID in the signature mask? */
+	return s1->pf & pf2;
 }
 
 bool intel_find_matching_signature(void *mc, struct cpu_signature *sig)
@@ -309,6 +309,26 @@ static void save_microcode_patch(struct microcode_intel *patch)
 		pr_err("Unable to allocate microcode memory size: %u\n", size);
 }
 
+static bool revision_is_safe(struct cpu_signature *sig, u32 rev)
+{
+	u32 vfm = IFM(x86_family(sig->sig), x86_model(sig->sig));
+
+	/*
+	 * Erratum GNR98 can cause #MCs if "jumping over" revision 0x1000405.
+	 * Avoid the jumps.
+	 */
+	if (vfm == INTEL_GRANITERAPIDS_X &&
+	    x86_stepping(sig->sig) == 1 &&
+	    sig->pf & 0x95 &&
+	    sig->rev < 0x1000405 &&
+	    rev > 0x1000405) {
+		pr_err_once("Erratum GNR98: skipping revision 0x%x.\n", rev);
+		return false;
+	}
+
+	return true;
+}
+
 /* Scan blob for microcode matching the boot CPUs family, model, stepping */
 static __init struct microcode_intel *scan_microcode(void *data, size_t size,
 						     struct ucode_cpu_info *uci,
@@ -328,6 +348,9 @@ static __init struct microcode_intel *scan_microcode(void *data, size_t size,
 			break;
 
 		if (!intel_find_matching_signature(data, &uci->cpu_sig))
+			continue;
+
+		if (!revision_is_safe(&uci->cpu_sig, mc_header->rev))
 			continue;
 
 		/*
@@ -876,6 +899,9 @@ static enum ucode_state parse_microcode_blobs(int cpu, struct iov_iter *iter)
 			continue;
 
 		if (!intel_find_matching_signature(mc, &uci->cpu_sig))
+			continue;
+
+		if (!revision_is_safe(&uci->cpu_sig, mc_header.rev))
 			continue;
 
 		is_safe = ucode_validate_minrev(&mc_header);

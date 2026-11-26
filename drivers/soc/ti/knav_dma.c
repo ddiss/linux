@@ -29,7 +29,6 @@
 #define DMA_TX_FILT_EINFO	BIT(30)
 #define DMA_TX_PRIO_SHIFT	0
 #define DMA_RX_PRIO_SHIFT	16
-#define DMA_PRIO_MASK		GENMASK(3, 0)
 #define DMA_PRIO_DEFAULT	0
 #define DMA_RX_TIMEOUT_DEFAULT	17500 /* cycles */
 #define DMA_RX_TIMEOUT_MASK	GENMASK(16, 0)
@@ -388,11 +387,6 @@ static int of_channel_match_helper(struct device_node *np, const char *name,
 		return -ENODEV;
 	}
 
-	if (args.args[0] < 0) {
-		dev_err(kdev->dev, "Missing args for %s\n", name);
-		return -ENODEV;
-	}
-
 	return args.args[0];
 }
 
@@ -526,7 +520,7 @@ static void __iomem *pktdma_get_regs(struct knav_dma_device *dma,
 	if (ret) {
 		dev_err(dev, "Can't translate of node(%pOFn) address for index(%d)\n",
 			node, index);
-		return ERR_PTR(ret);
+		return IOMEM_ERR_PTR(ret);
 	}
 
 	regs = devm_ioremap_resource(kdev->dev, &res);
@@ -572,7 +566,7 @@ static int pktdma_init_chan(struct knav_dma_device *dma,
 	struct knav_dma_chan *chan;
 	int ret = -EINVAL;
 
-	chan = devm_kzalloc(dev, sizeof(*chan), GFP_KERNEL);
+	chan = devm_kzalloc_obj(dev, *chan);
 	if (!chan)
 		return -ENOMEM;
 
@@ -607,7 +601,7 @@ static int dma_init(struct device_node *cloud, struct device_node *dma_node)
 	u32 timeout;
 	u32 i;
 
-	dma = devm_kzalloc(kdev->dev, sizeof(*dma), GFP_KERNEL);
+	dma = devm_kzalloc_obj(kdev->dev, *dma);
 	if (!dma) {
 		dev_err(kdev->dev, "could not allocate driver mem\n");
 		return -ENOMEM;
@@ -711,8 +705,7 @@ static int knav_dma_probe(struct platform_device *pdev)
 	if (!node)
 		return dev_err_probe(dev, -EINVAL, "could not find device info\n");
 
-	kdev = devm_kzalloc(dev,
-			sizeof(struct knav_dma_pool_device), GFP_KERNEL);
+	kdev = devm_kzalloc_obj(dev, struct knav_dma_pool_device);
 	if (!kdev)
 		return -ENOMEM;
 

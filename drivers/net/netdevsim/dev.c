@@ -225,78 +225,6 @@ static const struct file_operations nsim_dev_trap_fa_cookie_fops = {
 	.owner = THIS_MODULE,
 };
 
-static ssize_t nsim_bus_dev_max_vfs_read(struct file *file, char __user *data,
-					 size_t count, loff_t *ppos)
-{
-	struct nsim_dev *nsim_dev = file->private_data;
-	char buf[11];
-	ssize_t len;
-
-	len = scnprintf(buf, sizeof(buf), "%u\n",
-			READ_ONCE(nsim_dev->nsim_bus_dev->max_vfs));
-
-	return simple_read_from_buffer(data, count, ppos, buf, len);
-}
-
-static ssize_t nsim_bus_dev_max_vfs_write(struct file *file,
-					  const char __user *data,
-					  size_t count, loff_t *ppos)
-{
-	struct nsim_vf_config *vfconfigs;
-	struct nsim_dev *nsim_dev;
-	char buf[10];
-	ssize_t ret;
-	u32 val;
-
-	if (*ppos != 0)
-		return 0;
-
-	if (count >= sizeof(buf))
-		return -ENOSPC;
-
-	ret = copy_from_user(buf, data, count);
-	if (ret)
-		return -EFAULT;
-	buf[count] = '\0';
-
-	ret = kstrtouint(buf, 10, &val);
-	if (ret)
-		return -EINVAL;
-
-	/* max_vfs limited by the maximum number of provided port indexes */
-	if (val > NSIM_DEV_VF_PORT_INDEX_MAX - NSIM_DEV_VF_PORT_INDEX_BASE)
-		return -ERANGE;
-
-	vfconfigs = kzalloc_objs(struct nsim_vf_config, val,
-				 GFP_KERNEL | __GFP_NOWARN);
-	if (!vfconfigs)
-		return -ENOMEM;
-
-	nsim_dev = file->private_data;
-	devl_lock(priv_to_devlink(nsim_dev));
-	/* Reject if VFs are configured */
-	if (nsim_dev_get_vfs(nsim_dev)) {
-		ret = -EBUSY;
-	} else {
-		swap(nsim_dev->vfconfigs, vfconfigs);
-		WRITE_ONCE(nsim_dev->nsim_bus_dev->max_vfs, val);
-		*ppos += count;
-		ret = count;
-	}
-	devl_unlock(priv_to_devlink(nsim_dev));
-
-	kfree(vfconfigs);
-	return ret;
-}
-
-static const struct file_operations nsim_dev_max_vfs_fops = {
-	.open = simple_open,
-	.read = nsim_bus_dev_max_vfs_read,
-	.write = nsim_bus_dev_max_vfs_write,
-	.llseek = generic_file_llseek,
-	.owner = THIS_MODULE,
-};
-
 static int nsim_dev_debugfs_init(struct nsim_dev *nsim_dev)
 {
 	char dev_ddir_name[sizeof(DRV_NAME) + 10];
@@ -343,9 +271,6 @@ static int nsim_dev_debugfs_init(struct nsim_dev *nsim_dev)
 	debugfs_create_bool("fail_trap_policer_counter_get", 0600,
 			    nsim_dev->ddir,
 			    &nsim_dev->fail_trap_policer_counter_get);
-	/* caution, dev_max_vfs write takes devlink lock */
-	debugfs_create_file("max_vfs", 0600, nsim_dev->ddir,
-			    nsim_dev, &nsim_dev_max_vfs_fops);
 
 	nsim_dev->nodes_ddir = debugfs_create_dir("rate_nodes", nsim_dev->ddir);
 	if (IS_ERR(nsim_dev->nodes_ddir)) {
@@ -597,11 +522,11 @@ static void nsim_devlink_set_params_init_values(struct nsim_dev *nsim_dev,
 	value.vu32 = nsim_dev->max_macs;
 	devl_param_driverinit_value_set(devlink,
 					DEVLINK_PARAM_GENERIC_ID_MAX_MACS,
-					value);
+					&value);
 	value.vbool = nsim_dev->test1;
 	devl_param_driverinit_value_set(devlink,
 					NSIM_DEVLINK_PARAM_ID_TEST1,
-					value);
+					&value);
 }
 
 static void nsim_devlink_param_load_driverinit_values(struct devlink *devlink)
@@ -829,7 +754,7 @@ static struct sk_buff *nsim_dev_trap_skb_build(void)
 	skb->protocol = htons(ETH_P_IP);
 
 	skb_set_network_header(skb, skb->len);
-	iph = skb_put(skb, sizeof(struct iphdr));
+	iph = skb_put_zero(skb, sizeof(struct iphdr));
 	iph->protocol = IPPROTO_UDP;
 	iph->saddr = in_aton("192.0.2.1");
 	iph->daddr = in_aton("198.51.100.1");
@@ -845,7 +770,7 @@ static struct sk_buff *nsim_dev_trap_skb_build(void)
 	udph = skb_put_zero(skb, sizeof(struct udphdr) + data_len);
 	get_random_bytes(&udph->source, sizeof(u16));
 	get_random_bytes(&udph->dest, sizeof(u16));
-	udph->len = htons(sizeof(struct udphdr) + data_len);
+	udp_set_len_short(udph, sizeof(struct udphdr) + data_len);
 
 	return skb;
 }
@@ -946,9 +871,8 @@ static int nsim_dev_traps_init(struct devlink *devlink)
 		goto err_trap_data_free;
 	}
 
-	nsim_trap_data->trap_policers_cnt_arr = kcalloc(policers_count,
-							sizeof(u64),
-							GFP_KERNEL);
+	nsim_trap_data->trap_policers_cnt_arr = kzalloc_objs(u64,
+							     policers_count);
 	if (!nsim_trap_data->trap_policers_cnt_arr) {
 		err = -ENOMEM;
 		goto err_trap_items_free;
@@ -1486,9 +1410,25 @@ static int __nsim_dev_port_add(struct nsim_dev *nsim_dev, enum nsim_dev_port_typ
 	if (err)
 		goto err_port_free;
 
+	if (nsim_dev_port_is_pf(nsim_dev_port)) {
+		u64 parent_id = DEVLINK_RESOURCE_ID_PARENT_TOP;
+		struct devlink_resource_size_params params = {
+			.size_max = 100,
+			.size_granularity = 1,
+			.unit = DEVLINK_RESOURCE_UNIT_ENTRY
+		};
+
+		err = devl_port_resource_register(devlink_port,
+						  "test_resource", 20,
+						  NSIM_PORT_RESOURCE_TEST,
+						  parent_id, &params);
+		if (err)
+			goto err_dl_port_unregister;
+	}
+
 	err = nsim_dev_port_debugfs_init(nsim_dev, nsim_dev_port);
 	if (err)
-		goto err_dl_port_unregister;
+		goto err_port_resource_unregister;
 
 	nsim_dev_port->ns = nsim_create(nsim_dev, nsim_dev_port, perm_addr);
 	if (IS_ERR(nsim_dev_port->ns)) {
@@ -1511,6 +1451,9 @@ err_nsim_destroy:
 	nsim_destroy(nsim_dev_port->ns);
 err_port_debugfs_exit:
 	nsim_dev_port_debugfs_exit(nsim_dev_port);
+err_port_resource_unregister:
+	if (nsim_dev_port_is_pf(nsim_dev_port))
+		devl_port_resources_unregister(devlink_port);
 err_dl_port_unregister:
 	devl_port_unregister(devlink_port);
 err_port_free:
@@ -1527,6 +1470,8 @@ static void __nsim_dev_port_del(struct nsim_dev_port *nsim_dev_port)
 		devl_rate_leaf_destroy(&nsim_dev_port->devlink_port);
 	nsim_destroy(nsim_dev_port->ns);
 	nsim_dev_port_debugfs_exit(nsim_dev_port);
+	if (nsim_dev_port_is_pf(nsim_dev_port))
+		devl_port_resources_unregister(devlink_port);
 	devl_port_unregister(devlink_port);
 	kfree(nsim_dev_port);
 }
@@ -1652,7 +1597,7 @@ int nsim_drv_probe(struct nsim_bus_dev *nsim_bus_dev)
 	dev_set_drvdata(&nsim_bus_dev->dev, nsim_dev);
 
 	nsim_dev->vfconfigs = kzalloc_objs(struct nsim_vf_config,
-					   nsim_bus_dev->max_vfs,
+					   NSIM_BUS_DEV_MAX_VFS,
 					   GFP_KERNEL | __GFP_NOWARN);
 	if (!nsim_dev->vfconfigs) {
 		err = -ENOMEM;
@@ -1851,7 +1796,7 @@ int nsim_drv_configure_vfs(struct nsim_bus_dev *nsim_bus_dev,
 		ret = -EBUSY;
 		goto exit_unlock;
 	}
-	if (nsim_bus_dev->max_vfs < num_vfs) {
+	if (num_vfs > NSIM_BUS_DEV_MAX_VFS) {
 		ret = -ENOMEM;
 		goto exit_unlock;
 	}

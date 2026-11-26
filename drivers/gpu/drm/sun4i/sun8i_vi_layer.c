@@ -197,38 +197,15 @@ static void sun8i_vi_layer_update_buffer(struct sun8i_layer *layer,
 	struct drm_plane_state *state = plane->state;
 	struct drm_framebuffer *fb = state->fb;
 	const struct drm_format_info *format = fb->format;
-	struct drm_gem_dma_object *gem;
-	u32 dx, dy, src_x, src_y;
 	dma_addr_t dma_addr;
 	u32 ch_base;
 	int i;
 
 	ch_base = sun8i_channel_base(layer);
 
-	/* Adjust x and y to be dividable by subsampling factor */
-	src_x = (state->src.x1 >> 16) & ~(format->hsub - 1);
-	src_y = (state->src.y1 >> 16) & ~(format->vsub - 1);
-
 	for (i = 0; i < format->num_planes; i++) {
-		/* Get the physical address of the buffer in memory */
-		gem = drm_fb_dma_get_gem_obj(fb, i);
-
-		DRM_DEBUG_DRIVER("Using GEM @ %pad\n", &gem->dma_addr);
-
-		/* Compute the start of the displayed memory */
-		dma_addr = gem->dma_addr + fb->offsets[i];
-
-		dx = src_x;
-		dy = src_y;
-
-		if (i > 0) {
-			dx /= format->hsub;
-			dy /= format->vsub;
-		}
-
-		/* Fixup framebuffer address for src coordinates */
-		dma_addr += dx * format->cpp[i];
-		dma_addr += dy * fb->pitches[i];
+		/* Get the start of the displayed memory */
+		dma_addr = drm_fb_dma_get_gem_addr(fb, state, i);
 
 		/* Set the line width */
 		DRM_DEBUG_DRIVER("Layer %d. line width: %d bytes\n",
@@ -249,7 +226,7 @@ static void sun8i_vi_layer_update_buffer(struct sun8i_layer *layer,
 }
 
 static int sun8i_vi_layer_atomic_check(struct drm_plane *plane,
-				       struct drm_atomic_state *state)
+				       struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state,
 										 plane);
@@ -289,7 +266,7 @@ static int sun8i_vi_layer_atomic_check(struct drm_plane *plane,
 }
 
 static void sun8i_vi_layer_atomic_update(struct drm_plane *plane,
-					 struct drm_atomic_state *state)
+					 struct drm_atomic_commit *state)
 {
 	struct drm_plane_state *new_state = drm_atomic_get_new_plane_state(state,
 									   plane);
@@ -316,7 +293,7 @@ static const struct drm_plane_funcs sun8i_vi_layer_funcs = {
 	.atomic_duplicate_state	= drm_atomic_helper_plane_duplicate_state,
 	.destroy		= drm_plane_cleanup,
 	.disable_plane		= drm_atomic_helper_disable_plane,
-	.reset			= drm_atomic_helper_plane_reset,
+	.atomic_create_state = drm_atomic_helper_plane_create_state,
 	.update_plane		= drm_atomic_helper_update_plane,
 };
 
@@ -421,7 +398,7 @@ struct sun8i_layer *sun8i_vi_layer_init_one(struct drm_device *drm,
 	const u32 *formats;
 	int ret;
 
-	layer = devm_kzalloc(drm->dev, sizeof(*layer), GFP_KERNEL);
+	layer = devm_kzalloc_obj(drm->dev, *layer);
 	if (!layer)
 		return ERR_PTR(-ENOMEM);
 

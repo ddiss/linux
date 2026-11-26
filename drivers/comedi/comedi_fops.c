@@ -29,6 +29,7 @@
 #include <linux/io.h>
 #include <linux/uaccess.h>
 #include <linux/compat.h>
+#include <linux/stringify.h>
 
 #include "comedi_internal.h"
 
@@ -82,14 +83,14 @@ unsigned int comedi_default_buf_size_kb = CONFIG_COMEDI_DEFAULT_BUF_SIZE_KB;
 module_param(comedi_default_buf_size_kb, uint, 0644);
 MODULE_PARM_DESC(comedi_default_buf_size_kb,
 		 "default asynchronous buffer size in KiB (default "
-		 __MODULE_STRING(CONFIG_COMEDI_DEFAULT_BUF_SIZE_KB) ")");
+		 __stringify(CONFIG_COMEDI_DEFAULT_BUF_SIZE_KB) ")");
 
 unsigned int comedi_default_buf_maxsize_kb =
 	CONFIG_COMEDI_DEFAULT_BUF_MAXSIZE_KB;
 module_param(comedi_default_buf_maxsize_kb, uint, 0644);
 MODULE_PARM_DESC(comedi_default_buf_maxsize_kb,
 		 "default maximum size of asynchronous buffer in KiB (default "
-		 __MODULE_STRING(CONFIG_COMEDI_DEFAULT_BUF_MAXSIZE_KB) ")");
+		 __stringify(CONFIG_COMEDI_DEFAULT_BUF_MAXSIZE_KB) ")");
 
 static DEFINE_MUTEX(comedi_board_minor_table_lock);
 static struct comedi_device
@@ -793,13 +794,15 @@ static void do_become_nonbusy(struct comedi_device *dev,
 	__comedi_clear_subdevice_runflags(s, COMEDI_SRF_RUNNING |
 					     COMEDI_SRF_BUSY);
 	spin_unlock_irqrestore(&s->spin_lock, flags);
-	if (comedi_is_runflags_busy(runflags)) {
+	if (async) {
 		/*
 		 * "Run active" counter was set to 1 when setting up the
 		 * command.  Decrement it and wait for it to become 0.
 		 */
-		comedi_put_is_subdevice_running(s);
-		wait_for_completion(&async->run_complete);
+		if (comedi_is_runflags_busy(runflags)) {
+			comedi_put_is_subdevice_running(s);
+			wait_for_completion(&async->run_complete);
+		}
 		comedi_buf_reset(s);
 		async->inttrig = NULL;
 		kfree(async->cmd.chanlist);
@@ -1674,8 +1677,7 @@ static int do_insnlist_ioctl(struct comedi_device *dev,
 	}
 
 	/* Allocate scratch space for all instruction data. */
-	data = kmalloc_array(max_n_data_required, sizeof(unsigned int),
-			     GFP_KERNEL);
+	data = kmalloc_objs(unsigned int, max_n_data_required);
 	if (!data) {
 		ret = -ENOMEM;
 		goto error;
@@ -1765,7 +1767,7 @@ static int do_insn_ioctl(struct comedi_device *dev,
 		n_data = MAX_SAMPLES;
 	}
 
-	data = kmalloc_array(n_data, sizeof(unsigned int), GFP_KERNEL);
+	data = kmalloc_objs(unsigned int, n_data);
 	if (!data) {
 		ret = -ENOMEM;
 		goto error;
@@ -2588,7 +2590,7 @@ static int comedi_mmap(struct file *file, struct vm_area_struct *vma)
 	 * remap_pfn_range() because we call remap_pfn_range() in a loop.
 	 */
 	if (retval)
-		zap_vma_ptes(vma, vma->vm_start, size);
+		zap_special_vma_range(vma, vma->vm_start, size);
 #endif
 
 	if (retval == 0) {
@@ -3492,7 +3494,7 @@ void _comedi_event(struct comedi_device *dev, struct comedi_subdevice *s)
 void comedi_event(struct comedi_device *dev, struct comedi_subdevice *s)
 {
 	if (comedi_get_is_subdevice_running(s)) {
-		comedi_event(dev, s);
+		_comedi_event(dev, s);
 		comedi_put_is_subdevice_running(s);
 	}
 }

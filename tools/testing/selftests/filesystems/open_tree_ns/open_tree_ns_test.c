@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
+ * Copyright (c) 2026 Christian Brauner <brauner@kernel.org>
+ *
  * Test for OPEN_TREE_NAMESPACE flag.
  *
  * Test that open_tree() with OPEN_TREE_NAMESPACE creates a new mount
@@ -12,6 +14,7 @@
 #include <limits.h>
 #include <linux/nsfs.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +31,10 @@
 
 #ifndef OPEN_TREE_NAMESPACE
 #define OPEN_TREE_NAMESPACE	(1 << 1)
+#endif
+
+#ifndef OPEN_TREE_DROP_MNTNS_MOUNTS
+#define OPEN_TREE_DROP_MNTNS_MOUNTS	(1 << 2)
 #endif
 
 static int get_mnt_ns_id(int fd, uint64_t *mnt_ns_id)
@@ -48,31 +55,6 @@ static int get_mnt_ns_id_from_path(const char *path, uint64_t *mnt_ns_id)
 	ret = get_mnt_ns_id(fd, mnt_ns_id);
 	close(fd);
 	return ret;
-}
-
-#define STATMOUNT_BUFSIZE (1 << 15)
-
-static struct statmount *statmount_alloc(uint64_t mnt_id, uint64_t mnt_ns_id, uint64_t mask)
-{
-	struct statmount *buf;
-	size_t bufsize = STATMOUNT_BUFSIZE;
-	int ret;
-
-	for (;;) {
-		buf = malloc(bufsize);
-		if (!buf)
-			return NULL;
-
-		ret = statmount(mnt_id, mnt_ns_id, mask, buf, bufsize, 0);
-		if (ret == 0)
-			return buf;
-
-		free(buf);
-		if (errno != EOVERFLOW)
-			return NULL;
-
-		bufsize <<= 1;
-	}
 }
 
 static void log_mount(struct __test_metadata *_metadata, struct statmount *sm)
@@ -115,7 +97,7 @@ static void dump_mounts(struct __test_metadata *_metadata, uint64_t mnt_ns_id)
 				     STATMOUNT_MNT_BASIC |
 				     STATMOUNT_FS_TYPE |
 				     STATMOUNT_MNT_ROOT |
-				     STATMOUNT_MNT_POINT);
+				     STATMOUNT_MNT_POINT, 0);
 		if (!sm) {
 			TH_LOG("  [%zd] mnt_id %llu: statmount failed: %s",
 			       i, (unsigned long long)list[i], strerror(errno));
@@ -221,7 +203,7 @@ FIXTURE_SETUP(open_tree_ns)
 		SKIP(return, "open_tree() syscall not supported");
 
 	/* Check if statmount/listmount are supported */
-	ret = statmount(0, 0, 0, NULL, 0, 0);
+	ret = statmount(0, 0, 0, 0, NULL, 0, 0);
 	if (ret == -1 && errno == ENOSYS)
 		SKIP(return, "statmount() syscall not supported");
 
@@ -340,7 +322,7 @@ TEST_F(open_tree_ns, verify_mount_properties)
 	ASSERT_GE(nr_mounts, 1);
 
 	/* Get info about the root mount (the bind mount, rootfs is hidden) */
-	ret = statmount(list[0], new_ns_id, STATMOUNT_MNT_BASIC, &sm, sizeof(sm), 0);
+	ret = statmount(list[0], new_ns_id, 0, STATMOUNT_MNT_BASIC, &sm, sizeof(sm), 0);
 	ASSERT_EQ(ret, 0);
 
 	ASSERT_NE(sm.mnt_id, sm.mnt_parent_id);
@@ -452,7 +434,7 @@ FIXTURE_SETUP(open_tree_ns_userns)
 		SKIP(return, "open_tree() syscall not supported");
 
 	/* Check if statmount/listmount are supported */
-	ret = statmount(0, 0, 0, NULL, 0, 0);
+	ret = statmount(0, 0, 0, 0, NULL, 0, 0);
 	if (ret == -1 && errno == ENOSYS)
 		SKIP(return, "statmount() syscall not supported");
 }
@@ -746,7 +728,7 @@ TEST_F(open_tree_ns_userns, umount_fails_einval)
 			const char *mnt_point;
 
 			sm = statmount_alloc(list[i], new_ns_id,
-					     STATMOUNT_MNT_POINT);
+					     STATMOUNT_MNT_POINT, 0);
 			if (!sm)
 				_exit(11);
 
@@ -863,7 +845,7 @@ TEST_F(open_tree_ns_userns, umount_succeeds)
 			const char *mnt_point;
 
 			sm = statmount_alloc(list[i], new_ns_id,
-					     STATMOUNT_MNT_POINT);
+					     STATMOUNT_MNT_POINT, 0);
 			if (!sm)
 				_exit(11);
 
@@ -904,7 +886,7 @@ TEST_F(open_tree_ns_userns, umount_succeeds)
 		ASSERT_FALSE(true) TH_LOG("setns into new namespace failed");
 		break;
 	case 7:
-		ASSERT_FALSE(true) TH_LOG("umount succeeded but should have failed with EINVAL");
+		ASSERT_FALSE(true) TH_LOG("umount failed but should have succeeded");
 		break;
 	case 9:
 		ASSERT_FALSE(true) TH_LOG("listmount failed");
@@ -1003,7 +985,7 @@ TEST_F(open_tree_ns_unbindable, recursive_skips_on_unbindable)
 		struct statmount *sm;
 		const char *mnt_point;
 
-		sm = statmount_alloc(list[i], new_ns_id, STATMOUNT_MNT_POINT);
+		sm = statmount_alloc(list[i], new_ns_id, STATMOUNT_MNT_POINT, 0);
 		ASSERT_NE(sm, NULL) {
 			TH_LOG("statmount_alloc failed for mnt_id %llu",
 			       (unsigned long long)list[i]);
@@ -1025,6 +1007,194 @@ TEST_F(open_tree_ns_unbindable, recursive_skips_on_unbindable)
 	}
 
 	close(fd);
+}
+
+/*
+ * Pin a mount namespace at @where, the way snapd does under /run/snapd/ns.
+ * The namespace has to be younger than ours, so a child unshares and the
+ * parent binds the child's namespace file: binding one's own namespace is
+ * refused by the very check this test is about.
+ */
+static int pin_mount_namespace(const char *where)
+{
+	int pipefd[2], status, ret = -1;
+	char path[PATH_MAX];
+	pid_t pid;
+	char c;
+
+	if (pipe(pipefd))
+		return -1;
+
+	pid = fork();
+	if (pid < 0)
+		goto out;
+	if (pid == 0) {
+		close(pipefd[0]);
+		if (unshare(CLONE_NEWNS))
+			_exit(1);
+		/* Tell the parent the namespace exists, then hold it open. */
+		if (write(pipefd[1], "x", 1) != 1)
+			_exit(1);
+		pause();
+		_exit(0);
+	}
+
+	close(pipefd[1]);
+	pipefd[1] = -1;
+	if (read(pipefd[0], &c, 1) != 1)
+		goto out_kill;
+
+	snprintf(path, sizeof(path), "/proc/%d/ns/mnt", pid);
+	if (mount(path, where, NULL, MS_BIND, NULL))
+		goto out_kill;
+
+	ret = 0;
+
+out_kill:
+	kill(pid, SIGKILL);
+	waitpid(pid, &status, 0);
+out:
+	close(pipefd[0]);
+	if (pipefd[1] >= 0)
+		close(pipefd[1]);
+	return ret;
+}
+
+FIXTURE(open_tree_ns_drop_mntns)
+{
+	char dir[64];
+	char pin[PATH_MAX];
+	bool mounted;
+};
+
+FIXTURE_SETUP(open_tree_ns_drop_mntns)
+{
+	int fd, ret;
+
+	self->mounted = false;
+	snprintf(self->dir, sizeof(self->dir), "/tmp/open_tree_ns_drop_mntns.XXXXXX");
+
+	ret = sys_open_tree(-1, NULL, 0);
+	if (ret == -1 && errno == ENOSYS)
+		SKIP(return, "open_tree() syscall not supported");
+
+	/*
+	 * Work in a private mount namespace, so whatever is mounted here,
+	 * the pinned namespace included, goes away with the test process.
+	 */
+	if (unshare(CLONE_NEWNS))
+		SKIP(return, "unshare(CLONE_NEWNS) failed: %s", strerror(errno));
+	ASSERT_EQ(mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL), 0);
+
+	ASSERT_NE(mkdtemp(self->dir), NULL);
+	if (mount("tmpfs", self->dir, "tmpfs", 0, NULL))
+		SKIP(return, "Failed to mount tmpfs");
+	self->mounted = true;
+
+	fd = sys_open_tree(AT_FDCWD, self->dir,
+			   OPEN_TREE_CLONE | OPEN_TREE_DROP_MNTNS_MOUNTS |
+			   AT_RECURSIVE | OPEN_TREE_CLOEXEC);
+	if (fd < 0 && errno == EINVAL)
+		SKIP(return, "OPEN_TREE_DROP_MNTNS_MOUNTS not supported");
+	ASSERT_GE(fd, 0);
+	close(fd);
+
+	snprintf(self->pin, sizeof(self->pin), "%s/ns", self->dir);
+	fd = open(self->pin, O_CREAT | O_RDONLY | O_CLOEXEC, 0600);
+	ASSERT_GE(fd, 0);
+	close(fd);
+	ASSERT_EQ(pin_mount_namespace(self->pin), 0);
+}
+
+FIXTURE_TEARDOWN(open_tree_ns_drop_mntns)
+{
+	if (self->mounted)
+		umount2(self->dir, MNT_DETACH);
+	rmdir(self->dir);
+}
+
+/* Attach @clone_fd at "/" inside the namespace @ns_fd; returns errno. */
+static int move_into_namespace(int clone_fd, int ns_fd)
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0)
+		return -1;
+	if (pid == 0) {
+		int target;
+
+		if (setns(ns_fd, CLONE_NEWNS))
+			_exit(255);
+		target = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
+		if (target < 0)
+			_exit(255);
+		if (sys_move_mount(clone_fd, "", target, "",
+				   MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH))
+			_exit(errno);
+		_exit(0);
+	}
+	if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+		return -1;
+	return WEXITSTATUS(status);
+}
+
+TEST_F(open_tree_ns_drop_mntns, move_into_younger_namespace)
+{
+	int clone_fd, ns_fd;
+
+	ns_fd = sys_open_tree(AT_FDCWD, self->dir,
+			      OPEN_TREE_NAMESPACE | OPEN_TREE_CLOEXEC);
+	ASSERT_GE(ns_fd, 0);
+
+	/*
+	 * Without the flag the clone carries the pinned namespace along,
+	 * and move_mount() refuses it from inside a younger namespace.
+	 */
+	clone_fd = sys_open_tree(AT_FDCWD, self->dir,
+				 OPEN_TREE_CLONE | AT_RECURSIVE | OPEN_TREE_CLOEXEC);
+	ASSERT_GE(clone_fd, 0);
+	EXPECT_EQ(move_into_namespace(clone_fd, ns_fd), ELOOP);
+	close(clone_fd);
+
+	/* With the flag the pinned namespace is left out. */
+	clone_fd = sys_open_tree(AT_FDCWD, self->dir,
+				 OPEN_TREE_CLONE | OPEN_TREE_DROP_MNTNS_MOUNTS |
+				 AT_RECURSIVE | OPEN_TREE_CLOEXEC);
+	ASSERT_GE(clone_fd, 0);
+	EXPECT_EQ(move_into_namespace(clone_fd, ns_fd), 0);
+	close(clone_fd);
+
+	close(ns_fd);
+}
+
+TEST_F(open_tree_ns_drop_mntns, flag_combinations)
+{
+	int fd;
+
+	/* Nothing is copied, so there is nothing to drop. */
+	EXPECT_LT(sys_open_tree(AT_FDCWD, self->dir,
+				OPEN_TREE_DROP_MNTNS_MOUNTS | OPEN_TREE_CLOEXEC), 0);
+	EXPECT_EQ(errno, EINVAL);
+
+	/* A non-recursive clone has no submounts, so there is nothing to drop. */
+	EXPECT_LT(sys_open_tree(AT_FDCWD, self->dir,
+				OPEN_TREE_CLONE | OPEN_TREE_DROP_MNTNS_MOUNTS |
+				OPEN_TREE_CLOEXEC), 0);
+	EXPECT_EQ(errno, EINVAL);
+	EXPECT_LT(sys_open_tree(AT_FDCWD, self->dir,
+				OPEN_TREE_NAMESPACE | OPEN_TREE_DROP_MNTNS_MOUNTS |
+				OPEN_TREE_CLOEXEC), 0);
+	EXPECT_EQ(errno, EINVAL);
+
+	/* OPEN_TREE_NAMESPACE never copies them; the flag is a no-op there. */
+	fd = sys_open_tree(AT_FDCWD, self->dir,
+			   OPEN_TREE_NAMESPACE | OPEN_TREE_DROP_MNTNS_MOUNTS |
+			   AT_RECURSIVE | OPEN_TREE_CLOEXEC);
+	EXPECT_GE(fd, 0);
+	if (fd >= 0)
+		close(fd);
 }
 
 TEST_HARNESS_MAIN

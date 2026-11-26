@@ -1805,6 +1805,7 @@ static void rtw_load_firmware_cb(const struct firmware *firmware, void *context)
 {
 	struct rtw_fw_state *fw = context;
 	struct rtw_dev *rtwdev = fw->rtwdev;
+	struct wiphy *wiphy = rtwdev->hw->wiphy;
 
 	if (!firmware || !firmware->data) {
 		rtw_err(rtwdev, "failed to request firmware\n");
@@ -1819,6 +1820,11 @@ static void rtw_load_firmware_cb(const struct firmware *firmware, void *context)
 	rtw_info(rtwdev, "%sFirmware version %u.%u.%u, H2C version %u\n",
 		 fw->type == RTW_WOWLAN_FW ? "WOW " : "",
 		 fw->version, fw->sub_version, fw->sub_index, fw->h2c_version);
+
+	if (fw->type == RTW_NORMAL_FW)
+		snprintf(wiphy->fw_version, sizeof(wiphy->fw_version),
+			 "%u.%u.%u",
+			 fw->version, fw->sub_version, fw->sub_index);
 }
 
 static int rtw_load_firmware(struct rtw_dev *rtwdev, enum rtw_fw_type type)
@@ -2054,8 +2060,11 @@ static int rtw_chip_efuse_info_setup(struct rtw_dev *rtwdev)
 	efuse->ext_lna_5g = efuse->lna_type_5g & BIT(3) ? 1 : 0;
 
 	if (!is_valid_ether_addr(efuse->addr)) {
-		eth_random_addr(efuse->addr);
-		dev_warn(rtwdev->dev, "efuse MAC invalid, using random\n");
+		if (device_get_mac_address(rtwdev->dev, efuse->addr)) {
+			eth_random_addr(efuse->addr);
+			dev_warn(rtwdev->dev,
+				 "failed to get valid MAC address, using random\n");
+		}
 	}
 
 out_disable:
@@ -2168,6 +2177,9 @@ int rtw_core_init(struct rtw_dev *rtwdev)
 
 	spin_lock_init(&rtwdev->txq_lock);
 	spin_lock_init(&rtwdev->tx_report.q_lock);
+	spin_lock_init(&rtwdev->hiq_lock);
+	rtwdev->hiq_budget = RTW_TX_HIQ_BUDGET_MAX;
+	rtwdev->hiq_refill = jiffies;
 
 	mutex_init(&rtwdev->mutex);
 	mutex_init(&rtwdev->hal.tx_power_mutex);

@@ -117,11 +117,19 @@ static irqreturn_t function_status_handler(int irq, void *data)
 
 	status = val;
 	for_each_set_bit(mask, &status, BITS_PER_BYTE) {
-		mask = 1 << mask;
-
-		switch (mask) {
+		switch (BIT(mask)) {
 		case SDCA_CTL_ENTITY_0_FUNCTION_NEEDS_INITIALIZATION:
-			//FIXME: Add init writes
+/*
+ * FIXME: Should this do init writes?
+ *
+ * Currently init writes/cache sync are done from the suspend/resume
+ * infrastructure. It is unclear in what situations one would receive this
+ * IRQ outside of that flow. Presumably it would be something like the chip
+ * crashing. In that case however doing the init writes and a cache sync might
+ * not be sufficient, for example if the failure was during audio playback
+ * there could be ordering constraints on the register writes to restore the
+ * state that are not handled by a simple cache sync.
+ */
 			break;
 		case SDCA_CTL_ENTITY_0_FUNCTION_FAULT:
 			dev_err(dev, "function fault\n");
@@ -140,7 +148,7 @@ static irqreturn_t function_status_handler(int irq, void *data)
 		}
 	}
 
-	ret = regmap_write(interrupt->function_regmap, reg, val);
+	ret = regmap_write(interrupt->function_regmap, reg, val & 0x7F);
 	if (ret < 0) {
 		dev_err(dev, "failed to clear function status: %d\n", ret);
 		goto error;
@@ -252,8 +260,7 @@ static int sdca_irq_request_locked(struct device *dev,
 	if (irq < 0)
 		return irq;
 
-	ret = devm_request_threaded_irq(dev, irq, NULL, handler,
-					IRQF_ONESHOT, name, data);
+	ret = request_threaded_irq(irq, NULL, handler, IRQF_ONESHOT, name, data);
 	if (ret)
 		return ret;
 
@@ -264,10 +271,26 @@ static int sdca_irq_request_locked(struct device *dev,
 	return 0;
 }
 
+static void sdca_irq_free_locked(struct device *dev, struct sdca_interrupt_info *info,
+				 int sdca_irq, const char *name, void *data)
+{
+	int irq;
+
+	irq = regmap_irq_get_virq(info->irq_data, sdca_irq);
+	if (irq < 0)
+		return;
+
+	free_irq(irq, data);
+
+	info->irqs[sdca_irq].irq = 0;
+
+	dev_dbg(dev, "freed irq %d for %s\n", irq, name);
+}
+
 /**
- * sdca_request_irq - request an individual SDCA interrupt
+ * sdca_irq_request - request an individual SDCA interrupt
  * @dev: Pointer to the struct device against which things should be allocated.
- * @interrupt_info: Pointer to the interrupt information structure.
+ * @info: Pointer to the interrupt information structure.
  * @sdca_irq: SDCA interrupt position.
  * @name: Name to be given to the IRQ.
  * @handler: A callback thread function to be called for the IRQ.
@@ -303,6 +326,30 @@ int sdca_irq_request(struct device *dev, struct sdca_interrupt_info *info,
 EXPORT_SYMBOL_NS_GPL(sdca_irq_request, "SND_SOC_SDCA");
 
 /**
+ * sdca_irq_free - free an individual SDCA interrupt
+ * @dev: Pointer to the struct device.
+ * @info: Pointer to the interrupt information structure.
+ * @sdca_irq: SDCA interrupt position.
+ * @name: Name to be given to the IRQ.
+ * @data: Private data pointer that will be passed to the handler.
+ *
+ * Typically this is handled internally by sdca_irq_cleanup, however if
+ * a device requires custom IRQ handling this can be called manually before
+ * calling sdca_irq_cleanup, which will then skip that IRQ whilst processing.
+ */
+void sdca_irq_free(struct device *dev, struct sdca_interrupt_info *info,
+		   int sdca_irq, const char *name, void *data)
+{
+	if (sdca_irq < 0 || sdca_irq >= SDCA_MAX_INTERRUPTS)
+		return;
+
+	guard(mutex)(&info->irq_lock);
+
+	sdca_irq_free_locked(dev, info, sdca_irq, name, data);
+}
+EXPORT_SYMBOL_NS_GPL(sdca_irq_free, "SND_SOC_SDCA");
+
+/**
  * sdca_irq_data_populate - Populate common interrupt data
  * @dev: Pointer to the Function device.
  * @regmap: Pointer to the Function regmap.
@@ -328,8 +375,7 @@ int sdca_irq_data_populate(struct device *dev, struct regmap *regmap,
 	if (!dev)
 		return -ENODEV;
 
-	name = devm_kasprintf(dev, GFP_KERNEL, "%s %s %s", function->desc->name,
-			      entity->label, control->label);
+	name = kasprintf(GFP_KERNEL, "%s %s", entity->label, control->label);
 	if (!name)
 		return -ENOMEM;
 
@@ -375,7 +421,8 @@ static struct sdca_interrupt *get_interrupt_data(struct device *dev, int irq,
  *
  * This is intended to be used as part of the Function boot process. It
  * can be called before the soundcard is registered (ie. doesn't depend
- * on component) and will register the FDL interrupts.
+ * on component) and will populate all the required IRQ data, as well as
+ * registering the FDL interrupts to start booting the device.
  *
  * Return: Zero on success, and a negative error code on failure.
  */
@@ -402,21 +449,36 @@ int sdca_irq_populate_early(struct device *dev, struct regmap *regmap,
 			else if (!interrupt)
 				continue;
 
+			ret = sdca_irq_data_populate(dev, regmap, NULL, function,
+						     entity, control, interrupt);
+			if (ret)
+				return ret;
+
 			switch (SDCA_CTL_TYPE(entity->type, control->sel)) {
-			case SDCA_CTL_TYPE_S(XU, FDL_CURRENTOWNER):
-				ret = sdca_irq_data_populate(dev, regmap, NULL,
-							     function, entity,
-							     control, interrupt);
+			case SDCA_CTL_TYPE_S(ENTITY_0, FUNCTION_STATUS):
+				interrupt->handler = function_status_handler;
+				break;
+			case SDCA_CTL_TYPE_S(GE, DETECTED_MODE):
+				interrupt->handler = detected_mode_handler;
+				interrupt->free_priv = sdca_jack_free_state;
+
+				ret = sdca_jack_alloc_state(interrupt);
 				if (ret)
 					return ret;
+				break;
+			case SDCA_CTL_TYPE_S(XU, FDL_CURRENTOWNER):
+				interrupt->handler = fdl_owner_handler;
+				interrupt->free_priv = sdca_fdl_free_state;
 
 				ret = sdca_fdl_alloc_state(interrupt);
 				if (ret)
 					return ret;
 
+				interrupt->early_request = true;
+
 				ret = sdca_irq_request_locked(dev, info, irq,
 							      interrupt->name,
-							      fdl_owner_handler,
+							      interrupt->handler,
 							      interrupt);
 				if (ret) {
 					dev_err(dev, "failed to request irq %s: %d\n",
@@ -424,7 +486,17 @@ int sdca_irq_populate_early(struct device *dev, struct regmap *regmap,
 					return ret;
 				}
 				break;
+			case SDCA_CTL_TYPE_S(HIDE, HIDTX_CURRENTOWNER):
+				interrupt->free_priv = sdca_destroy_hid_device;
+
+				ret = sdca_add_hid_device(interrupt);
+				if (ret)
+					return ret;
+
+				interrupt->handler = hid_handler;
+				break;
 			default:
+				interrupt->handler = base_handler;
 				break;
 			}
 		}
@@ -449,66 +521,38 @@ int sdca_irq_populate(struct sdca_function_data *function,
 		      struct sdca_interrupt_info *info)
 {
 	struct device *dev = component->dev;
-	int i, j;
+	int i, ret;
 
 	guard(mutex)(&info->irq_lock);
 
-	for (i = 0; i < function->num_entities; i++) {
-		struct sdca_entity *entity = &function->entities[i];
+	for (i = 0; i < SDCA_MAX_INTERRUPTS; i++) {
+		struct sdca_interrupt *interrupt = &info->irqs[i];
+		struct sdca_control *control = interrupt->control;
+		struct sdca_entity *entity = interrupt->entity;
+		int irq;
 
-		for (j = 0; j < entity->num_controls; j++) {
-			struct sdca_control *control = &entity->controls[j];
-			int irq = control->interrupt_position;
-			struct sdca_interrupt *interrupt;
-			irq_handler_t handler;
-			int ret;
+		if (interrupt->function != function || interrupt->irq)
+			continue;
 
-			interrupt = get_interrupt_data(dev, irq, info);
-			if (IS_ERR(interrupt))
-				return PTR_ERR(interrupt);
-			else if (!interrupt)
-				continue;
+		interrupt->component = component;
 
-			ret = sdca_irq_data_populate(dev, NULL, component,
-						     function, entity, control,
-						     interrupt);
+		switch (SDCA_CTL_TYPE(entity->type, control->sel)) {
+		case SDCA_CTL_TYPE_S(GE, DETECTED_MODE):
+			ret = sdca_jack_init_state(interrupt);
 			if (ret)
 				return ret;
+			break;
+		default:
+			break;
+		}
 
-			handler = base_handler;
-
-			switch (SDCA_CTL_TYPE(entity->type, control->sel)) {
-			case SDCA_CTL_TYPE_S(ENTITY_0, FUNCTION_STATUS):
-				handler = function_status_handler;
-				break;
-			case SDCA_CTL_TYPE_S(GE, DETECTED_MODE):
-				ret = sdca_jack_alloc_state(interrupt);
-				if (ret)
-					return ret;
-
-				handler = detected_mode_handler;
-				break;
-			case SDCA_CTL_TYPE_S(XU, FDL_CURRENTOWNER):
-				ret = sdca_fdl_alloc_state(interrupt);
-				if (ret)
-					return ret;
-
-				handler = fdl_owner_handler;
-				break;
-			case SDCA_CTL_TYPE_S(HIDE, HIDTX_CURRENTOWNER):
-				handler = hid_handler;
-				break;
-			default:
-				break;
-			}
-
-			ret = sdca_irq_request_locked(dev, info, irq, interrupt->name,
-						      handler, interrupt);
-			if (ret) {
-				dev_err(dev, "failed to request irq %s: %d\n",
-					interrupt->name, ret);
-				return ret;
-			}
+		irq = interrupt->control->interrupt_position;
+		ret = sdca_irq_request_locked(dev, info, irq, interrupt->name,
+					      interrupt->handler, interrupt);
+		if (ret) {
+			dev_err(dev, "failed to request irq %s: %d\n",
+				interrupt->name, ret);
+			return ret;
 		}
 	}
 
@@ -516,8 +560,71 @@ int sdca_irq_populate(struct sdca_function_data *function,
 }
 EXPORT_SYMBOL_NS_GPL(sdca_irq_populate, "SND_SOC_SDCA");
 
+static void sdca_irq_cleanup_flags(struct device *dev,
+				   struct sdca_function_data *function,
+				   struct sdca_interrupt_info *info,
+				   bool late_cleanup)
+{
+	int i;
+
+	guard(mutex)(&info->irq_lock);
+
+	for (i = 0; i < SDCA_MAX_INTERRUPTS; i++) {
+		struct sdca_interrupt *interrupt = &info->irqs[i];
+
+		if (interrupt->function != function ||
+		    (interrupt->early_request && !late_cleanup))
+			continue;
+
+		if (interrupt->irq)
+			sdca_irq_free_locked(dev, info, i, interrupt->name, interrupt);
+
+		if (!late_cleanup)
+			continue;
+
+		if (interrupt->free_priv)
+			interrupt->free_priv(interrupt);
+
+		kfree(interrupt->name);
+	}
+}
+
 /**
- * sdca_irq_allocate - allocate an SDCA interrupt structure for a device
+ * sdca_irq_cleanup - Free the regular IRQs for an SDCA Function
+ * @dev: Device pointer against which the sdca_interrupt_info was allocated.
+ * @function: Pointer to the SDCA Function.
+ * @info: Pointer to the SDCA interrupt info for this device.
+ *
+ * Typically this would be called from the driver for a single SDCA Function
+ * from component remove.
+ */
+void sdca_irq_cleanup(struct device *dev,
+		      struct sdca_function_data *function,
+		      struct sdca_interrupt_info *info)
+{
+	sdca_irq_cleanup_flags(dev, function, info, false);
+}
+EXPORT_SYMBOL_NS_GPL(sdca_irq_cleanup, "SND_SOC_SDCA");
+
+/**
+ * sdca_irq_cleanup_late - Free the early IRQs for an SDCA Function
+ * @dev: Device pointer against which the sdca_interrupt_info was allocated.
+ * @function: Pointer to the SDCA Function.
+ * @info: Pointer to the SDCA interrupt info for this device.
+ *
+ * Typically this would be called from the driver for a single SDCA Function
+ * from bus remove.
+ */
+void sdca_irq_cleanup_late(struct device *dev,
+			   struct sdca_function_data *function,
+			   struct sdca_interrupt_info *info)
+{
+	sdca_irq_cleanup_flags(dev, function, info, true);
+}
+EXPORT_SYMBOL_NS_GPL(sdca_irq_cleanup_late, "SND_SOC_SDCA");
+
+/**
+ * devm_sdca_irq_allocate - allocate an SDCA interrupt structure for a device
  * @sdev: Device pointer against which things should be allocated.
  * @regmap: regmap to be used for accessing the SDCA IRQ registers.
  * @irq: The interrupt number.
@@ -529,13 +636,13 @@ EXPORT_SYMBOL_NS_GPL(sdca_irq_populate, "SND_SOC_SDCA");
  * Return: A pointer to the allocated sdca_interrupt_info struct, or an
  * error code.
  */
-struct sdca_interrupt_info *sdca_irq_allocate(struct device *sdev,
-					      struct regmap *regmap, int irq)
+struct sdca_interrupt_info *devm_sdca_irq_allocate(struct device *sdev,
+						   struct regmap *regmap, int irq)
 {
 	struct sdca_interrupt_info *info;
 	int ret, i;
 
-	info = devm_kzalloc(sdev, sizeof(*info), GFP_KERNEL);
+	info = devm_kzalloc_obj(sdev, *info);
 	if (!info)
 		return ERR_PTR(-ENOMEM);
 
@@ -559,18 +666,17 @@ struct sdca_interrupt_info *sdca_irq_allocate(struct device *sdev,
 
 	return info;
 }
-EXPORT_SYMBOL_NS_GPL(sdca_irq_allocate, "SND_SOC_SDCA");
+EXPORT_SYMBOL_NS_GPL(devm_sdca_irq_allocate, "SND_SOC_SDCA");
 
 static void irq_enable_flags(struct sdca_function_data *function,
 			     struct sdca_interrupt_info *info, bool early)
 {
-	struct sdca_interrupt *interrupt;
 	int i;
 
 	for (i = 0; i < SDCA_MAX_INTERRUPTS; i++) {
-		interrupt = &info->irqs[i];
+		struct sdca_interrupt *interrupt = &info->irqs[i];
 
-		if (!interrupt || interrupt->function != function)
+		if (!interrupt->irq || interrupt->function != function)
 			continue;
 
 		switch (SDCA_CTL_TYPE(interrupt->entity->type,
@@ -623,13 +729,12 @@ EXPORT_SYMBOL_NS_GPL(sdca_irq_enable, "SND_SOC_SDCA");
 void sdca_irq_disable(struct sdca_function_data *function,
 		      struct sdca_interrupt_info *info)
 {
-	struct sdca_interrupt *interrupt;
 	int i;
 
 	for (i = 0; i < SDCA_MAX_INTERRUPTS; i++) {
-		interrupt = &info->irqs[i];
+		struct sdca_interrupt *interrupt = &info->irqs[i];
 
-		if (!interrupt || interrupt->function != function)
+		if (!interrupt->irq || interrupt->function != function)
 			continue;
 
 		disable_irq(interrupt->irq);

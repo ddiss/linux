@@ -31,7 +31,8 @@ static char kprobe_boot_events_buf[COMMAND_LINE_SIZE] __initdata;
 
 static int __init set_kprobe_boot_events(char *str)
 {
-	strscpy(kprobe_boot_events_buf, str, COMMAND_LINE_SIZE);
+	trace_append_boot_param(kprobe_boot_events_buf, str, ';',
+				COMMAND_LINE_SIZE);
 	disable_tracing_selftest("running kprobe events");
 
 	return 1;
@@ -148,20 +149,28 @@ static bool trace_kprobe_is_busy(struct dyn_event *ev)
 static bool trace_kprobe_match_command_head(struct trace_kprobe *tk,
 					    int argc, const char **argv)
 {
-	char buf[MAX_ARGSTR_LEN + 1];
+	char buf[32];
+	int len;
 
 	if (!argc)
 		return true;
 
-	if (!tk->symbol)
+	if (!tk->symbol) {
 		snprintf(buf, sizeof(buf), "0x%p", tk->rp.kp.addr);
-	else if (tk->rp.kp.offset)
-		snprintf(buf, sizeof(buf), "%s+%u",
-			 trace_kprobe_symbol(tk), tk->rp.kp.offset);
-	else
-		snprintf(buf, sizeof(buf), "%s", trace_kprobe_symbol(tk));
-	if (strcmp(buf, argv[0]))
+		if (strcmp(buf, argv[0]))
+			return false;
+	} else if (tk->rp.kp.offset) {
+		len = strlen(trace_kprobe_symbol(tk));
+		if (strncmp(trace_kprobe_symbol(tk), argv[0], len) ||
+		    argv[0][len] != '+')
+			return false;
+
+		snprintf(buf, sizeof(buf), "%u", tk->rp.kp.offset);
+		if (strcmp(buf, &argv[0][len + 1]))
+			return false;
+	} else if (strcmp(trace_kprobe_symbol(tk), argv[0]))
 		return false;
+
 	argc--; argv++;
 
 	return trace_probe_match_command_args(&tk->tp, argc, argv);
@@ -539,10 +548,6 @@ static void __unregister_trace_kprobe(struct trace_kprobe *tk)
 /* Unregister a trace_probe and probe_event */
 static int unregister_trace_kprobe(struct trace_kprobe *tk)
 {
-	/* If other probes are on the event, just unregister kprobe */
-	if (trace_probe_has_sibling(&tk->tp))
-		goto unreg;
-
 	/* Enabled event can not be unregistered */
 	if (trace_probe_is_enabled(&tk->tp))
 		return -EBUSY;
@@ -550,6 +555,10 @@ static int unregister_trace_kprobe(struct trace_kprobe *tk)
 	/* If there's a reference to the dynamic event */
 	if (trace_event_dyn_busy(trace_probe_event_call(&tk->tp)))
 		return -EBUSY;
+
+	/* If other probes are on the event, just unregister kprobe */
+	if (trace_probe_has_sibling(&tk->tp))
+		goto unreg;
 
 	/* Will fail if probe is being used by ftrace or perf */
 	if (unregister_kprobe_event(tk))
@@ -764,6 +773,14 @@ static unsigned int number_of_same_symbols(const char *mod, const char *func_nam
 
 	if (!mod)
 		kallsyms_on_each_match_symbol(count_symbols, func_name, &ctx.count);
+
+	/*
+	 * If the symbol is found in vmlinux, use vmlinux resolution only.
+	 * This prevents module symbols from shadowing vmlinux symbols
+	 * and causing -EADDRNOTAVAIL for unqualified kprobe targets.
+	 */
+	if (!mod && ctx.count > 0)
+		return ctx.count;
 
 	module_kallsyms_on_each_symbol(mod, count_mod_symbols, &ctx);
 
@@ -1311,6 +1328,8 @@ static int trace_kprobe_show(struct seq_file *m, struct dyn_event *ev)
 		seq_printf(m, " %s=%s", tk->tp.args[i].name, tk->tp.args[i].comm);
 	seq_putc(m, '\n');
 
+	trace_probe_dump_args(m, &tk->tp);
+
 	return 0;
 }
 
@@ -1710,7 +1729,6 @@ kprobe_perf_func(struct trace_kprobe *tk, struct pt_regs *regs)
 		return 0;
 
 	entry->ip = (unsigned long)tk->rp.kp.addr;
-	memset(&entry[1], 0, dsize);
 	store_trace_args(&entry[1], &tk->tp, regs, NULL, sizeof(*entry), dsize);
 	perf_trace_buf_submit(entry, size, rctx, call->event.type, 1, regs,
 			      head, NULL);
@@ -1998,6 +2016,9 @@ static __init void setup_boot_kprobe_events(void)
 {
 	char *p, *cmd = kprobe_boot_events_buf;
 	int ret;
+
+	if (!kprobe_boot_events_buf[0])
+		return;
 
 	strreplace(kprobe_boot_events_buf, ',', ' ');
 

@@ -52,6 +52,7 @@
 #include <acpi/apei.h>
 
 #include <asm/cpu_device_id.h>
+#include <asm/cpuid/api.h>
 #include <asm/mce.h>
 
 #include "../debugfs.h"
@@ -833,7 +834,7 @@ static int allocate_records(void)
 		}
 	}
 
-	spa_entries = kcalloc(spa_nr_entries, sizeof(u64), GFP_KERNEL);
+	spa_entries = kzalloc_objs(u64, spa_nr_entries);
 	if (!spa_entries) {
 		ret = -ENOMEM;
 		goto out_free;

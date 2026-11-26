@@ -221,7 +221,7 @@ static void sa1111_irq_handler(struct irq_desc *desc)
 	writel_relaxed(stat1, mapbase + SA1111_INTSTATCLR1);
 
 	if (stat0 == 0 && stat1 == 0) {
-		do_bad_IRQ(desc);
+		handle_bad_irq(desc);
 		return;
 	}
 
@@ -800,7 +800,7 @@ static int __sa1111_probe(struct device *me, struct resource *mem, int irq)
 	if (!pd)
 		return -EINVAL;
 
-	sachip = devm_kzalloc(me, sizeof(struct sa1111), GFP_KERNEL);
+	sachip = devm_kzalloc_obj(me, struct sa1111);
 	if (!sachip)
 		return -ENOMEM;
 

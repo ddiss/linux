@@ -25,10 +25,7 @@ void __init init_environ(void)
 	int efi_boot = fw_arg0;
 	char *cmdline = early_memremap_ro(fw_arg1, COMMAND_LINE_SIZE);
 
-	if (efi_boot)
-		set_bit(EFI_BOOT, &efi.flags);
-	else
-		clear_bit(EFI_BOOT, &efi.flags);
+	assign_bit(EFI_BOOT, &efi.flags, efi_boot);
 
 	strscpy(boot_command_line, cmdline, COMMAND_LINE_SIZE);
 	strscpy(init_command_line, cmdline, COMMAND_LINE_SIZE);
@@ -42,16 +39,15 @@ static int __init init_cpu_fullname(void)
 	int cpu, ret;
 	char *cpuname;
 	const char *model;
-	struct device_node *root;
 
 	/* Parsing cpuname from DTS model property */
-	root = of_find_node_by_path("/");
-	ret = of_property_read_string(root, "model", &model);
+	ret = of_property_read_string(of_root, "model", &model);
 	if (ret == 0) {
 		cpuname = kstrdup(model, GFP_KERNEL);
+		if (!cpuname)
+			return -ENOMEM;
 		loongson_sysconf.cpuname = strsep(&cpuname, " ");
 	}
-	of_node_put(root);
 
 	if (loongson_sysconf.cpuname && !strncmp(loongson_sysconf.cpuname, "Loongson", 8)) {
 		for (cpu = 0; cpu < NR_CPUS; cpu++)

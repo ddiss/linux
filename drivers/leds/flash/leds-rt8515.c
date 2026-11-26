@@ -26,7 +26,6 @@
 #include <linux/err.h>
 #include <linux/gpio/consumer.h>
 #include <linux/led-class-flash.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -284,7 +283,7 @@ static int rt8515_probe(struct platform_device *pdev)
 	struct v4l2_flash_config v4l2_sd_cfg = {};
 	int ret;
 
-	rt = devm_kzalloc(dev, sizeof(*rt), GFP_KERNEL);
+	rt = devm_kzalloc_obj(dev, *rt);
 	if (!rt)
 		return -ENOMEM;
 

@@ -21,14 +21,36 @@
 #define ATH12K_ROOTPD_READY_TIMEOUT		(5 * HZ)
 #define ATH12K_RPROC_AFTER_POWERUP		QCOM_SSR_AFTER_POWERUP
 #define ATH12K_AHB_FW_PREFIX			"q6_fw"
-#define ATH12K_AHB_FW_SUFFIX			".mdt"
-#define ATH12K_AHB_FW2				"iu_fw.mdt"
+#define ATH12K_AHB_FW_SUFFIX			".mbn"
+#define ATH12K_AHB_FW2				"iu_fw.mbn"
 #define ATH12K_AHB_UPD_SWID			0x12
 #define ATH12K_USERPD_SPAWN_TIMEOUT		(5 * HZ)
 #define ATH12K_USERPD_READY_TIMEOUT		(10 * HZ)
 #define ATH12K_USERPD_STOP_TIMEOUT		(5 * HZ)
-#define ATH12K_USERPD_ID_MASK			GENMASK(9, 8)
+#define ATH12K_USERPD_ID_MASK			GENMASK(10, 8)
 #define ATH12K_USERPD_FW_NAME_LEN		35
+
+/* Shared read-only firmware ID, mandated by MultiPD firmware architecture */
+#define ATH12K_AHB_RO_ID			4
+
+enum ath12k_ahb_userpd_id {
+	ATH12K_AHB_USERPD_ID_0 = 1,
+	ATH12K_AHB_USERPD_ID_1,
+	ATH12K_AHB_USERPD_ID_2,
+};
+
+struct ath12k_ahb_userpd_map {
+	phys_addr_t io_start;
+	const char *node_name;
+	u32 upd_id;
+};
+
+struct ath12k_ahb_desc {
+	enum ath12k_hw_rev hw_rev;
+	bool auth_enabled;
+	const struct ath12k_hif_ops *ops;
+	bool supports_multipd;
+};
 
 enum ath12k_ahb_smp2p_msg_id {
 	ATH12K_AHB_POWER_SAVE_ENTER = 1,
@@ -43,6 +65,7 @@ enum ath12k_ahb_userpd_irq {
 };
 
 struct ath12k_base;
+extern const struct ath12k_hif_ops ath12k_ahb_hif_ops;
 
 struct ath12k_ahb_device_family_ops {
 	int (*probe)(struct platform_device *pdev);
@@ -50,13 +73,23 @@ struct ath12k_ahb_device_family_ops {
 	void (*arch_deinit)(struct ath12k_base *ab);
 };
 
-struct ath12k_ahb {
-	struct ath12k_base *ab;
+struct ath12k_ahb_rproc_info {
 	struct rproc *tgt_rproc;
-	struct clk *xo_clk;
-	struct completion rootpd_ready;
 	struct notifier_block root_pd_nb;
 	void *root_pd_notifier;
+	struct completion rootpd_ready;
+	u8 num_userpd;
+	bool rootpd_booted_by_driver;
+	struct ath12k_ahb *userpd[ATH12K_MAX_DEVICES];
+	bool shared_fw_loaded;
+	phys_addr_t mem_phys;
+	size_t mem_size;
+	void *mem_region;
+};
+
+struct ath12k_ahb {
+	struct ath12k_base *ab;
+	struct clk *xo_clk;
 	struct qcom_smem_state *spawn_state;
 	struct qcom_smem_state *stop_state;
 	struct completion userpd_spawned;
@@ -68,6 +101,9 @@ struct ath12k_ahb {
 	int userpd_irq_num[ATH12K_USERPD_MAX_IRQ];
 	const struct ath12k_ahb_ops *ahb_ops;
 	const struct ath12k_ahb_device_family_ops *device_family_ops;
+	bool scm_auth_enabled;
+	struct ath12k_ahb_rproc_info *rproc_info;
+	bool supports_multipd;
 };
 
 struct ath12k_ahb_driver {

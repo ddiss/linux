@@ -4,9 +4,7 @@
  */
 
 #include <linux/clk-provider.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
@@ -382,7 +380,7 @@ static struct gdsc gpu_cc_cx_gdsc = {
 		.name = "gpu_cc_cx_gdsc",
 	},
 	.pwrsts = PWRSTS_OFF_ON,
-	.flags = POLL_CFG_GDSCR | RETAIN_FF_ENABLE,
+	.flags = RETAIN_FF_ENABLE | VOTABLE,
 };
 
 static struct clk_regmap *gpu_cc_kaanapali_clocks[] = {
@@ -424,7 +422,7 @@ static struct clk_alpha_pll *gpu_cc_kaanapali_plls[] = {
 	&gpu_cc_pll0,
 };
 
-static u32 gpu_cc_kaanapali_critical_cbcrs[] = {
+static const u32 gpu_cc_kaanapali_critical_cbcrs[] = {
 	0x9008, /* GPU_CC_CXO_AON_CLK */
 	0x93e8, /* GPU_CC_RSCC_HUB_AON_CLK */
 	0x9004, /* GPU_CC_RSCC_XO_AON_CLK */
@@ -438,7 +436,7 @@ static const struct regmap_config gpu_cc_kaanapali_regmap_config = {
 	.fast_io = true,
 };
 
-static struct qcom_cc_driver_data gpu_cc_kaanapali_driver_data = {
+static const struct qcom_cc_driver_data gpu_cc_kaanapali_driver_data = {
 	.alpha_plls = gpu_cc_kaanapali_plls,
 	.num_alpha_plls = ARRAY_SIZE(gpu_cc_kaanapali_plls),
 	.clk_cbcrs = gpu_cc_kaanapali_critical_cbcrs,

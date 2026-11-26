@@ -6,6 +6,8 @@
 #include "dml2_internal_shared_types.h"
 #include "dml_top_types.h"
 #include "lib_float_math.h"
+#include "dml2_debug.h"
+
 
 static double dram_bw_kbps_to_uclk_khz(unsigned long long bandwidth_kbps, const struct dml2_dram_params *dram_config, struct dml2_mcg_dram_bw_to_min_clk_table *dram_bw_table)
 {
@@ -55,16 +57,101 @@ static unsigned long dml_round_up(double a)
 	return (unsigned long)a;
 }
 
+/* Calculate DPM index to use for per-DPM derates
+ * Iterates through DPM levels - if calculated clocks exceed thresholds increment to next DPM level
+ */
+static void calculate_derate_index(struct dml2_dpmm_map_mode_to_soc_dpm_params_in_out *in_out)
+{
+	const struct dml2_core_mode_support_result *mode_support_result = &in_out->display_cfg->mode_support_result;
+	double required_bw_dram_kbps, required_bw_sdp_kbps;
+	int i;
+
+	/* Default to DPM 0 (lowest power state) */
+	in_out->derate_dpm_index = 0;
+
+	/* Get required bandwidths from mode support */
+	required_bw_dram_kbps = mode_support_result->global.active.average_bw_dram_kbps;
+	required_bw_sdp_kbps = mode_support_result->global.active.average_bw_sdp_kbps;
+
+	/* Iterate through DPM levels from lowest to highest to find the first level
+	 * whose available bandwidth can satisfy the requirements.
+	 */
+	for (i = 0; i < DML_MAX_CLK_TABLE_SIZE; i++) {
+		unsigned int dram_threshold = in_out->soc_bb->qos_parameters.derate_table_per_dpm.dram_per_dpm_derate_pixel[i].clk_upperbound_threshold_khz;
+		unsigned int fclk_threshold = in_out->soc_bb->qos_parameters.derate_table_per_dpm.fclk_per_dpm_derate[i].clk_upperbound_threshold_khz;
+		unsigned int dcfclk_threshold = in_out->soc_bb->qos_parameters.derate_table_per_dpm.dcfclk_per_dpm_derate[i].clk_upperbound_threshold_khz;
+		unsigned int uclk_derate = in_out->soc_bb->qos_parameters.derate_table_per_dpm.dram_per_dpm_derate_pixel[i].derate_percent;
+		unsigned int fclk_derate = in_out->soc_bb->qos_parameters.derate_table_per_dpm.fclk_per_dpm_derate[i].derate_percent;
+		unsigned int dcfclk_derate = in_out->soc_bb->qos_parameters.derate_table_per_dpm.dcfclk_per_dpm_derate[i].derate_percent;
+		double max_dram_bw_for_dpm = 0, max_fclk_bw_for_dpm = 0, max_dcfclk_bw_for_dpm = 0;
+
+		/* Skip entries with 0 derate (use fallback logic) */
+		if (uclk_derate == 0 || fclk_derate == 0 || dcfclk_derate == 0) {
+			DML_ASSERT(0); // derate should be populated (at least 1 entry in the per_dpm table that can be applied for all DPMs
+		}
+
+		/* Threshold of 0 indicates last entry - this DPM level handles all higher bandwidths */
+		if (dram_threshold == 0 && fclk_threshold == 0 && dcfclk_threshold == 0) {
+			in_out->derate_dpm_index = i;
+			break;
+		}
+
+		/* Calculate maximum available bandwidth at this DPM level
+			* Available BW = max_clock_at_threshold * derate * conversion_factor */
+
+			/* For DRAM: convert threshold clock to bandwidth */
+		if (!in_out->soc_bb->clk_table.dram_config.alt_clock_bw_conversion) {
+			unsigned long uclk_bytes_per_tick = in_out->soc_bb->clk_table.dram_config.channel_count
+				* in_out->soc_bb->clk_table.dram_config.channel_width_bytes
+				* in_out->soc_bb->clk_table.dram_config.transactions_per_clock;
+			max_dram_bw_for_dpm = (double)dram_threshold * uclk_bytes_per_tick * ((double)uclk_derate / 100.0);
+		} else {
+			/* use pre-computed table - find bandwidth at threshold clock */
+			for (unsigned int j = 0; j < in_out->min_clk_table->dram_bw_table.num_entries; j++) {
+				if (in_out->min_clk_table->dram_bw_table.entries[j].min_uclk_khz >= dram_threshold) {
+					max_dram_bw_for_dpm = (double)in_out->min_clk_table->dram_bw_table.entries[j].pre_derate_dram_bw_kbps;
+					break;
+				}
+			}
+		}
+
+		max_fclk_bw_for_dpm = (double)fclk_threshold
+			* in_out->soc_bb->fabric_datapath_to_dcn_data_return_bytes
+			* ((double)fclk_derate / 100.0);
+
+		max_dcfclk_bw_for_dpm = (double)dcfclk_threshold
+			* in_out->soc_bb->return_bus_width_bytes
+			* ((double)dcfclk_derate / 100.0);
+
+		/* Check if this DPM level's available bandwidth satisfies all requirements
+			* All bandwidth paths must be satisfied to use this DPM level */
+		if (((dram_threshold == 0) || (required_bw_dram_kbps <= max_dram_bw_for_dpm)) &&
+			((fclk_threshold == 0) || (required_bw_sdp_kbps <= max_fclk_bw_for_dpm)) &&
+			((dcfclk_threshold == 0) || (required_bw_sdp_kbps <= max_dcfclk_bw_for_dpm))) {
+			in_out->derate_dpm_index = i;
+			break;
+		}
+	}
+}
+
 static void calculate_system_active_minimums(struct dml2_dpmm_map_mode_to_soc_dpm_params_in_out *in_out)
 {
 	double min_uclk_avg, min_uclk_urgent, min_uclk_bw;
 	double min_fclk_avg, min_fclk_urgent, min_fclk_bw;
 	double min_dcfclk_avg, min_dcfclk_urgent, min_dcfclk_bw;
 	double min_uclk_latency, min_fclk_latency, min_dcfclk_latency;
+	int dpm_index, uclk_avg_derate_percent, fclk_avg_derate_percent, dcfclk_avg_derate_percent;
 	const struct dml2_core_mode_support_result *mode_support_result = &in_out->display_cfg->mode_support_result;
 
+	dpm_index = in_out->derate_dpm_index;
+
+	/* Get average derates from system_active_average per-DPM table */
+	uclk_avg_derate_percent = (in_out->soc_bb->qos_parameters.derate_table_per_dpm.dram_per_dpm_derate_pixel[dpm_index].derate_percent != 0 || dpm_index == 0) ?
+		in_out->soc_bb->qos_parameters.derate_table_per_dpm.dram_per_dpm_derate_pixel[dpm_index].derate_percent :
+		in_out->soc_bb->qos_parameters.derate_table_per_dpm.dram_per_dpm_derate_pixel[0].derate_percent;
+
 	min_uclk_avg = dram_bw_kbps_to_uclk_khz((unsigned long long)(mode_support_result->global.active.average_bw_dram_kbps
-											/ ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_average.dram_derate_percent_pixel / 100)),
+											/ ((double)uclk_avg_derate_percent / 100)),
 							&in_out->soc_bb->clk_table.dram_config, &in_out->min_clk_table->dram_bw_table);
 
 	if (in_out->display_cfg->display_config.hostvm_enable)
@@ -78,16 +165,22 @@ static void calculate_system_active_minimums(struct dml2_dpmm_map_mode_to_soc_dp
 
 	min_uclk_bw = min_uclk_urgent > min_uclk_avg ? min_uclk_urgent : min_uclk_avg;
 
+	fclk_avg_derate_percent = (in_out->soc_bb->qos_parameters.derate_table_per_dpm.fclk_per_dpm_derate[dpm_index].derate_percent != 0 || dpm_index == 0) ?
+		in_out->soc_bb->qos_parameters.derate_table_per_dpm.fclk_per_dpm_derate[dpm_index].derate_percent :
+		in_out->soc_bb->qos_parameters.derate_table_per_dpm.fclk_per_dpm_derate[0].derate_percent;
 	min_fclk_avg = (double)mode_support_result->global.active.average_bw_sdp_kbps / in_out->soc_bb->fabric_datapath_to_dcn_data_return_bytes;
-	min_fclk_avg = (double)min_fclk_avg / ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_average.fclk_derate_percent / 100);
+	min_fclk_avg = (double)min_fclk_avg / ((double)fclk_avg_derate_percent / 100);
 
 	min_fclk_urgent = (double)mode_support_result->global.active.urgent_bw_sdp_kbps / in_out->soc_bb->fabric_datapath_to_dcn_data_return_bytes;
 	min_fclk_urgent = (double)min_fclk_urgent / ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_urgent.fclk_derate_percent / 100);
 
 	min_fclk_bw = min_fclk_urgent > min_fclk_avg ? min_fclk_urgent : min_fclk_avg;
 
+	dcfclk_avg_derate_percent = (in_out->soc_bb->qos_parameters.derate_table_per_dpm.dcfclk_per_dpm_derate[dpm_index].derate_percent != 0 || dpm_index == 0) ?
+		in_out->soc_bb->qos_parameters.derate_table_per_dpm.dcfclk_per_dpm_derate[dpm_index].derate_percent :
+		in_out->soc_bb->qos_parameters.derate_table_per_dpm.dcfclk_per_dpm_derate[0].derate_percent;
 	min_dcfclk_avg = (double)mode_support_result->global.active.average_bw_sdp_kbps / in_out->soc_bb->return_bus_width_bytes;
-	min_dcfclk_avg = (double)min_dcfclk_avg / ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_average.dcfclk_derate_percent / 100);
+	min_dcfclk_avg = (double)min_dcfclk_avg / ((double)dcfclk_avg_derate_percent / 100);
 
 	min_dcfclk_urgent = (double)mode_support_result->global.active.urgent_bw_sdp_kbps / in_out->soc_bb->return_bus_width_bytes;
 	min_dcfclk_urgent = (double)min_dcfclk_urgent / ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_urgent.dcfclk_derate_percent / 100);
@@ -145,7 +238,7 @@ static void calculate_svp_prefetch_minimums(struct dml2_dpmm_map_mode_to_soc_dpm
 
 	/* assumes DF throttling is disabled */
 	min_uclk_avg = dram_bw_kbps_to_uclk_khz((unsigned long long)(mode_support_result->global.svp_prefetch.average_bw_dram_kbps
-										/ ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_average.dram_derate_percent_pixel / 100)),
+										/ ((double)in_out->soc_bb->qos_parameters.derate_table_per_dpm.dram_per_dpm_derate_pixel[in_out->derate_dpm_index].derate_percent / 100)),
 								&in_out->soc_bb->clk_table.dram_config, &in_out->min_clk_table->dram_bw_table);
 
 	min_uclk_urgent = dram_bw_kbps_to_uclk_khz((unsigned long long)(mode_support_result->global.svp_prefetch.urgent_bw_dram_kbps
@@ -155,7 +248,7 @@ static void calculate_svp_prefetch_minimums(struct dml2_dpmm_map_mode_to_soc_dpm
 	min_uclk_bw = min_uclk_urgent > min_uclk_avg ? min_uclk_urgent : min_uclk_avg;
 
 	min_fclk_avg = (double)mode_support_result->global.svp_prefetch.average_bw_sdp_kbps / in_out->soc_bb->fabric_datapath_to_dcn_data_return_bytes;
-	min_fclk_avg = (double)min_fclk_avg / ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_average.fclk_derate_percent / 100);
+	min_fclk_avg = (double)min_fclk_avg / ((double)in_out->soc_bb->qos_parameters.derate_table_per_dpm.fclk_per_dpm_derate[in_out->derate_dpm_index].derate_percent / 100);
 
 	min_fclk_urgent = (double)mode_support_result->global.svp_prefetch.urgent_bw_sdp_kbps / in_out->soc_bb->fabric_datapath_to_dcn_data_return_bytes;
 	min_fclk_urgent = (double)min_fclk_urgent / ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_urgent.fclk_derate_percent / 100);
@@ -163,7 +256,7 @@ static void calculate_svp_prefetch_minimums(struct dml2_dpmm_map_mode_to_soc_dpm
 	min_fclk_bw = min_fclk_urgent > min_fclk_avg ? min_fclk_urgent : min_fclk_avg;
 
 	min_dcfclk_avg = (double)mode_support_result->global.svp_prefetch.average_bw_sdp_kbps / in_out->soc_bb->return_bus_width_bytes;
-	min_dcfclk_avg = (double)min_dcfclk_avg / ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_average.dcfclk_derate_percent / 100);
+	min_dcfclk_avg = (double)min_dcfclk_avg / ((double)in_out->soc_bb->qos_parameters.derate_table_per_dpm.dcfclk_per_dpm_derate[in_out->derate_dpm_index].derate_percent / 100);
 
 	min_dcfclk_urgent = (double)mode_support_result->global.svp_prefetch.urgent_bw_sdp_kbps / in_out->soc_bb->return_bus_width_bytes;
 	min_dcfclk_urgent = (double)min_dcfclk_urgent / ((double)in_out->soc_bb->qos_parameters.derate_table.system_active_urgent.dcfclk_derate_percent / 100);
@@ -278,6 +371,26 @@ static bool round_up_and_copy_to_next_dpm(unsigned long min_value, unsigned long
 {
 	bool result = false;
 	int index = 0;
+
+	/* Guard against empty clock tables (e.g. DTBCLK on DCN42B where the
+	 * clock is tied off and num_clk_values == 0).  Without this check the
+	 * else-if branch below would evaluate
+	 * clk_values_khz[num_clk_values - 1] with num_clk_values == 0, which
+	 * wraps the unsigned char index to 255 — a 235-element out-of-bounds
+	 * read on an array of DML_MAX_CLK_TABLE_SIZE (20) entries.
+	 *
+	 * Semantic: if the clock doesn't exist on this ASIC but no frequency
+	 * is required (min_value == 0), the request is trivially satisfied.
+	 * If a non-zero frequency is required but the clock is absent, the
+	 * configuration is unsupportable.
+	 */
+	if (clock_table->num_clk_values == 0) {
+		if (min_value == 0) {
+			*rounded_value = 0;
+			return true;
+		}
+		return false;
+	}
 
 	if (clock_table->num_clk_values > 2) {
 		while (index < clock_table->num_clk_values && clock_table->clk_values_khz[index] < min_value)
@@ -532,6 +645,7 @@ static int get_displays_without_vactive_margin_mask(struct dml2_dpmm_map_mode_to
 
 static int get_displays_with_fams_mask(struct dml2_dpmm_map_mode_to_soc_dpm_params_in_out *in_out, int latency_hiding_requirement_us)
 {
+	(void)latency_hiding_requirement_us;
 	unsigned int i;
 	int displays_with_fams_mask = 0x0;
 
@@ -612,6 +726,7 @@ static bool map_mode_to_soc_dpm(struct dml2_dpmm_map_mode_to_soc_dpm_params_in_o
 	double dispclk_khz;
 	const struct dml2_core_mode_support_result *mode_support_result = &in_out->display_cfg->mode_support_result;
 
+	calculate_derate_index(in_out);
 	calculate_system_active_minimums(in_out);
 	calculate_svp_prefetch_minimums(in_out);
 	calculate_idle_minimums(in_out);
@@ -742,7 +857,6 @@ bool dpmm_dcn4_map_mode_to_soc_dpm(struct dml2_dpmm_map_mode_to_soc_dpm_params_i
 	else
 		in_out->programming->stutter.supported_in_blank = false;
 
-	// TODO: Fix me Sam
 	if (in_out->soc_bb->power_management_parameters.z8_min_idle_time > 0 &&
 		in_out->programming->informative.power_management.z8.stutter_period >= in_out->soc_bb->power_management_parameters.z8_min_idle_time)
 		in_out->programming->z8_stutter.meets_eco = true;
@@ -756,6 +870,25 @@ bool dpmm_dcn4_map_mode_to_soc_dpm(struct dml2_dpmm_map_mode_to_soc_dpm_params_i
 		in_out->programming->z8_stutter.supported_in_blank = false;
 
 	return result;
+}
+
+static void dpmm_dcn4_map_mcif_watermarks(struct dml2_dpmm_map_watermarks_params_in_out *in_out)
+{
+	const struct dml2_core_internal_display_mode_lib *mode_lib = &in_out->core->clean_me_up.mode_lib;
+	struct dml2_mcif_global_register_set *mcif_regs = &in_out->programming->mcif_global_regs;
+
+	/* MCIF */
+	mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].urgent = (int unsigned)(mode_lib->mp.Watermark.WritebackUrgentWatermark * 1000.0);
+	mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].uclk_pstate = (int unsigned)(mode_lib->mp.Watermark.WritebackDRAMClockChangeWatermark * 1000.0);
+	mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].fclk_pstate = (int unsigned)(mode_lib->mp.Watermark.WritebackFCLKChangeWatermark * 1000.0);
+	mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].temp_read_or_ppt = (int unsigned)(mode_lib->mp.Watermark.writeback_temp_read_or_ppt_watermark_us * 1000.0);
+
+	/* replicate sets A through D */
+	memcpy(&mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_B], &mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A], sizeof(mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A]));
+	memcpy(&mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_C], &mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A], sizeof(mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A]));
+	memcpy(&mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_D], &mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A], sizeof(mcif_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A]));
+
+	mcif_regs->num_watermark_sets = 4;
 }
 
 bool dpmm_dcn4_map_watermarks(struct dml2_dpmm_map_watermarks_params_in_out *in_out)
@@ -799,6 +932,41 @@ bool dpmm_dcn4_map_watermarks(struct dml2_dpmm_map_watermarks_params_in_out *in_
 	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_B].frac_urg_bw_mall = (unsigned int)(mode_lib->mp.FractionOfUrgentBandwidthMALL * 1000);
 
 	dchubbub_regs->num_watermark_sets = 2;
+
+	dpmm_dcn4_map_mcif_watermarks(in_out);
+
+	return true;
+}
+bool dpmm_dcn42_map_watermarks(struct dml2_dpmm_map_watermarks_params_in_out *in_out)
+{
+	const struct dml2_display_cfg *display_cfg = &in_out->display_cfg->display_config;
+	const struct dml2_core_internal_display_mode_lib *mode_lib = &in_out->core->clean_me_up.mode_lib;
+	struct dml2_dchub_global_register_set *dchubbub_regs = &in_out->programming->global_regs;
+
+	double refclk_freq_in_mhz = (display_cfg->overrides.hw.dlg_ref_clk_mhz > 0) ? (double)display_cfg->overrides.hw.dlg_ref_clk_mhz : mode_lib->soc.dchub_refclk_mhz;
+
+	/* set A */
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].fclk_pstate = (int unsigned)(mode_lib->mp.Watermark.FCLKChangeWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].sr_enter = (int unsigned)(mode_lib->mp.Watermark.StutterEnterPlusExitWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].sr_exit = (int unsigned)(mode_lib->mp.Watermark.StutterExitWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].sr_enter_z8 = (int unsigned)(mode_lib->mp.Watermark.Z8StutterEnterPlusExitWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].sr_exit_z8 = (int unsigned)(mode_lib->mp.Watermark.Z8StutterExitWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].temp_read_or_ppt = (int unsigned)(mode_lib->mp.Watermark.temp_read_or_ppt_watermark_us * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].uclk_pstate = (int unsigned)(mode_lib->mp.Watermark.DRAMClockChangeWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].urgent = (int unsigned)(mode_lib->mp.Watermark.UrgentWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].usr = (int unsigned)(mode_lib->mp.Watermark.USRRetrainingWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].refcyc_per_trip_to_mem = (unsigned int)(mode_lib->mp.Watermark.UrgentWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].refcyc_per_meta_trip_to_mem = (unsigned int)(mode_lib->mp.Watermark.UrgentWatermark * refclk_freq_in_mhz);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].frac_urg_bw_flip = (unsigned int)(mode_lib->mp.FractionOfUrgentBandwidthImmediateFlip * 1000);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].frac_urg_bw_nom = (unsigned int)(mode_lib->mp.FractionOfUrgentBandwidth * 1000);
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A].frac_urg_bw_mall = (unsigned int)(mode_lib->mp.FractionOfUrgentBandwidthMALL * 1000);
+
+	/* set B */
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_B] = dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A];
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_C] = dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A];
+	dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_D] = dchubbub_regs->wm_regs[DML2_DCHUB_WATERMARK_SET_A];
+
+	dchubbub_regs->num_watermark_sets = 4;
 
 	return true;
 }

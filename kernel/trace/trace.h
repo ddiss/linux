@@ -191,7 +191,7 @@ struct trace_array;
 struct trace_array_cpu {
 	local_t			disabled;
 
-	unsigned long		entries;
+	unsigned long		capacity;
 	unsigned long		saved_latency;
 	unsigned long		critical_start;
 	unsigned long		critical_end;
@@ -227,6 +227,7 @@ struct array_buffer {
 struct trace_options {
 	struct tracer			*tracer;
 	struct trace_option_dentry	*topts;
+	int				nr_topts;
 };
 
 struct trace_pid_list *trace_pid_list_alloc(void);
@@ -264,6 +265,7 @@ static inline bool still_need_pid_events(int type, struct trace_pid_list *pid_li
 
 typedef bool (*cond_update_fn_t)(struct trace_array *tr, void *cond_data);
 
+#ifdef CONFIG_TRACER_SNAPSHOT
 /**
  * struct cond_snapshot - conditional snapshot data and callback
  *
@@ -306,6 +308,7 @@ struct cond_snapshot {
 	void				*cond_data;
 	cond_update_fn_t		update;
 };
+#endif /* CONFIG_TRACER_SNAPSHOT */
 
 /*
  * struct trace_func_repeats - used to keep track of the consecutive
@@ -405,7 +408,10 @@ struct trace_array {
 	unsigned char		trace_flags_index[TRACE_FLAGS_MAX_SIZE];
 	unsigned int		flags;
 	raw_spinlock_t		start_lock;
-	const char		*system_names;
+	union {
+		const char	*system_names;
+		char		*boot_events;
+	};
 	struct list_head	err_log;
 	struct dentry		*dir;
 	struct dentry		*options;
@@ -453,6 +459,12 @@ struct trace_array {
 	 * we do not waste memory on systems that are not using tracing.
 	 */
 	bool ring_buffer_expanded;
+	/*
+	 * If the ring buffer is a read only backup instance, it will be
+	 * removed after dumping all data via pipe, because no readable data.
+	 */
+	bool free_on_close;
+	struct work_struct	autoremove_work;
 };
 
 enum {
@@ -462,6 +474,7 @@ enum {
 	TRACE_ARRAY_FL_MOD_INIT		= BIT(3),
 	TRACE_ARRAY_FL_MEMMAP		= BIT(4),
 	TRACE_ARRAY_FL_VMALLOC		= BIT(5),
+	TRACE_ARRAY_FL_RDONLY		= BIT(6),
 };
 
 #ifdef CONFIG_MODULES
@@ -490,6 +503,12 @@ extern bool trace_clock_in_ns(struct trace_array *tr);
 extern unsigned long trace_adjust_address(struct trace_array *tr, unsigned long addr);
 
 extern struct trace_array *printk_trace;
+
+static inline bool trace_array_is_readonly(struct trace_array *tr)
+{
+	/* backup instance is read only. */
+	return tr->flags & TRACE_ARRAY_FL_RDONLY;
+}
 
 /*
  * The global tracer (top) should be the first trace array added,
@@ -675,6 +694,7 @@ void tracing_reset_all_online_cpus(void);
 void tracing_reset_all_online_cpus_unlocked(void);
 int tracing_open_generic(struct inode *inode, struct file *filp);
 int tracing_open_generic_tr(struct inode *inode, struct file *filp);
+int tracing_release(struct inode *inode, struct file *file);
 int tracing_release_generic_tr(struct inode *inode, struct file *file);
 int tracing_open_file_tr(struct inode *inode, struct file *filp);
 int tracing_release_file_tr(struct inode *inode, struct file *filp);
@@ -684,12 +704,53 @@ void tracer_tracing_on(struct trace_array *tr);
 void tracer_tracing_off(struct trace_array *tr);
 void tracer_tracing_disable(struct trace_array *tr);
 void tracer_tracing_enable(struct trace_array *tr);
+int allocate_trace_buffer(struct trace_array *tr, struct array_buffer *buf, int size);
 struct dentry *trace_create_file(const char *name,
 				 umode_t mode,
 				 struct dentry *parent,
 				 void *data,
 				 const struct file_operations *fops);
+struct dentry *trace_create_cpu_file(const char *name,
+				     umode_t mode,
+				     struct dentry *parent,
+				     void *data,
+				     long cpu,
+				     const struct file_operations *fops);
 
+struct trace_iterator *__tracing_open(struct inode *inode, struct file *file,
+				      bool snapshot);
+int tracing_buffers_open(struct inode *inode, struct file *filp);
+ssize_t tracing_buffers_read(struct file *filp, char __user *ubuf,
+			     size_t count, loff_t *ppos);
+int tracing_buffers_release(struct inode *inode, struct file *file);
+ssize_t tracing_buffers_splice_read(struct file *file, loff_t *ppos,
+		   struct pipe_inode_info *pipe, size_t len, unsigned int flags);
+
+ssize_t tracing_nsecs_read(unsigned long *ptr, char __user *ubuf,
+			   size_t cnt, loff_t *ppos);
+ssize_t tracing_nsecs_write(unsigned long *ptr, const char __user *ubuf,
+			    size_t cnt, loff_t *ppos);
+
+void trace_set_buffer_capacity(struct array_buffer *buf, unsigned long val);
+
+/*
+ * Should be used after trace_array_get(), trace_types_lock
+ * ensures that i_cdev was already initialized.
+ */
+static inline int tracing_get_cpu(struct inode *inode)
+{
+	if (inode->i_cdev) /* See trace_create_cpu_file() */
+		return (long)inode->i_cdev - 1;
+	return RING_BUFFER_ALL_CPUS;
+}
+void tracing_reset_cpu(struct array_buffer *buf, int cpu);
+
+struct ftrace_buffer_info {
+	struct trace_iterator		iter;
+	struct buffer_data_read_page	*spare;
+	unsigned int			spare_cpu;
+	unsigned int			read;
+};
 
 /**
  * tracer_tracing_is_on_cpu - show real state of ring buffer enabled on for a cpu
@@ -806,13 +867,13 @@ void update_max_tr_single(struct trace_array *tr,
 #if defined(CONFIG_TRACER_MAX_TRACE) && defined(CONFIG_FSNOTIFY)
 # define LATENCY_FS_NOTIFY
 #endif
+#endif /* CONFIG_TRACER_SNAPSHOT */
 
 #ifdef LATENCY_FS_NOTIFY
 void latency_fsnotify(struct trace_array *tr);
 #else
 static inline void latency_fsnotify(struct trace_array *tr) { }
 #endif
-#endif /* CONFIG_TRACER_SNAPSHOT */
 
 #ifdef CONFIG_STACKTRACE
 void __trace_stack(struct trace_array *tr, unsigned int trace_ctx, int skip);
@@ -828,11 +889,15 @@ static inline bool tracer_uses_snapshot(struct tracer *tracer)
 {
 	return tracer->use_max_tr;
 }
+void trace_create_maxlat_file(struct trace_array *tr,
+			      struct dentry *d_tracer);
 #else
 static inline bool tracer_uses_snapshot(struct tracer *tracer)
 {
 	return false;
 }
+static inline void trace_create_maxlat_file(struct trace_array *tr,
+					    struct dentry *d_tracer) { }
 #endif
 
 void trace_last_func_repeats(struct trace_array *tr,
@@ -862,6 +927,8 @@ extern int DYN_FTRACE_TEST_NAME(void);
 #define DYN_FTRACE_TEST_NAME2 trace_selftest_dynamic_test_func2
 extern int DYN_FTRACE_TEST_NAME2(void);
 
+void __init trace_append_boot_param(char *buf, const char *str,
+				    char sep, int size);
 extern void trace_set_ring_buffer_expanded(struct trace_array *tr);
 extern bool tracing_selftest_disabled;
 
@@ -938,9 +1005,6 @@ struct ftrace_hash {
 	unsigned long		flags;
 	struct rcu_head		rcu;
 };
-
-struct ftrace_func_entry *
-ftrace_lookup_ip(struct ftrace_hash *hash, unsigned long ip);
 
 static __always_inline bool ftrace_hash_empty(struct ftrace_hash *hash)
 {
@@ -1273,7 +1337,7 @@ extern void clear_ftrace_function_probes(struct trace_array *tr);
 int register_ftrace_command(struct ftrace_func_command *cmd);
 int unregister_ftrace_command(struct ftrace_func_command *cmd);
 
-void ftrace_create_filter_files(struct ftrace_ops *ops,
+void ftrace_create_filter_files(struct trace_array *tr,
 				struct dentry *parent);
 void ftrace_destroy_filter_files(struct ftrace_ops *ops);
 
@@ -1296,11 +1360,12 @@ static inline void clear_ftrace_function_probes(struct trace_array *tr)
 {
 }
 
+static inline void ftrace_create_filter_files(struct trace_array *tr,
+					      struct dentry *parent) { }
 /*
  * The ops parameter passed in is usually undefined.
  * This must be a macro.
  */
-#define ftrace_create_filter_files(ops, parent) do { } while (0)
 #define ftrace_destroy_filter_files(ops) do { } while (0)
 #endif /* CONFIG_FUNCTION_TRACER && CONFIG_DYNAMIC_FTRACE */
 
@@ -1742,7 +1807,6 @@ enum regex_type {
 	MATCH_MIDDLE_ONLY,
 	MATCH_END_ONLY,
 	MATCH_GLOB,
-	MATCH_INDEX,
 };
 
 struct regex {
@@ -1758,7 +1822,8 @@ static inline bool is_string_field(struct ftrace_event_field *field)
 	       field->filter_type == FILTER_RDYN_STRING ||
 	       field->filter_type == FILTER_STATIC_STRING ||
 	       field->filter_type == FILTER_PTR_STRING ||
-	       field->filter_type == FILTER_COMM;
+	       field->filter_type == FILTER_COMM ||
+	       field->filter_type == FILTER_WITHIN;
 }
 
 static inline bool is_function_field(struct ftrace_event_field *field)
@@ -1802,11 +1867,6 @@ extern struct trace_event_file *find_event_file(struct trace_array *tr,
 						const char *system,
 						const char *event);
 
-static inline void *event_file_data(struct file *filp)
-{
-	return READ_ONCE(file_inode(filp)->i_private);
-}
-
 extern struct mutex event_mutex;
 extern struct list_head ftrace_events;
 
@@ -1827,9 +1887,19 @@ static inline struct trace_event_file *event_file_file(struct file *filp)
 	struct trace_event_file *file;
 
 	lockdep_assert_held(&event_mutex);
-	file = READ_ONCE(file_inode(filp)->i_private);
+	file = file_inode(filp)->i_private;
 	if (!file || file->flags & EVENT_FILE_FL_FREED)
 		return NULL;
+	return file;
+}
+
+static inline void *event_file_data(struct file *filp)
+{
+	struct trace_event_file *file;
+
+	lockdep_assert_held(&event_mutex);
+	file = file_inode(filp)->i_private;
+	WARN_ON(!file || file->flags & EVENT_FILE_FL_FREED);
 	return file;
 }
 
@@ -1841,9 +1911,11 @@ extern const struct file_operations event_inject_fops;
 #ifdef CONFIG_HIST_TRIGGERS
 extern int register_trigger_hist_cmd(void);
 extern int register_trigger_hist_enable_disable_cmds(void);
+extern void hist_put_synth_event(struct trace_event_file *file);
 #else
 static inline int register_trigger_hist_cmd(void) { return 0; }
 static inline int register_trigger_hist_enable_disable_cmds(void) { return 0; }
+static inline void hist_put_synth_event(struct trace_event_file *file) { }
 #endif
 
 extern int register_trigger_cmds(void);
@@ -1869,6 +1941,7 @@ struct event_trigger_data {
 	struct list_head		named_list;
 	struct event_trigger_data	*named_data;
 	struct llist_node		llist;
+	void				(*private_data_free)(struct event_trigger_data *data);
 };
 
 /* Avoid typos */
@@ -1879,6 +1952,7 @@ struct event_trigger_data {
 
 struct enable_trigger_data {
 	struct trace_event_file		*file;
+	struct trace_event_call		*call;
 	bool				enable;
 	bool				hist;
 };
@@ -2135,12 +2209,6 @@ static inline bool event_command_needs_rec(struct event_command *cmd_ops)
 
 extern int trace_event_enable_disable(struct trace_event_file *file,
 				      int enable, int soft_disable);
-extern int tracing_alloc_snapshot(void);
-extern void tracing_snapshot_cond(struct trace_array *tr, void *cond_data);
-extern int tracing_snapshot_cond_enable(struct trace_array *tr, void *cond_data, cond_update_fn_t update);
-
-extern int tracing_snapshot_cond_disable(struct trace_array *tr);
-extern void *tracing_cond_snapshot_data(struct trace_array *tr);
 
 extern const char *__start___trace_bprintk_fmt[];
 extern const char *__stop___trace_bprintk_fmt[];
@@ -2218,29 +2286,80 @@ static inline const char *get_syscall_name(int syscall)
 
 #ifdef CONFIG_EVENT_TRACING
 void trace_event_init(void);
-void trace_event_update_all(struct trace_eval_map **map, int len);
+void trace_event_update_all(struct trace_eval_map **map, int len, struct module *mod);
 /* Used from boot time tracer */
-extern int ftrace_set_clr_event(struct trace_array *tr, char *buf, int set);
 extern int trigger_process_regex(struct trace_event_file *file, char *buff);
 #else
 static inline void __init trace_event_init(void) { }
-static inline void trace_event_update_all(struct trace_eval_map **map, int len) { }
+static inline void trace_event_update_all(struct trace_eval_map **map, int len, struct module *mod) { }
 #endif
 
 #ifdef CONFIG_TRACER_SNAPSHOT
+extern const struct file_operations snapshot_fops;
+extern const struct file_operations snapshot_raw_fops;
+
+/* Used when creating instances */
+int trace_allocate_snapshot(struct trace_array *tr, int size);
+
+int tracing_alloc_snapshot(void);
+void tracing_snapshot_cond(struct trace_array *tr, void *cond_data);
+int tracing_snapshot_cond_enable(struct trace_array *tr, void *cond_data, cond_update_fn_t update);
+int tracing_snapshot_cond_disable(struct trace_array *tr);
+void *tracing_cond_snapshot_data(struct trace_array *tr);
 void tracing_snapshot_instance(struct trace_array *tr);
 int tracing_alloc_snapshot_instance(struct trace_array *tr);
+int tracing_arm_snapshot_locked(struct trace_array *tr);
 int tracing_arm_snapshot(struct trace_array *tr);
 void tracing_disarm_snapshot(struct trace_array *tr);
-#else
+void free_snapshot(struct trace_array *tr);
+void print_snapshot_help(struct seq_file *m, struct trace_iterator *iter);
+int get_snapshot_map(struct trace_array *tr);
+void put_snapshot_map(struct trace_array *tr);
+int resize_buffer_duplicate_size(struct array_buffer *trace_buf,
+				 struct array_buffer *size_buf, int cpu_id);
+__init void do_allocate_snapshot(const char *name);
+# ifdef CONFIG_DYNAMIC_FTRACE
+__init int register_snapshot_cmd(void);
+# else
+static inline int register_snapshot_cmd(void) { return 0; }
+# endif
+#else /* !CONFIG_TRACER_SNAPSHOT */
+static inline int trace_allocate_snapshot(struct trace_array *tr, int size) { return 0; }
 static inline void tracing_snapshot_instance(struct trace_array *tr) { }
 static inline int tracing_alloc_snapshot_instance(struct trace_array *tr)
 {
 	return 0;
 }
+static inline int tracing_arm_snapshot_locked(struct trace_array *tr) { return -EBUSY; }
 static inline int tracing_arm_snapshot(struct trace_array *tr) { return 0; }
 static inline void tracing_disarm_snapshot(struct trace_array *tr) { }
-#endif
+static inline void free_snapshot(struct trace_array *tr) {}
+static inline void tracing_snapshot_cond(struct trace_array *tr, void *cond_data)
+{
+	WARN_ONCE(1, "Snapshot feature not enabled, but internal conditional snapshot used");
+}
+static inline void *tracing_cond_snapshot_data(struct trace_array *tr)
+{
+	return NULL;
+}
+static inline int tracing_snapshot_cond_enable(struct trace_array *tr, void *cond_data, cond_update_fn_t update)
+{
+	return -ENODEV;
+}
+static inline int tracing_snapshot_cond_disable(struct trace_array *tr)
+{
+	return false;
+}
+static inline void print_snapshot_help(struct seq_file *m, struct trace_iterator *iter)
+{
+	/* Should never be called */
+	WARN_ONCE(1, "Snapshot print function called without snapshot configured");
+}
+static inline int get_snapshot_map(struct trace_array *tr) { return 0; }
+static inline void put_snapshot_map(struct trace_array *tr) { }
+static inline void do_allocate_snapshot(const char *name) { }
+static inline int register_snapshot_cmd(void) { return 0; }
+#endif /* CONFIG_TRACER_SNAPSHOT */
 
 #ifdef CONFIG_PREEMPT_TRACER
 void tracer_preempt_on(unsigned long a0, unsigned long a1);
@@ -2388,3 +2507,8 @@ static inline int rv_init_interface(void)
 	})
 
 #endif /* _LINUX_KERNEL_TRACE_H */
+
+#if IS_ENABLED(CONFIG_KUNIT)
+void ftrace_parse_event_string(char *buf, char **match, char **sub, char **event, char **mod,
+			       bool handle_filter, char **filter);
+#endif

@@ -252,6 +252,15 @@ struct phy_gmii_sel_soc_data phy_gmii_sel_soc_am654 = {
 };
 
 static const
+struct phy_gmii_sel_soc_data phy_gmii_sel_soc_j722s = {
+	.use_of_data = true,
+	.features = BIT(PHY_GMII_SEL_RGMII_ID_MODE) |
+		    BIT(PHY_GMII_SEL_FIXED_TX_DELAY),
+	.regfields = phy_gmii_sel_fields_am654,
+	.extra_modes = BIT(PHY_INTERFACE_MODE_SGMII),
+};
+
+static const
 struct phy_gmii_sel_soc_data phy_gmii_sel_cpsw5g_soc_j7200 = {
 	.use_of_data = true,
 	.features = BIT(PHY_GMII_SEL_RGMII_ID_MODE) |
@@ -306,6 +315,10 @@ static const struct of_device_id phy_gmii_sel_id_table[] = {
 	{
 		.compatible	= "ti,am654-phy-gmii-sel",
 		.data		= &phy_gmii_sel_soc_am654,
+	},
+	{
+		.compatible	= "ti,j722s-phy-gmii-sel",
+		.data		= &phy_gmii_sel_soc_j722s,
 	},
 	{
 		.compatible	= "ti,j7200-cpsw5g-phy-gmii-sel",
@@ -439,8 +452,7 @@ static int phy_gmii_sel_init_ports(struct phy_gmii_sel_priv *priv)
 			priv->reg_offset = __be32_to_cpu(*offset);
 	}
 
-	if_phys = devm_kcalloc(dev, priv->num_ports,
-			       sizeof(*if_phys), GFP_KERNEL);
+	if_phys = devm_kzalloc_objs(dev, *if_phys, priv->num_ports);
 	if (!if_phys)
 		return -ENOMEM;
 	dev_dbg(dev, "%s %d\n", __func__, priv->num_ports);
@@ -476,7 +488,7 @@ static int phy_gmii_sel_probe(struct platform_device *pdev)
 	if (!of_id)
 		return -EINVAL;
 
-	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = devm_kzalloc_obj(&pdev->dev, *priv);
 	if (!priv)
 		return -ENOMEM;
 

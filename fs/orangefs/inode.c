@@ -181,8 +181,27 @@ static int orangefs_writepages(struct address_space *mapping,
 {
 	struct orangefs_writepages *ow;
 	struct blk_plug plug;
-	int error;
+	int error = 0;
 	struct folio *folio = NULL;
+	int maxpages;
+
+	maxpages = orangefs_bufmap_size_query() / PAGE_SIZE;
+	if (maxpages < 1) {
+		/*
+		 * Probably the client is dead and there's no bufmap.
+		 * Walk writeback_iter anyway so each dirty folio is unlocked
+		 * and writeback is ended. wait_for_direct_io will fail; the
+		 * data is not written.
+		 */
+		gossip_err("%s: maxpages < 1. \n", __func__);
+		while ((folio = writeback_iter(mapping, wbc, folio, &error))) {
+			error = orangefs_writepage_locked(folio, wbc);
+			mapping_set_error(mapping, error);
+			folio_unlock(folio);
+			folio_end_writeback(folio);
+		}
+		return error;
+	}
 
 	ow = kzalloc_obj(struct orangefs_writepages);
 	if (!ow)
@@ -224,6 +243,8 @@ static void orangefs_readahead(struct readahead_control *rac)
 	loff_t new_start = readahead_pos(rac);
 	int ret;
 	size_t new_len = 0;
+	size_t this_size;
+	size_t remaining;
 
 	loff_t bytes_remaining = inode->i_size - readahead_pos(rac);
 	loff_t pages_remaining = bytes_remaining / PAGE_SIZE;
@@ -239,17 +260,33 @@ static void orangefs_readahead(struct readahead_control *rac)
 	offset = readahead_pos(rac);
 	i_pages = &rac->mapping->i_pages;
 
-	iov_iter_xarray(&iter, ITER_DEST, i_pages, offset, readahead_length(rac));
+	iov_iter_xarray(&iter, ITER_DEST, i_pages,
+				offset, readahead_length(rac));
 
-	/* read in the pages. */
-	if ((ret = wait_for_direct_io(ORANGEFS_IO_READ, inode,
-			&offset, &iter, readahead_length(rac),
-			inode->i_size, NULL, NULL, rac->file)) < 0)
-		gossip_debug(GOSSIP_FILE_DEBUG,
-			"%s: wait_for_direct_io failed. \n", __func__);
-	else
-		ret = 0;
+	remaining = readahead_length(rac);
+	while (remaining) {
+		if (remaining > 4194304)
+			this_size = 4194304;
+		else
+			this_size = remaining;
 
+		/* read in the pages. */
+		if ((ret = wait_for_direct_io(ORANGEFS_IO_READ, inode,
+				&offset, &iter, this_size,
+				inode->i_size, NULL, NULL, rac->file)) < 0) {
+			gossip_debug(GOSSIP_FILE_DEBUG,
+				"%s: wait_for_direct_io failed. :%d: \n",
+				__func__, ret);
+			goto cleanup;
+		} else {
+			ret = 0;
+		}
+
+		remaining -= this_size;
+		offset += this_size;
+	}
+
+cleanup:
 	/* clean up. */
 	while ((folio = readahead_folio(rac))) {
 		if (!ret)
@@ -634,8 +671,8 @@ vm_fault_t orangefs_page_mkwrite(struct vm_fault *vmf)
 		wr = folio_get_private(folio);
 		if (uid_eq(wr->uid, current_fsuid()) &&
 		    gid_eq(wr->gid, current_fsgid())) {
-			wr->pos = page_offset(vmf->page);
-			wr->len = PAGE_SIZE;
+			wr->pos = folio_pos(folio);
+			wr->len = folio_size(folio);
 			goto okay;
 		} else {
 			if (orangefs_launder_folio(folio)) {
@@ -649,8 +686,8 @@ vm_fault_t orangefs_page_mkwrite(struct vm_fault *vmf)
 		ret = VM_FAULT_LOCKED|VM_FAULT_RETRY;
 		goto out;
 	}
-	wr->pos = page_offset(vmf->page);
-	wr->len = PAGE_SIZE;
+	wr->pos = folio_pos(folio);
+	wr->len = folio_size(folio);
 	wr->uid = current_fsuid();
 	wr->gid = current_fsgid();
 	folio_attach_private(folio, wr);
@@ -810,7 +847,7 @@ int __orangefs_setattr_mode(struct dentry *dentry, struct iattr *iattr)
 /*
  * Change attributes of an object referenced by dentry.
  */
-int orangefs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+int orangefs_setattr(const struct mnt_idmap *idmap, struct dentry *dentry,
 		     struct iattr *iattr)
 {
 	int ret;
@@ -830,7 +867,7 @@ out:
 /*
  * Obtain attributes of an object given a dentry
  */
-int orangefs_getattr(struct mnt_idmap *idmap, const struct path *path,
+int orangefs_getattr(const struct mnt_idmap *idmap, const struct path *path,
 		     struct kstat *stat, u32 request_mask, unsigned int flags)
 {
 	int ret;
@@ -854,7 +891,7 @@ int orangefs_getattr(struct mnt_idmap *idmap, const struct path *path,
 	return ret;
 }
 
-int orangefs_permission(struct mnt_idmap *idmap,
+int orangefs_permission(const struct mnt_idmap *idmap,
 			struct inode *inode, int mask)
 {
 	int ret;
@@ -916,7 +953,7 @@ static int orangefs_fileattr_get(struct dentry *dentry, struct file_kattr *fa)
 	return 0;
 }
 
-static int orangefs_fileattr_set(struct mnt_idmap *idmap,
+static int orangefs_fileattr_set(const struct mnt_idmap *idmap,
 				 struct dentry *dentry, struct file_kattr *fa)
 {
 	u64 val = 0;
@@ -1062,7 +1099,7 @@ struct inode *orangefs_iget(struct super_block *sb,
 	unlock_new_inode(inode);
 
 	gossip_debug(GOSSIP_INODE_DEBUG,
-		     "iget handle %pU, fsid %d hash %ld i_ino %lu\n",
+		     "iget handle %pU, fsid %d hash %ld i_ino %llu\n",
 		     &ref->khandle,
 		     ref->fs_id,
 		     hash,

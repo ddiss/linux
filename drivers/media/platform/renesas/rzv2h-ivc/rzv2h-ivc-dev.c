@@ -119,7 +119,7 @@ static irqreturn_t rzv2h_ivc_isr(int irq, void *context)
 	 * The second interrupt indicates that the post-frame transfer VBLANK
 	 * has completed, we can now schedule a new frame transfer, if any.
 	 */
-	queue_work(ivc->buffers.async_wq, &ivc->buffers.work);
+	rzv2h_ivc_transfer_buffer(ivc);
 
 	return IRQ_HANDLED;
 }
@@ -183,7 +183,7 @@ static int rzv2h_ivc_probe(struct platform_device *pdev)
 	struct rzv2h_ivc *ivc;
 	int ret;
 
-	ivc = devm_kzalloc(dev, sizeof(*ivc), GFP_KERNEL);
+	ivc = devm_kzalloc_obj(dev, *ivc);
 	if (!ivc)
 		return -ENOMEM;
 
@@ -202,7 +202,9 @@ static int rzv2h_ivc_probe(struct platform_device *pdev)
 
 	pm_runtime_set_autosuspend_delay(dev, 2000);
 	pm_runtime_use_autosuspend(dev);
-	pm_runtime_enable(dev);
+	ret = devm_pm_runtime_enable(dev);
+	if (ret)
+		return ret;
 
 	ivc->irqnum = platform_get_irq(pdev, 0);
 	if (ivc->irqnum < 0)
@@ -210,14 +212,9 @@ static int rzv2h_ivc_probe(struct platform_device *pdev)
 
 	ret = rzv2h_ivc_initialise_subdevice(ivc);
 	if (ret)
-		goto err_disable_pm_runtime;
+		return ret;
 
 	return 0;
-
-err_disable_pm_runtime:
-	pm_runtime_disable(dev);
-
-	return ret;
 }
 
 static void rzv2h_ivc_remove(struct platform_device *pdev)

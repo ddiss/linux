@@ -59,35 +59,17 @@ void rds_tcp_keepalive(struct socket *sock)
 static int
 rds_tcp_get_peer_sport(struct socket *sock)
 {
-	union {
-		struct sockaddr_storage storage;
-		struct sockaddr addr;
-		struct sockaddr_in sin;
-		struct sockaddr_in6 sin6;
-	} saddr;
-	int sport;
+	struct sock *sk = sock->sk;
 
-	if (kernel_getpeername(sock, &saddr.addr) >= 0) {
-		switch (saddr.addr.sa_family) {
-		case AF_INET:
-			sport = ntohs(saddr.sin.sin_port);
-			break;
-		case AF_INET6:
-			sport = ntohs(saddr.sin6.sin6_port);
-			break;
-		default:
-			sport = -1;
-		}
-	} else {
-		sport = -1;
-	}
+	if (!sk)
+		return -1;
 
-	return sport;
+	return ntohs(READ_ONCE(inet_sk(sk)->inet_dport));
 }
 
 /* rds_tcp_accept_one_path(): if accepting on cp_index > 0, make sure the
  * client's ipaddr < server's ipaddr. Otherwise, close the accepted
- * socket and force a reconneect from smaller -> larger ip addr. The reason
+ * socket and force a reconnect from smaller -> larger ip addr. The reason
  * we special case cp_index 0 is to allow the rds probe ping itself to itself
  * get through efficiently.
  */
@@ -161,7 +143,7 @@ void rds_tcp_conn_slots_available(struct rds_connection *conn, bool fan_out)
 	 *
 	 * Doing so is necessary to address the case where an
 	 * incoming connection on "rds_tcp_listen_sock" is ready
-	 * to be acccepted prior to a free slot being available:
+	 * to be accepted prior to a free slot being available:
 	 * the -ENOBUFS case in "rds_tcp_accept_one".
 	 */
 	rds_tcp_accept_work(rtn);
@@ -313,7 +295,11 @@ int rds_tcp_accept_one(struct rds_tcp_net *rtn)
 	if (rs_tcp->t_sock) {
 		/* Duelling SYN has been handled in rds_tcp_accept_one() */
 		rds_tcp_reset_callbacks(new_sock, cp);
-		/* rds_connect_path_complete() marks RDS_CONN_UP */
+		/* rds_connect_path_complete() marks RDS_CONN_UP, or,
+		 * if a concurrent shutdown won the duel, drops the
+		 * path again and the pass that drop queues reaps the
+		 * socket installed above.
+		 */
 		rds_connect_path_complete(cp, RDS_CONN_RESETTING);
 	} else {
 		rds_tcp_set_callbacks(new_sock, cp);

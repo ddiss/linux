@@ -6,6 +6,8 @@
 #include "xe_sync.h"
 
 #include <linux/dma-fence-array.h>
+#include <linux/dma-fence-unwrap.h>
+#include <linux/error-injection.h>
 #include <linux/kthread.h>
 #include <linux/sched/mm.h>
 #include <linux/uaccess.h>
@@ -146,8 +148,10 @@ int xe_sync_entry_parse(struct xe_device *xe, struct xe_file *xef,
 
 		if (!signal) {
 			sync->fence = drm_syncobj_fence_get(sync->syncobj);
-			if (XE_IOCTL_DBG(xe, !sync->fence))
-				return -EINVAL;
+			if (XE_IOCTL_DBG(xe, !sync->fence)) {
+				err = -EINVAL;
+				goto free_sync;
+			}
 		}
 		break;
 
@@ -167,17 +171,21 @@ int xe_sync_entry_parse(struct xe_device *xe, struct xe_file *xef,
 
 		if (signal) {
 			sync->chain_fence = dma_fence_chain_alloc();
-			if (!sync->chain_fence)
-				return -ENOMEM;
+			if (!sync->chain_fence) {
+				err = -ENOMEM;
+				goto free_sync;
+			}
 		} else {
 			sync->fence = drm_syncobj_fence_get(sync->syncobj);
-			if (XE_IOCTL_DBG(xe, !sync->fence))
-				return -EINVAL;
+			if (XE_IOCTL_DBG(xe, !sync->fence)) {
+				err = -EINVAL;
+				goto free_sync;
+			}
 
 			err = dma_fence_chain_find_seqno(&sync->fence,
 							 sync_in.timeline_value);
 			if (err)
-				return err;
+				goto free_sync;
 		}
 		break;
 
@@ -200,8 +208,10 @@ int xe_sync_entry_parse(struct xe_device *xe, struct xe_file *xef,
 			if (XE_IOCTL_DBG(xe, IS_ERR(sync->ufence)))
 				return PTR_ERR(sync->ufence);
 			sync->ufence_chain_fence = dma_fence_chain_alloc();
-			if (!sync->ufence_chain_fence)
-				return -ENOMEM;
+			if (!sync->ufence_chain_fence) {
+				err = -ENOMEM;
+				goto free_sync;
+			}
 			sync->ufence_syncobj = ufence_syncobj;
 		}
 
@@ -216,16 +226,44 @@ int xe_sync_entry_parse(struct xe_device *xe, struct xe_file *xef,
 	sync->timeline_value = sync_in.timeline_value;
 
 	return 0;
+
+free_sync:
+	xe_sync_entry_cleanup(sync);
+	return err;
 }
 ALLOW_ERROR_INJECTION(xe_sync_entry_parse, ERRNO);
 
 int xe_sync_entry_add_deps(struct xe_sync_entry *sync, struct xe_sched_job *job)
 {
-	if (sync->fence)
-		return  drm_sched_job_add_dependency(&job->drm,
-						     dma_fence_get(sync->fence));
+	struct dma_fence_unwrap iter;
+	struct dma_fence *fence;
+	int err = 0;
 
-	return 0;
+	if (!sync->fence)
+		return 0;
+
+	/*
+	 * Unwrap fence containers (e.g. dma_fence_chain from a timeline
+	 * syncobj) so the scheduler sees the underlying fences. That lets it
+	 * drop dependencies on jobs from the same entity and only wait for
+	 * jobs on the same scheduler to be scheduled, rather than waiting for
+	 * the container, which forces a full GPU completion wait and drains
+	 * the queue.
+	 */
+	dma_fence_unwrap_for_each(fence, &iter, sync->fence) {
+		/*
+		 * There is no dma_fence_unwrap_stop() helper to drop the
+		 * reference the iterator holds, so keep iterating without
+		 * doing anything once an error has occurred.
+		 */
+		if (err || dma_fence_is_signaled(fence))
+			continue;
+
+		err = drm_sched_job_add_dependency(&job->drm,
+						   dma_fence_get(fence));
+	}
+
+	return err;
 }
 
 /**
@@ -333,15 +371,9 @@ xe_sync_in_fence_get(struct xe_sync_entry *sync, int num_sync,
 			return ERR_PTR(-EOPNOTSUPP);
 
 	if (q->flags & EXEC_QUEUE_FLAG_VM) {
-		struct xe_exec_queue *__q;
-		struct xe_tile *tile;
-		u8 id;
-
-		for_each_tile(tile, vm->xe, id) {
+		num_fence++;
+		for_each_tlb_inval(q, i)
 			num_fence++;
-			for_each_tlb_inval(i)
-				num_fence++;
-		}
 
 		fences = kmalloc_objs(*fences, num_fence);
 		if (!fences)
@@ -349,22 +381,14 @@ xe_sync_in_fence_get(struct xe_sync_entry *sync, int num_sync,
 
 		fences[current_fence++] =
 			xe_exec_queue_last_fence_get(q, vm);
-		for_each_tlb_inval(i)
+		for_each_tlb_inval(q, i)
 			fences[current_fence++] =
 				xe_exec_queue_tlb_inval_last_fence_get(q, vm, i);
-		list_for_each_entry(__q, &q->multi_gt_list,
-				    multi_gt_link) {
-			fences[current_fence++] =
-				xe_exec_queue_last_fence_get(__q, vm);
-			for_each_tlb_inval(i)
-				fences[current_fence++] =
-					xe_exec_queue_tlb_inval_last_fence_get(__q, vm, i);
-		}
 
 		xe_assert(vm->xe, current_fence == num_fence);
 		cf = dma_fence_array_create(num_fence, fences,
 					    dma_fence_context_alloc(1),
-					    1, false);
+					    1);
 		if (!cf)
 			goto err_out;
 

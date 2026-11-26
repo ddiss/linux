@@ -10,7 +10,6 @@
 #include <linux/kernel.h>
 #include <linux/linear_range.h>
 #include <linux/interrupt.h>
-#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/power_supply.h>
@@ -642,7 +641,7 @@ static int rt9756_register_psy(struct rt9756_data *data)
 	if (IS_ERR(data->bat_psy))
 		return dev_err_probe(dev, PTR_ERR(data->bat_psy), "Failed to register battery\n");
 
-	supplied_to = devm_kzalloc(dev, sizeof(*supplied_to), GFP_KERNEL);
+	supplied_to = devm_kzalloc_obj(dev, *supplied_to);
 	if (!supplied_to)
 		return -ENOMEM;
 
@@ -861,7 +860,7 @@ static int rt9756_probe(struct i2c_client *i2c)
 	if (!dev_data)
 		return dev_err_probe(dev, -EINVAL, "No device data found\n");
 
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc_obj(dev, *data);
 	if (!data)
 		return -ENOMEM;
 

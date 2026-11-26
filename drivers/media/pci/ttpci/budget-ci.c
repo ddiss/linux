@@ -249,6 +249,7 @@ static void msp430_ir_deinit(struct budget_ci *budget_ci)
 	cancel_work_sync(&budget_ci->ir.msp430_irq_bh_work);
 
 	rc_unregister_device(budget_ci->ir.dev);
+	rc_free_device(budget_ci->ir.dev);
 }
 
 static int ciintf_read_attribute_mem(struct dvb_ca_en50221 *ca, int slot, int address)
@@ -1536,9 +1537,7 @@ static const struct pci_device_id pci_tbl[] = {
 	MAKE_EXTENSION_PCI(ttc1501, 0x13c2, 0x101a),
 	MAKE_EXTENSION_PCI(tt3200, 0x13c2, 0x1019),
 	MAKE_EXTENSION_PCI(ttbs1500b, 0x13c2, 0x101b),
-	{
-	 .vendor = 0,
-	}
+	{ }
 };
 
 MODULE_DEVICE_TABLE(pci, pci_tbl);

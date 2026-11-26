@@ -270,8 +270,7 @@ static struct i2c_adapter_quirks cp2615_i2c_quirks = {
 	.max_comb_2nd_msg_len = MAX_I2C_SIZE
 };
 
-static void
-cp2615_i2c_remove(struct usb_interface *usbif)
+static void cp2615_i2c_disconnect(struct usb_interface *usbif)
 {
 	struct i2c_adapter *adap = usb_get_intfdata(usbif);
 
@@ -294,9 +293,12 @@ cp2615_i2c_probe(struct usb_interface *usbif, const struct usb_device_id *id)
 	if (ret)
 		return ret;
 
-	adap = devm_kzalloc(&usbif->dev, sizeof(struct i2c_adapter), GFP_KERNEL);
+	adap = devm_kzalloc_obj(&usbif->dev, struct i2c_adapter);
 	if (!adap)
 		return -ENOMEM;
+
+	if (!usbdev->serial)
+		return -EINVAL;
 
 	strscpy(adap->name, usbdev->serial, sizeof(adap->name));
 	adap->owner = THIS_MODULE;
@@ -325,7 +327,7 @@ MODULE_DEVICE_TABLE(usb, id_table);
 static struct usb_driver cp2615_i2c_driver = {
 	.name = "i2c-cp2615",
 	.probe = cp2615_i2c_probe,
-	.disconnect = cp2615_i2c_remove,
+	.disconnect = cp2615_i2c_disconnect,
 	.id_table = id_table,
 };
 

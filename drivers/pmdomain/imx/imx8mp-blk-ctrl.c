@@ -153,7 +153,7 @@ static int imx8mp_hsio_blk_ctrl_probe(struct imx8mp_blk_ctrl *bc)
 	struct clk_init_data init = {};
 	int ret;
 
-	clk_hsio_pll = devm_kzalloc(bc->dev, sizeof(*clk_hsio_pll), GFP_KERNEL);
+	clk_hsio_pll = devm_kzalloc_obj(bc->dev, *clk_hsio_pll);
 	if (!clk_hsio_pll)
 		return -ENOMEM;
 
@@ -352,9 +352,6 @@ static void imx8mp_hdmi_blk_ctrl_power_on(struct imx8mp_blk_ctrl *bc,
 		regmap_set_bits(bc->regmap, HDMI_RTX_RESET_CTL0, BIT(12));
 		regmap_clear_bits(bc->regmap, HDMI_TX_CONTROL0, BIT(3));
 		break;
-	case IMX8MP_HDMIBLK_PD_HDCP:
-		regmap_set_bits(bc->regmap, HDMI_RTX_CLK_CTL0, BIT(11));
-		break;
 	case IMX8MP_HDMIBLK_PD_HRV:
 		regmap_set_bits(bc->regmap, HDMI_RTX_CLK_CTL1, BIT(3) | BIT(4) | BIT(5));
 		regmap_set_bits(bc->regmap, HDMI_RTX_RESET_CTL0, BIT(15));
@@ -408,9 +405,6 @@ static void imx8mp_hdmi_blk_ctrl_power_off(struct imx8mp_blk_ctrl *bc,
 		regmap_clear_bits(bc->regmap, HDMI_RTX_CLK_CTL0, BIT(7));
 		regmap_clear_bits(bc->regmap, HDMI_RTX_CLK_CTL1, BIT(22) | BIT(24));
 		break;
-	case IMX8MP_HDMIBLK_PD_HDCP:
-		regmap_clear_bits(bc->regmap, HDMI_RTX_CLK_CTL0, BIT(11));
-		break;
 	case IMX8MP_HDMIBLK_PD_HRV:
 		regmap_clear_bits(bc->regmap, HDMI_RTX_RESET_CTL0, BIT(15));
 		regmap_clear_bits(bc->regmap, HDMI_RTX_CLK_CTL1, BIT(3) | BIT(4) | BIT(5));
@@ -439,7 +433,7 @@ static int imx8mp_hdmi_power_notifier(struct notifier_block *nb,
 	regmap_write(bc->regmap, HDMI_RTX_CLK_CTL0, 0x0);
 	regmap_write(bc->regmap, HDMI_RTX_CLK_CTL1, 0x0);
 	regmap_set_bits(bc->regmap, HDMI_RTX_CLK_CTL0,
-			BIT(0) | BIT(1) | BIT(10));
+			BIT(0) | BIT(1) | BIT(10) | BIT(11));
 	regmap_set_bits(bc->regmap, HDMI_RTX_RESET_CTL0, BIT(0));
 
 	/*
@@ -628,7 +622,7 @@ static int imx8mp_blk_ctrl_probe(struct platform_device *pdev)
 		.reg_stride	= 4,
 	};
 
-	bc = devm_kzalloc(dev, sizeof(*bc), GFP_KERNEL);
+	bc = devm_kzalloc_obj(dev, *bc);
 	if (!bc)
 		return -ENOMEM;
 
@@ -647,16 +641,14 @@ static int imx8mp_blk_ctrl_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(bc->regmap),
 				     "failed to init regmap\n");
 
-	bc->domains = devm_kcalloc(dev, num_domains,
-				   sizeof(struct imx8mp_blk_ctrl_domain),
-				   GFP_KERNEL);
+	bc->domains = devm_kzalloc_objs(dev, struct imx8mp_blk_ctrl_domain,
+					num_domains);
 	if (!bc->domains)
 		return -ENOMEM;
 
 	bc->onecell_data.num_domains = num_domains;
 	bc->onecell_data.domains =
-		devm_kcalloc(dev, num_domains,
-			     sizeof(struct generic_pm_domain *), GFP_KERNEL);
+		devm_kzalloc_objs(dev, struct generic_pm_domain *, num_domains);
 	if (!bc->onecell_data.domains)
 		return -ENOMEM;
 
@@ -896,4 +888,5 @@ static struct platform_driver imx8mp_blk_ctrl_driver = {
 	},
 };
 module_platform_driver(imx8mp_blk_ctrl_driver);
+MODULE_DESCRIPTION("NXP i.MX8MP power domain driver");
 MODULE_LICENSE("GPL");

@@ -277,7 +277,7 @@ static int tps6131x_init_chip(struct tps6131x *tps6131x)
 	if (ret)
 		return ret;
 
-	val = TPS6131X_REG_6_ENTS;
+	val = TPS6131X_REG_6_ENTS | (TPS6131X_OV_4950MV << TPS6131X_REG_6_OV_SHIFT);
 
 	ret = regmap_write(tps6131x->regmap, TPS6131X_REG_6, val);
 	if (ret)
@@ -741,7 +741,7 @@ static int tps6131x_probe(struct i2c_client *client)
 	struct tps6131x *tps6131x;
 	int ret;
 
-	tps6131x = devm_kzalloc(&client->dev, sizeof(*tps6131x), GFP_KERNEL);
+	tps6131x = devm_kzalloc_obj(&client->dev, *tps6131x);
 	if (!tps6131x)
 		return -ENOMEM;
 

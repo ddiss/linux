@@ -8,7 +8,6 @@
 
 #include <uapi/linux/mdio.h>
 #include <linux/bitfield.h>
-#include <linux/mod_devicetable.h>
 
 struct gpio_desc;
 struct mii_bus;
@@ -85,6 +84,11 @@ static inline void mdiodev_set_drvdata(struct mdio_device *mdio, void *data)
 static inline void *mdiodev_get_drvdata(struct mdio_device *mdio)
 {
 	return dev_get_drvdata(&mdio->dev);
+}
+
+static inline bool mdiodev_has_reset(struct mdio_device *mdio)
+{
+	return (mdio->reset_gpio || mdio->reset_ctrl);
 }
 
 void mdio_device_free(struct mdio_device *mdiodev);
@@ -688,8 +692,6 @@ static inline int mdiodev_c45_write(struct mdio_device *mdiodev, u32 devad,
 				 val);
 }
 
-int mdiobus_register_device(struct mdio_device *mdiodev);
-int mdiobus_unregister_device(struct mdio_device *mdiodev);
 bool mdiobus_is_registered_device(struct mii_bus *bus, int addr);
 struct phy_device *mdiobus_get_phy(struct mii_bus *bus, int addr);
 

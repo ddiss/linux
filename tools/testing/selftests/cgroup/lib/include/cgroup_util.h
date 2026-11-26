@@ -2,12 +2,14 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
+#ifndef BUF_SIZE
+#define BUF_SIZE 4096
 #endif
 
 #define MB(x) (x << 20)
+#define GB(x) ((unsigned long long)(x) << 30)
 
+#define NSEC_PER_USEC	1000L
 #define USEC_PER_SEC	1000000L
 #define NSEC_PER_SEC	1000000000L
 
@@ -18,6 +20,9 @@
 #define CG_PATH_FORMAT (!cg_test_v1_named ? "0::%s" : (":name=" CG_NAMED_NAME ":%s"))
 
 #define DEFAULT_WAIT_INTERVAL_US (100 * 1000) /* 100 ms */
+
+/* from include/linux/memcontrol.h, which userspace cannot include */
+#define MEMCG_CHARGE_BATCH	64
 
 /*
  * Checks if two given values differ by less than err% of their sum.
@@ -61,6 +66,8 @@ extern int cg_read(const char *cgroup, const char *control,
 		   char *buf, size_t len);
 extern int cg_read_strcmp(const char *cgroup, const char *control,
 			  const char *expected);
+extern int cg_read_strcmp_wait(const char *cgroup, const char *control,
+				   const char *expected);
 extern int cg_read_strstr(const char *cgroup, const char *control,
 			  const char *needle);
 extern long cg_read_long(const char *cgroup, const char *control);

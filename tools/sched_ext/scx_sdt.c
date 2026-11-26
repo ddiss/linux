@@ -20,7 +20,7 @@ const char help_fmt[] =
 "\n"
 "Modified version of scx_simple that demonstrates arena-based data structures.\n"
 "\n"
-"Usage: %s [-f] [-v]\n"
+"Usage: %s [-v]\n"
 "\n"
 "  -v            Print libbpf debug messages\n"
 "  -h            Display this help and exit\n";
@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 {
 	struct scx_sdt *skel;
 	struct bpf_link *link;
-	__u32 opt;
+	__s32 opt;
 	__u64 ecode;
 
 	libbpf_set_print(libbpf_print_fn);
@@ -54,7 +54,7 @@ restart:
 	optind = 1;
 	skel = SCX_OPS_OPEN(sdt_ops, scx_sdt);
 
-	while ((opt = getopt(argc, argv, "fvh")) != -1) {
+	while ((opt = getopt(argc, argv, "vh")) != -1) {
 		switch (opt) {
 		case 'v':
 			verbose = true;
@@ -96,7 +96,7 @@ restart:
 	ecode = UEI_REPORT(skel, uei);
 	scx_sdt__destroy(skel);
 
-	if (UEI_ECODE_RESTART(ecode))
+	if (!exit_req && UEI_ECODE_RESTART(ecode))
 		goto restart;
 	return 0;
 }

@@ -5,7 +5,6 @@
 #define pr_fmt(fmt) "clk-ast2600: " fmt
 
 #include <linux/mfd/syscon.h>
-#include <linux/mod_devicetable.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -426,8 +425,8 @@ static struct clk_hw *aspeed_g6_clk_hw_register_gate(struct device *dev,
 		struct regmap *map, u8 clock_idx, u8 reset_idx,
 		u8 clk_gate_flags, spinlock_t *lock)
 {
+	struct clk_init_data init = {};
 	struct aspeed_clk_gate *gate;
-	struct clk_init_data init;
 	struct clk_hw *hw;
 	int ret;
 
@@ -493,7 +492,7 @@ static int aspeed_g6_clk_probe(struct platform_device *pdev)
 		return PTR_ERR(map);
 	}
 
-	ar = devm_kzalloc(dev, sizeof(*ar), GFP_KERNEL);
+	ar = devm_kzalloc_obj(dev, *ar);
 	if (!ar)
 		return -ENOMEM;
 

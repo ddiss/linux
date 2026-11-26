@@ -253,7 +253,8 @@ int amdgpu_vce_sw_fini(struct amdgpu_device *adev)
 	if (adev->vce.vcpu_bo == NULL)
 		return 0;
 
-	drm_sched_entity_destroy(&adev->vce.entity);
+	if (adev->vce.entity.rq)
+		drm_sched_entity_destroy(&adev->vce.entity);
 
 	for (i = 0; i < adev->vce.num_rings; i++)
 		amdgpu_ring_fini(&adev->vce.ring[i]);
@@ -451,24 +452,6 @@ void amdgpu_vce_free_handles(struct amdgpu_device *adev, struct drm_file *filp)
 }
 
 /**
- * amdgpu_vce_required_gart_pages() - gets number of GART pages required by VCE
- *
- * @adev: amdgpu_device pointer
- *
- * Returns how many GART pages we need before GTT for the VCE IP block.
- * For VCE1, see vce_v1_0_ensure_vcpu_bo_32bit_addr for details.
- * For VCE2+, this is not needed so return zero.
- */
-u32 amdgpu_vce_required_gart_pages(struct amdgpu_device *adev)
-{
-	/* VCE IP block not added yet, so can't use amdgpu_ip_version */
-	if (adev->family == AMDGPU_FAMILY_SI)
-		return 512;
-
-	return 0;
-}
-
-/**
  * amdgpu_vce_get_create_msg - generate a VCE create msg
  *
  * @ring: ring we should submit the msg to
@@ -488,10 +471,11 @@ static int amdgpu_vce_get_create_msg(struct amdgpu_ring *ring, uint32_t handle,
 	uint64_t addr;
 	int i, r;
 
-	r = amdgpu_job_alloc_with_ib(ring->adev, &ring->adev->vce.entity,
+	r = amdgpu_job_alloc_with_ib(ring->adev, NULL,
 				     AMDGPU_FENCE_OWNER_UNDEFINED,
 				     ib_size_dw * 4, AMDGPU_IB_POOL_DIRECT,
-				     &job, AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
+				     AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST,
+				     &job);
 	if (r)
 		return r;
 
@@ -578,12 +562,14 @@ static int amdgpu_vce_get_destroy_msg(struct amdgpu_ring *ring, uint32_t handle,
 	struct dma_fence *f = NULL;
 	int i, r;
 
-	r = amdgpu_job_alloc_with_ib(ring->adev, &ring->adev->vce.entity,
+	r = amdgpu_job_alloc_with_ib(ring->adev,
+				     direct ? NULL : &ring->adev->vce.entity,
 				     AMDGPU_FENCE_OWNER_UNDEFINED,
 				     ib_size_dw * 4,
 				     direct ? AMDGPU_IB_POOL_DIRECT :
-				     AMDGPU_IB_POOL_DELAYED, &job,
-				     AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST);
+				     AMDGPU_IB_POOL_DELAYED,
+				     AMDGPU_KERNEL_JOB_ID_VCN_RING_TEST,
+				     &job);
 	if (r)
 		return r;
 
@@ -698,6 +684,9 @@ static int amdgpu_vce_cs_reloc(struct amdgpu_cs_parser *p, struct amdgpu_ib *ib,
 	uint64_t addr;
 	int r;
 
+	if (lo >= ib->length_dw || hi >= ib->length_dw)
+		return -EINVAL;
+
 	if (index == 0xffffffff)
 		index = 0;
 
@@ -787,6 +776,7 @@ int amdgpu_vce_ring_parse_cs(struct amdgpu_cs_parser *p,
 	uint32_t allocated = 0;
 	uint32_t tmp, handle = 0;
 	uint32_t dummy = 0xffffffff;
+	uint32_t luma_pitch, chroma_pitch, height;
 	uint32_t *size = &dummy;
 	unsigned int idx;
 	int i, r = 0;
@@ -892,9 +882,20 @@ int amdgpu_vce_ring_parse_cs(struct amdgpu_cs_parser *p,
 				goto out;
 			}
 
-			*size = amdgpu_ib_get_value(ib, idx + 8) *
-				amdgpu_ib_get_value(ib, idx + 10) *
-				8 * 3 / 2;
+			luma_pitch = amdgpu_ib_get_value(ib, idx + 8);
+			chroma_pitch = amdgpu_ib_get_value(ib, idx + 9);
+			height = amdgpu_ib_get_value(ib, idx + 10); /* encRefYHeightInQw */
+
+			if (luma_pitch == 0 || chroma_pitch == 0 || height == 0 ||
+			    luma_pitch > 4096 || chroma_pitch > 4096 || height > 2304 / 8) {
+				DRM_ERROR("invalid VCE ref image size: (%u %u)x%u\n",
+					  luma_pitch, chroma_pitch, height * 8);
+				r = -EINVAL;
+				goto out;
+			}
+
+			*size = luma_pitch * height * 8 + chroma_pitch * height * 8 / 2;
+
 			break;
 
 		case 0x04000001: /* config extension */
@@ -922,13 +923,25 @@ int amdgpu_vce_ring_parse_cs(struct amdgpu_cs_parser *p,
 			break;
 
 		case 0x03000001: /* encode */
+			height = amdgpu_ib_get_value(ib, idx + 13);
+			luma_pitch = amdgpu_ib_get_value(ib, idx + 14);
+			chroma_pitch = amdgpu_ib_get_value(ib, idx + 15);
+
+			if (luma_pitch == 0 || chroma_pitch == 0 || height == 0 ||
+			    luma_pitch > 4096 || chroma_pitch > 4096 || height > 2304) {
+				DRM_ERROR("invalid VCE image size: (%u %u)x%u\n",
+					  luma_pitch, chroma_pitch, height);
+				r = -EINVAL;
+				goto out;
+			}
+
 			r = amdgpu_vce_cs_reloc(p, ib, idx + 10, idx + 9,
-						*size, 0);
+						luma_pitch * height, 0);
 			if (r)
 				goto out;
 
 			r = amdgpu_vce_cs_reloc(p, ib, idx + 12, idx + 11,
-						*size / 3, 0);
+						chroma_pitch * height / 2, 0);
 			if (r)
 				goto out;
 			break;

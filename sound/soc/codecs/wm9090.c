@@ -566,7 +566,7 @@ static int wm9090_i2c_probe(struct i2c_client *i2c)
 	unsigned int reg;
 	int ret;
 
-	wm9090 = devm_kzalloc(&i2c->dev, sizeof(*wm9090), GFP_KERNEL);
+	wm9090 = devm_kzalloc_obj(&i2c->dev, *wm9090);
 	if (!wm9090)
 		return -ENOMEM;
 
@@ -607,8 +607,8 @@ static int wm9090_i2c_probe(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id wm9090_id[] = {
-	{ "wm9090" },
-	{ "wm9093" },
+	{ .name = "wm9090" },
+	{ .name = "wm9093" },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, wm9090_id);

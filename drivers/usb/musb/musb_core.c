@@ -1600,7 +1600,7 @@ static int musb_core_init(u16 musb_type, struct musb *musb)
 	/* log core options (read using indexed model) */
 	reg = musb_read_configdata(mbase);
 
-	strcpy(aInfo, (reg & MUSB_CONFIGDATA_UTMIDW) ? "UTMI-16" : "UTMI-8");
+	strscpy(aInfo, (reg & MUSB_CONFIGDATA_UTMIDW) ? "UTMI-16" : "UTMI-8");
 	if (reg & MUSB_CONFIGDATA_DYNFIFO) {
 		strcat(aInfo, ", dyn FIFOs");
 		musb->dyn_fifo = true;
@@ -2144,7 +2144,7 @@ static struct musb *allocate_instance(struct device *dev,
 	int			epnum;
 	int			ret;
 
-	musb = devm_kzalloc(dev, sizeof(*musb), GFP_KERNEL);
+	musb = devm_kzalloc_obj(dev, *musb);
 	if (!musb)
 		return NULL;
 
@@ -2257,7 +2257,7 @@ int musb_queue_resume_work(struct musb *musb,
 	is_suspended = musb->is_runtime_suspended;
 
 	if (is_suspended) {
-		w = devm_kzalloc(musb->controller, sizeof(*w), GFP_ATOMIC);
+		w = devm_kzalloc_obj(musb->controller, *w, GFP_ATOMIC);
 		if (!w) {
 			error = -ENOMEM;
 			goto out_unlock;

@@ -13,7 +13,6 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/timekeeping.h>
-#include <linux/mod_devicetable.h>
 
 #define PM8916_PERPH_TYPE 0x04
 #define PM8916_BMS_VM_TYPE 0x020D
@@ -153,7 +152,7 @@ static int pm8916_bms_vm_battery_probe(struct platform_device *pdev)
 	int ret, irq;
 	unsigned int tmp;
 
-	bat = devm_kzalloc(dev, sizeof(*bat), GFP_KERNEL);
+	bat = devm_kzalloc_obj(dev, *bat);
 	if (!bat)
 		return -ENOMEM;
 

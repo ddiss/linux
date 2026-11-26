@@ -5,6 +5,7 @@
  * Copyright (C) 2024 Renesas Electronics Corp.
  */
 
+#include <linux/auxiliary_bus.h>
 #include <linux/bitfield.h>
 #include <linux/cleanup.h>
 #include <linux/io.h>
@@ -45,7 +46,7 @@ static int rz_sysc_soc_init(struct rz_sysc *sysc, const struct of_device_id *mat
 		size = sizeof(soc_id);
 	strscpy(soc_id, soc_id_start, size);
 
-	soc_dev_attr = devm_kzalloc(sysc->dev, sizeof(*soc_dev_attr), GFP_KERNEL);
+	soc_dev_attr = devm_kzalloc_obj(sysc->dev, *soc_dev_attr);
 	if (!soc_dev_attr)
 		return -ENOMEM;
 
@@ -88,6 +89,9 @@ static const struct of_device_id rz_sysc_match[] = {
 #ifdef CONFIG_SYSC_R9A08G045
 	{ .compatible = "renesas,r9a08g045-sysc", .data = &rzg3s_sysc_init_data },
 #endif
+#ifdef CONFIG_SYSC_R9A08G046
+	{ .compatible = "renesas,r9a08g046-sysc", .data = &rzg3l_sysc_init_data },
+#endif
 #ifdef CONFIG_SYS_R9A09G047
 	{ .compatible = "renesas,r9a09g047-sys", .data = &rzg3e_sys_init_data },
 #endif
@@ -120,7 +124,7 @@ static int rz_sysc_probe(struct platform_device *pdev)
 
 	data = match->data;
 
-	sysc = devm_kzalloc(dev, sizeof(*sysc), GFP_KERNEL);
+	sysc = devm_kzalloc_obj(dev, *sysc);
 	if (!sysc)
 		return -ENOMEM;
 
@@ -145,6 +149,10 @@ static int rz_sysc_probe(struct platform_device *pdev)
 	regmap = devm_regmap_init_mmio(dev, sysc->base, regmap_cfg);
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
+
+	if (data->soc_id_init_data->pwrrdy_pwrseq &&
+	    !devm_auxiliary_device_create(dev, "pwrseq-pwrrdy", regmap))
+		return -ENODEV;
 
 	return of_syscon_register_regmap(dev->of_node, regmap);
 }

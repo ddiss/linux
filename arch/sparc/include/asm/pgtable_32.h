@@ -40,9 +40,6 @@ void load_mmu(void);
 unsigned long calc_highpages(void);
 unsigned long __init bootmem_init(unsigned long *pages_avail);
 
-#define pte_ERROR(e)   __builtin_trap()
-#define pmd_ERROR(e)   __builtin_trap()
-#define pgd_ERROR(e)   __builtin_trap()
 
 #define PTRS_PER_PTE    	64
 #define PTRS_PER_PMD    	64
@@ -70,14 +67,6 @@ extern unsigned long ptr_in_current_pgd;
  */
 extern unsigned long phys_base;
 extern unsigned long pfn_base;
-
-/*
- * ZERO_PAGE is a global shared page that is always zero: used
- * for zero-mapped memory areas etc..
- */
-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
-
-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
 
 /*
  * In general all page table modifications should use the V8 atomic

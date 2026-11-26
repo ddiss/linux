@@ -13,7 +13,6 @@
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/ioport.h>
-#include <linux/mod_devicetable.h>
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
@@ -458,7 +457,7 @@ static int mali_c55_media_frameworks_init(struct mali_c55 *mali_c55)
 	if (ret) {
 		dev_err(mali_c55->dev, "failed to register V4L2 device\n");
 		goto err_unregister_media_device;
-	};
+	}
 
 	mali_c55->notifier.ops = &mali_c55_notifier_ops;
 	v4l2_async_nf_init(&mali_c55->notifier, &mali_c55->v4l2_dev);
@@ -511,11 +510,16 @@ bool mali_c55_pipeline_ready(struct mali_c55 *mali_c55)
 	struct mali_c55_params *params = &mali_c55->params;
 	struct mali_c55_stats *stats = &mali_c55->stats;
 
-	return vb2_start_streaming_called(&fr->queue) &&
+	/* Only wait for queues connected through enabled media links. */
+	return (!media_pad_remote_pad_first(&fr->pad) ||
+		vb2_start_streaming_called(&fr->queue)) &&
 	       (!(mali_c55->capabilities & MALI_C55_GPS_DS_PIPE_FITTED) ||
+		!media_pad_remote_pad_first(&ds->pad) ||
 		vb2_start_streaming_called(&ds->queue)) &&
-	       vb2_start_streaming_called(&params->queue) &&
-	       vb2_start_streaming_called(&stats->queue);
+	       (!media_pad_remote_pad_first(&params->pad) ||
+		vb2_start_streaming_called(&params->queue)) &&
+	       (!media_pad_remote_pad_first(&stats->pad) ||
+		vb2_start_streaming_called(&stats->queue));
 }
 
 static int mali_c55_check_hwcfg(struct mali_c55 *mali_c55)
@@ -663,41 +667,6 @@ static int mali_c55_init_context(struct mali_c55 *mali_c55,
 		      mali_c55->base + config_space_addrs[MALI_C55_CONFIG_PING],
 		      MALI_C55_CONFIG_SPACE_SIZE);
 
-	/*
-	 * Some features of the ISP need to be disabled by default and only
-	 * enabled at the same time as they're configured by a parameters buffer
-	 */
-
-	/* Bypass the sqrt and square compression and expansion modules */
-	mali_c55_ctx_update_bits(mali_c55, MALI_C55_REG_BYPASS_1,
-				 MALI_C55_REG_BYPASS_1_FE_SQRT,
-				 MALI_C55_REG_BYPASS_1_FE_SQRT);
-	mali_c55_ctx_update_bits(mali_c55, MALI_C55_REG_BYPASS_3,
-				 MALI_C55_REG_BYPASS_3_SQUARE_BE,
-				 MALI_C55_REG_BYPASS_3_SQUARE_BE);
-
-	/* Bypass the temper module */
-	mali_c55_ctx_write(mali_c55, MALI_C55_REG_BYPASS_2,
-			   MALI_C55_REG_BYPASS_2_TEMPER);
-
-	/* Disable the temper module's DMA read/write */
-	mali_c55_ctx_write(mali_c55, MALI_C55_REG_TEMPER_DMA_IO, 0x0);
-
-	/* Bypass the colour noise reduction  */
-	mali_c55_ctx_write(mali_c55, MALI_C55_REG_BYPASS_4,
-			   MALI_C55_REG_BYPASS_4_CNR);
-
-	/* Disable the sinter module */
-	mali_c55_ctx_update_bits(mali_c55, MALI_C55_REG_SINTER_CONFIG,
-				 MALI_C55_SINTER_ENABLE_MASK, 0);
-
-	/* Disable the RGB Gamma module for each output */
-	mali_c55_ctx_write(mali_c55, MALI_C55_REG_FR_GAMMA_RGB_ENABLE, 0);
-	mali_c55_ctx_write(mali_c55, MALI_C55_REG_DS_GAMMA_RGB_ENABLE, 0);
-
-	/* Disable the colour correction matrix */
-	mali_c55_ctx_write(mali_c55, MALI_C55_REG_CCM_ENABLE, 0);
-
 	return 0;
 }
 
@@ -734,6 +703,8 @@ static int __mali_c55_power_on(struct mali_c55 *mali_c55)
 					  mali_c55->resets);
 	if (ret) {
 		dev_err(mali_c55->dev, "failed to deassert resets\n");
+		clk_bulk_disable_unprepare(ARRAY_SIZE(mali_c55->clks),
+					   mali_c55->clks);
 		return ret;
 	}
 
@@ -764,8 +735,13 @@ static int __mali_c55_power_on(struct mali_c55 *mali_c55)
 	/* Set safe stop to ensure we're in a non-streaming state */
 	mali_c55_write(mali_c55, MALI_C55_REG_INPUT_MODE_REQUEST,
 		       MALI_C55_INPUT_SAFE_STOP);
-	readl_poll_timeout(mali_c55->base + MALI_C55_REG_MODE_STATUS,
-			   val, !val, 10 * USEC_PER_MSEC, 250 * USEC_PER_MSEC);
+	ret = readl_poll_timeout(mali_c55->base + MALI_C55_REG_MODE_STATUS,
+				 val, !val, 10 * USEC_PER_MSEC, 250 * USEC_PER_MSEC);
+	if (ret) {
+		dev_err(mali_c55->dev, "safe stop timed out\n");
+		__mali_c55_power_off(mali_c55);
+		return ret;
+	}
 
 	return 0;
 }
@@ -809,7 +785,7 @@ static int mali_c55_probe(struct platform_device *pdev)
 	struct resource *res;
 	int ret;
 
-	mali_c55 = devm_kzalloc(dev, sizeof(*mali_c55), GFP_KERNEL);
+	mali_c55 = devm_kzalloc_obj(dev, *mali_c55);
 	if (!mali_c55)
 		return -ENOMEM;
 
@@ -837,7 +813,7 @@ static int mali_c55_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to acquire resets\n");
 
-	of_reserved_mem_device_init(dev);
+	devm_of_reserved_mem_device_init(dev);
 	vb2_dma_contig_set_max_seg_size(dev, UINT_MAX);
 
 	ret = __mali_c55_power_on(mali_c55);
@@ -861,14 +837,13 @@ static int mali_c55_probe(struct platform_device *pdev)
 
 	ret = mali_c55_media_frameworks_init(mali_c55);
 	if (ret)
-		goto err_free_context_registers;
+		goto err_pm_runtime_disable;
 
 	pm_runtime_idle(&pdev->dev);
 
 	mali_c55->irqnum = platform_get_irq(pdev, 0);
 	if (mali_c55->irqnum < 0) {
 		ret = mali_c55->irqnum;
-		dev_err(dev, "failed to get interrupt\n");
 		goto err_deinit_media_frameworks;
 	}
 
@@ -876,12 +851,12 @@ static int mali_c55_probe(struct platform_device *pdev)
 
 err_deinit_media_frameworks:
 	mali_c55_media_frameworks_deinit(mali_c55);
+err_pm_runtime_disable:
+	pm_runtime_set_suspended(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-err_free_context_registers:
 	kfree(mali_c55->context.registers);
 err_power_off:
 	__mali_c55_power_off(mali_c55);
-
 	return ret;
 }
 
@@ -889,8 +864,13 @@ static void mali_c55_remove(struct platform_device *pdev)
 {
 	struct mali_c55 *mali_c55 = platform_get_drvdata(pdev);
 
-	kfree(mali_c55->context.registers);
 	mali_c55_media_frameworks_deinit(mali_c55);
+	if (!pm_runtime_suspended(&pdev->dev)) {
+		__mali_c55_power_off(mali_c55);
+		pm_runtime_set_suspended(&pdev->dev);
+	}
+	pm_runtime_disable(&pdev->dev);
+	kfree(mali_c55->context.registers);
 }
 
 static const struct of_device_id mali_c55_of_match[] = {

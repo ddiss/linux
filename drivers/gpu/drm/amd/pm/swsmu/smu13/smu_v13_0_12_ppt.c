@@ -25,6 +25,7 @@
 
 #include <linux/firmware.h>
 #include "amdgpu.h"
+#include "amdgpu_ip.h"
 #include "amdgpu_smu.h"
 #include "smu_v13_0_12_pmfw.h"
 #include "smu_v13_0_6_ppt.h"
@@ -48,6 +49,13 @@
 #undef pr_warn
 #undef pr_info
 #undef pr_debug
+
+#define hbm_stack_mask_valid(umc_mask) \
+	(((umc_mask) & 0x3) == 0x3)
+
+#define for_each_hbm_stack(stack_idx, umc_mask) \
+	for ((stack_idx) = 0; (umc_mask); \
+	     (umc_mask) >>= 2, (stack_idx)++) \
 
 #define SMU_13_0_12_FEA_MAP(smu_feature, smu_13_0_12_feature)                    \
 	[smu_feature] = { 1, (smu_13_0_12_feature) }
@@ -145,6 +153,7 @@ const struct cmn2asic_msg_mapping smu_v13_0_12_message_map[SMU_MSG_MAX_COUNT] = 
 	MSG_MAP(GetStaticMetricsTable,               PPSMC_MSG_GetStaticMetricsTable,           1),
 	MSG_MAP(GetSystemMetricsTable,               PPSMC_MSG_GetSystemMetricsTable,           1),
 	MSG_MAP(GetRASTableVersion,                  PPSMC_MSG_GetRasTableVersion,              0),
+	MSG_MAP(GetRmaStatus,                        PPSMC_MSG_GetRmaStatus,                    0),
 	MSG_MAP(GetBadPageCount,                     PPSMC_MSG_GetBadPageCount,                 0),
 	MSG_MAP(GetBadPageMcaAddr,                   PPSMC_MSG_GetBadPageMcaAddress,            0),
 	MSG_MAP(SetTimestamp,                        PPSMC_MSG_SetTimestamp,                    0),
@@ -262,8 +271,9 @@ static void smu_v13_0_12_init_xgmi_data(struct smu_context *smu,
 	int ret;
 
 	if (smu_table->tables[SMU_TABLE_SMU_METRICS].version >= 0x13) {
-		max_width = (uint8_t)static_metrics->MaxXgmiWidth;
-		max_speed = (uint16_t)static_metrics->MaxXgmiBitrate;
+		max_width = (uint8_t)SMUQ10_ROUND(static_metrics->MaxXgmiWidth);
+		max_speed =
+			(uint16_t)SMUQ10_ROUND(static_metrics->MaxXgmiBitrate);
 		ret = 0;
 	} else {
 		MetricsTable_t *metrics = (MetricsTable_t *)smu_table->metrics_table;
@@ -426,22 +436,19 @@ int smu_v13_0_12_get_smu_metrics_data(struct smu_context *smu,
 		*value = SMUQ10_ROUND(metrics->DramBandwidthUtilization);
 		break;
 	case METRICS_CURR_SOCKETPOWER:
-		*value = SMUQ10_ROUND(metrics->SocketPower) << 8;
+		*value = SMUQ10_TO_MILLIWATT(metrics->SocketPower);
 		break;
 	case METRICS_TEMPERATURE_HOTSPOT:
-		*value = SMUQ10_ROUND(metrics->MaxSocketTemperature) *
-			 SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+		*value = SMUQ10_TO_MILLICELSIUS(metrics->MaxSocketTemperature);
 		break;
 	case METRICS_TEMPERATURE_MEM:
-		*value = SMUQ10_ROUND(metrics->MaxHbmTemperature) *
-			 SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+		*value = SMUQ10_TO_MILLICELSIUS(metrics->MaxHbmTemperature);
 		break;
 	/* This is the max of all VRs and not just SOC VR.
 	 * No need to define another data type for the same.
 	 */
 	case METRICS_TEMPERATURE_VRSOC:
-		*value = SMUQ10_ROUND(metrics->MaxVrTemperature) *
-			 SMU_TEMPERATURE_UNITS_PER_CENTIGRADES;
+		*value = SMUQ10_TO_MILLICELSIUS(metrics->MaxVrTemperature);
 		break;
 	default:
 		*value = UINT_MAX;
@@ -471,9 +478,14 @@ static int smu_v13_0_12_get_system_metrics_table(struct smu_context *smu)
 	}
 
 	amdgpu_hdp_invalidate(smu->adev, NULL);
+
+	ret = smu_cmn_vram_cpy(smu, sys_table->cache.buffer,
+			       table->cpu_addr,
+			       smu_v13_0_12_get_system_metrics_size());
+	if (ret)
+		return ret;
+
 	smu_table_cache_update_time(sys_table, jiffies);
-	memcpy(sys_table->cache.buffer, table->cpu_addr,
-	       smu_v13_0_12_get_system_metrics_size());
 
 	return 0;
 }
@@ -673,6 +685,9 @@ int smu_v13_0_12_get_npm_data(struct smu_context *smu,
 	case AMDGPU_PP_SENSOR_NODEPOWER:
 		*value = SMUQ10_ROUND(metrics->NodePower);
 		break;
+	case AMDGPU_PP_SENSOR_NPMSTATUS:
+		*value = !!SMUQ10_ROUND(metrics->NodePower);
+		break;
 	case AMDGPU_PP_SENSOR_GPPTRESIDENCY:
 		*value = SMUQ10_ROUND(metrics->GlobalPPTResidencyAcc);
 		break;
@@ -681,6 +696,25 @@ int smu_v13_0_12_get_npm_data(struct smu_context *smu,
 	}
 
 	return ret;
+}
+
+u64 smu_v13_0_12_get_npm_cap(struct smu_context *smu)
+{
+	struct PPTable_t *pptable =
+		(struct PPTable_t *)smu->smu_table.driver_pptable;
+	u64 cap = 0;
+
+	if (!smu_v13_0_6_cap_supported(smu, SMU_CAP(NPM_METRICS)) ||
+	    !pptable->MaxNodePowerLimit)
+		return 0;
+
+	cap |= AMDGPU_NPM_CAP_R(AMDGPU_NPM_CAP_CUR_NODE_POWER_LIMIT);
+	cap |= AMDGPU_NPM_CAP_R(AMDGPU_NPM_CAP_NODE_POWER);
+	cap |= AMDGPU_NPM_CAP_R(AMDGPU_NPM_CAP_GLOBAL_PPT_RESID);
+	cap |= AMDGPU_NPM_CAP_R(AMDGPU_NPM_CAP_MAX_NODE_POWER_LIMIT);
+	cap |= AMDGPU_NPM_CAP_R(AMDGPU_NPM_CAP_NPM_STATUS);
+
+	return cap;
 }
 
 static ssize_t smu_v13_0_12_get_temp_metrics(struct smu_context *smu,
@@ -834,7 +868,7 @@ void smu_v13_0_12_get_gpu_metrics(struct smu_context *smu, void **table,
 				  struct smu_v13_0_6_gpu_metrics *gpu_metrics)
 {
 	struct amdgpu_device *adev = smu->adev;
-	int ret = 0, xcc_id, inst, i, j;
+	int ret = 0, xcc_id, inst, i, j, idx;
 	u8 num_jpeg_rings_gpu_metrics;
 	MetricsTable_t *metrics;
 
@@ -848,6 +882,31 @@ void smu_v13_0_12_get_gpu_metrics(struct smu_context *smu, void **table,
 	/* Reports max temperature of all voltage rails */
 	gpu_metrics->temperature_vrsoc =
 		SMUQ10_ROUND(metrics->MaxVrTemperature);
+
+	if (smu_v13_0_6_cap_supported(smu,
+				      SMU_CAP(TEMP_AID_XCD_HBM))) {
+		if (adev->umc.active_mask) {
+			u64 mask = adev->umc.active_mask;
+			int out_idx = 0;
+			int stack_idx;
+
+			if (unlikely(hweight64(mask) / 2 > SMU_13_0_6_MAX_HBM_STACKS)) {
+				dev_warn(adev->dev, "Invalid umc mask %lld\n", mask);
+			} else  {
+				for_each_hbm_stack(stack_idx, mask) {
+					if (!hbm_stack_mask_valid(mask))
+						continue;
+					gpu_metrics->temperature_hbm[out_idx++] =
+						metrics->HbmTemperature[stack_idx];
+				}
+			}
+		}
+		idx = 0;
+		for_each_inst(i, adev->aid_mask) {
+			gpu_metrics->temperature_aid[idx] = metrics->AidTemperature[i];
+			idx++;
+		}
+	}
 
 	gpu_metrics->average_gfx_activity =
 		SMUQ10_ROUND(metrics->SocketGfxBusy);
@@ -964,6 +1023,9 @@ void smu_v13_0_12_get_gpu_metrics(struct smu_context *smu, void **table,
 				[i] = SMUQ10_ROUND(
 				metrics->GfxclkBelowHostLimitTotalAcc[inst]);
 		}
+		if (smu_v13_0_6_cap_supported(smu,
+					      SMU_CAP(TEMP_AID_XCD_HBM)))
+			gpu_metrics->temperature_xcd[i] = metrics->XcdTemperature[inst];
 	}
 
 	gpu_metrics->xgmi_link_width = metrics->XgmiWidth;
@@ -975,140 +1037,4 @@ void smu_v13_0_12_get_gpu_metrics(struct smu_context *smu, void **table,
 const struct smu_temp_funcs smu_v13_0_12_temp_funcs = {
 	.temp_metrics_is_supported = smu_v13_0_12_is_temp_metrics_supported,
 	.get_temp_metrics = smu_v13_0_12_get_temp_metrics,
-};
-
-static int smu_v13_0_12_get_ras_table_version(struct amdgpu_device *adev,
-					      uint32_t *table_version)
-{
-	struct smu_context *smu = adev->powerplay.pp_handle;
-
-	return smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_GetRASTableVersion, 0, table_version);
-}
-
-static int smu_v13_0_12_get_badpage_count(struct amdgpu_device *adev, uint32_t *count,
-					  uint32_t timeout)
-{
-	struct smu_context *smu = adev->powerplay.pp_handle;
-	uint64_t end, now;
-	int ret = 0;
-
-	now = (uint64_t)ktime_to_ms(ktime_get());
-	end = now + timeout;
-	do {
-		ret = smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_GetBadPageCount, 0, count);
-		/* eeprom is not ready */
-		if (ret != -EBUSY)
-			return ret;
-		mdelay(10);
-		now = (uint64_t)ktime_to_ms(ktime_get());
-	} while (now < end);
-
-	dev_err(adev->dev,
-			 "smu get bad page count timeout!\n");
-	return ret;
-}
-
-static int smu_v13_0_12_set_timestamp(struct amdgpu_device *adev, uint64_t timestamp)
-{
-	struct smu_context *smu = adev->powerplay.pp_handle;
-
-	return smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_SetTimestamp, (uint32_t)timestamp, 0);
-}
-
-static int smu_v13_0_12_get_timestamp(struct amdgpu_device *adev,
-				      uint16_t index, uint64_t *timestamp)
-{
-	struct smu_context *smu = adev->powerplay.pp_handle;
-	uint32_t temp;
-	int ret;
-
-	ret = smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_GetTimestamp, index, &temp);
-	if (!ret)
-		*timestamp = temp;
-
-	return ret;
-}
-
-static int smu_v13_0_12_get_badpage_ipid(struct amdgpu_device *adev,
-					 uint16_t index, uint64_t *ipid)
-{
-	struct smu_context *smu = adev->powerplay.pp_handle;
-	uint32_t temp_arg, temp_ipid_lo, temp_ipid_high;
-	int ret;
-
-	temp_arg = index | (1 << 16);
-	ret = smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_GetBadPageIpid, temp_arg, &temp_ipid_lo);
-	if (ret)
-		return ret;
-
-	temp_arg = index | (2 << 16);
-	ret = smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_GetBadPageIpid, temp_arg, &temp_ipid_high);
-	if (!ret)
-		*ipid = (uint64_t)temp_ipid_high << 32 | temp_ipid_lo;
-	return ret;
-}
-
-static int smu_v13_0_12_erase_ras_table(struct amdgpu_device *adev,
-					uint32_t *result)
-{
-	struct smu_context *smu = adev->powerplay.pp_handle;
-
-	return smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_EraseRasTable, 0, result);
-}
-
-static int smu_v13_0_12_get_badpage_mca_addr(struct amdgpu_device *adev,
-					     uint16_t index, uint64_t *mca_addr)
-{
-	struct smu_context *smu = adev->powerplay.pp_handle;
-	uint32_t temp_arg, temp_addr_lo, temp_addr_high;
-	int ret;
-
-	temp_arg = index | (1 << 16);
-	ret = smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_GetBadPageMcaAddr, temp_arg, &temp_addr_lo);
-	if (ret)
-		return ret;
-
-	temp_arg = index | (2 << 16);
-	ret = smu_cmn_send_smc_msg_with_param(smu,
-			SMU_MSG_GetBadPageMcaAddr, temp_arg, &temp_addr_high);
-	if (!ret)
-		*mca_addr = (uint64_t)temp_addr_high << 32 | temp_addr_lo;
-	return ret;
-}
-
-static const struct ras_eeprom_smu_funcs smu_v13_0_12_eeprom_smu_funcs = {
-	.get_ras_table_version = smu_v13_0_12_get_ras_table_version,
-	.get_badpage_count = smu_v13_0_12_get_badpage_count,
-	.get_badpage_mca_addr = smu_v13_0_12_get_badpage_mca_addr,
-	.set_timestamp = smu_v13_0_12_set_timestamp,
-	.get_timestamp = smu_v13_0_12_get_timestamp,
-	.get_badpage_ipid = smu_v13_0_12_get_badpage_ipid,
-	.erase_ras_table = smu_v13_0_12_erase_ras_table,
-};
-
-static void smu_v13_0_12_ras_smu_feature_flags(struct amdgpu_device *adev, uint64_t *flags)
-{
-	struct smu_context *smu = adev->powerplay.pp_handle;
-
-	if (!flags)
-		return;
-
-	*flags = 0ULL;
-
-	if (smu_v13_0_6_cap_supported(smu, SMU_CAP(RAS_EEPROM)))
-		*flags |= RAS_SMU_FEATURE_BIT__RAS_EEPROM;
-
-}
-
-const struct ras_smu_drv smu_v13_0_12_ras_smu_drv = {
-	.smu_eeprom_funcs = &smu_v13_0_12_eeprom_smu_funcs,
-	.ras_smu_feature_flags = smu_v13_0_12_ras_smu_feature_flags,
 };

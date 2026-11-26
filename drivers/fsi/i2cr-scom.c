@@ -6,7 +6,6 @@
 #include <linux/fs.h>
 #include <linux/fsi.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 
 #include "fsi-master-i2cr.h"
 #include "fsi-slave.h"
@@ -91,7 +90,7 @@ static int i2cr_scom_probe(struct fsi_device *fsi_dev)
 	if (!is_fsi_master_i2cr(fsi_dev->slave->master))
 		return -ENODEV;
 
-	scom = devm_kzalloc(dev, sizeof(*scom), GFP_KERNEL);
+	scom = devm_kzalloc_obj(dev, *scom);
 	if (!scom)
 		return -ENOMEM;
 

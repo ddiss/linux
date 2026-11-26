@@ -4,10 +4,12 @@
 
 #include "dml2_mcg_factory.h"
 #include "dml2_mcg_dcn4.h"
+#include "dml2_mcg_dcn42.h"
 #include "dml2_external_lib_deps.h"
 
 static bool dummy_build_min_clock_table(struct dml2_mcg_build_min_clock_table_params_in_out *in_out)
 {
+	(void)in_out;
 	return true;
 }
 
@@ -30,6 +32,16 @@ bool dml2_mcg_create(enum dml2_project_id project_id, struct dml2_mcg_instance *
 		out->build_min_clock_table = &mcg_dcn4_build_min_clock_table;
 		result = true;
 		break;
+	case dml2_project_dcn42:
+	case dml2_project_dcn42b:
+		out->build_min_clock_table = &mcg_dcn42_build_min_clock_table;
+		result = true;
+		break;
+	case dml2_project_dcn4x_utm:
+	case dml2_project_dcn5x:
+	case dml2_project_dcn5x_utm:
+	case dml2_project_dcn6x_soc_var_a:
+	case dml2_project_dcn6x_soc_var_b:
 	case dml2_project_invalid:
 	default:
 		break;
