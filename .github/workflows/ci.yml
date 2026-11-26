@@ -30,7 +30,7 @@ jobs:
           esac
           sudo apt-get update -y
           sudo apt-get install -y --no-install-recommends --no-install-suggests \
-            cargo rustc "$QEMU_SYSTEM" qemu-utils \
+            cargo rustc "$QEMU_SYSTEM" \
             make flex bison libelf-dev acl attr automake bc dbench dump \
             e2fsprogs fio gawk libtool sed libgdbm-compat-dev \
             gcc git indent libacl1-dev libaio-dev libcap-dev libgdbm-dev \
@@ -69,10 +69,10 @@ jobs:
           pushd ${HOME}/rapido
           # rapido fstests-btrfs uses 5x guest-zram-dev by default (for raid),
           # but we probably don't have enough memory.
-          test_img="${HOME}/fstests_test_zstd.qcow2"
-          scratch_img="${HOME}/fstests_scratch_zstd.qcow2"
-          qemu-img create -f qcow2 "$test_img" 12G
-          qemu-img create -f qcow2 "$scratch_img" 12G
+          test_img="${HOME}/fstests_test_zstd.img"
+          scratch_img="${HOME}/fstests_scratch_zstd.img"
+          truncate -s 12G "$test_img"
+          truncate -s 12G "$scratch_img"
           mkdir -p "${HOME}/9p"
           cat > rapido.conf <<EOF
           KERNEL_SRC=${linux_dir}
@@ -81,11 +81,12 @@ jobs:
           FSTESTS_ZRAM_SIZE=0
           VIRTFS_SHARE_PATH=${HOME}/9p
           EOF
-          printf 'QEMU_EXTRA_ARGS="-nographic -device virtio-rng-pci -drive id=test,file='"$test_img"',if=none,cache=unsafe -device virtio-blk-pci,drive=test,serial=TEST_DEV -drive id=scratch,file='"$scratch_img"',if=none,cache=unsafe -device virtio-blk-pci,drive=scratch,serial=SCRATCH_DEV"' \
+          printf 'QEMU_EXTRA_ARGS="-nographic -device virtio-rng-pci -drive id=test,file='"$test_img"',if=none,format=raw,cache=unsafe -device virtio-blk-pci,drive=test,serial=TEST_DEV -drive id=scratch,file='"$scratch_img"',if=none,format=raw,cache=unsafe -device virtio-blk-pci,drive=scratch,serial=SCRATCH_DEV"' \
             >> rapido.conf
           cat rapido.conf
+          #excl="-E configs/aarch64_xfstests.exclude" \
           [ "$(uname -m)" = "aarch64" ] \
-            && excl="-E configs/aarch64_xfstests.exclude" \
+            && excl="" \
             || excl=""
           ./rapido cut \
             -x "./check -R xunit -g quick $excl; cp results/result.xml /host/; exit" \
